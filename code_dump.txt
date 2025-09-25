@@ -1,0 +1,34 @@
+//creates triangle on window position with int size, size cant be negative
+float* createTriangle(float x, float y, float length, float height, float triangle[]) {
+    if (height < 0 or length < 0) {
+        std::cout << "Incorrect triangle size" << std::endl;
+        return triangle;
+    }
+    if (sizeof(*triangle) != 9) {
+        std::cout << "Incorrect array size" << std::endl;
+        return triangle;
+    }
+    triangle[0] = {x};
+    triangle[1] = {y};
+    triangle[2] = {0};
+    triangle[3] = {x+(length/2)};
+    triangle[4] = {y+height};
+    triangle[5] = {0};
+    triangle[6] = {x+length};
+    triangle[7] = {y};
+    triangle[8] = {0};
+    return triangle;
+}
+
+  //create triangle
+    // float vertices[] = {
+    //     -0.5f, -0.5f, 0.0f, //bottom left
+    //     0.5f, -0.5f, 0.0f, //top left
+    //     -0.5f,  0.5f, 0.0f, //bottom right
+    //     0.5f, 0.5f, 0.0f //top right
+    // };
+
+    // unsigned int indices[]={ //start from 0
+    //     0, 1, 2,    //first triangle
+    //     1, 2, 3     //second triangle
+    // };
