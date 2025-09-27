@@ -1,20 +1,28 @@
 #include <iostream>
+#include <cmath>
 #include "glad/glad/glad.h" //glado goes first
 #include "GLFW/include/glfw3.h"
 using namespace std;
 
 const char *vertexShaderSource = "#version 330 core\n"
     "layout (location = 0) in vec3 aPos;\n"
+    "layout (location = 1) in vec3 aColor;\n"
+    "out vec4 vertexColor;\n"
+    "out vec3 ourColor;\n"
     "void main()\n"
     "{\n"
     "   gl_Position = vec4(aPos.x, aPos.y, aPos.z, 1.0);\n"
+    "   vertexColor = vec4(1.0, 0.0, 0.0, 1.0);\n"
+    "   ourColor = aColor;\n"
     "}\0";
 
 const char *fragmentShaderSource = "#version 330 core\n"
+    "in vec4 vertexColor;\n"
+    "in vec3 ourColor;\n"
     "out vec4 FragColor;\n"
     "void main()\n"
     "{\n"
-    "   FragColor = vec4(1.0f, 1.0f, 0.0f, 1.0f);\n"
+    "   FragColor = vec4(ourColor, 1.0f);\n"
     "}\0";
 
 //resize, its called everytime we resize the window
@@ -132,13 +140,10 @@ int main()
     // };
 
     float vertices[] = {
-        -2.0f, -0.5f, 0.0f,
-        -0.5f, 0.5f, 0.0f,
-        0.0f, -0.5f, 0.0f,
-
-        0.0f, 0.5f, 0.0f,
-        1.0f, 0.5f, 0.0f,
-        0.5f, -0.5f, 0.0f
+        //postion            //color
+        -0.5f, 0.5f, 0.0f,    1.0f, 0.0f, 0.0f, //top
+        0.5f, 0.5f, 0.0f,    0.0f, 1.0f, 0.0f, //top right
+        0.0f, -0.5f, 0.0f,    0.0f, 0.0f, 1.0f //bottom right
     };
 
 
@@ -159,8 +164,20 @@ int main()
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
+    //position attribute
+    glVertexAttribPointer(
+        0,                  // index of the vertex attribute
+        3,                  // number of components per attribute
+        GL_FLOAT,           // type of each component
+        GL_FALSE,           // should the data be normalized?
+        6 * sizeof(float),  // stride (distance in bytes between each attribute)
+        (void*)0            // offset (where the first attribute starts in the buffer)
+    );
+    glEnableVertexAttribArray(0); //enable the vertex attribute, its the layout location, can have many attributes as hardware allows
+
+    //color attribute
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3* sizeof(float)));
+    glEnableVertexAttribArray(1);
 
     // note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
     glBindBuffer(GL_ARRAY_BUFFER, 0); 
@@ -200,9 +217,13 @@ int main()
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f); // cleaning screen
         glClear(GL_COLOR_BUFFER_BIT);
 
-        glUseProgram(shaderProgram); //rendering triangle
+        //asigning uniform color
+        //int vextexColorLocation = glGetUniformLocation(shaderProgram, "ourColor"); //get location of uniform
+        //glUniform4f(vextexColorLocation, 0.0f, greenValue, blueValue, 1.0f); //set uniform color, can be change any where, uniform is global
+
+        glUseProgram(shaderProgram); //rendering triangle using shader program
         glBindVertexArray(VAO);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
         //glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
         //glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0); //draw using index, bind buffer before using it
         //check all events and swap buffer
