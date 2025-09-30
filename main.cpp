@@ -2,28 +2,13 @@
 #include <cmath>
 #include "glad/glad/glad.h" //glado goes first
 #include "GLFW/include/glfw3.h"
+#include "shaders/shader_s.h"
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "textures/stb_image.h"
+
 using namespace std;
 
-const char *vertexShaderSource = "#version 330 core\n"
-    "layout (location = 0) in vec3 aPos;\n"
-    "layout (location = 1) in vec3 aColor;\n"
-    "out vec4 vertexColor;\n"
-    "out vec3 ourColor;\n"
-    "void main()\n"
-    "{\n"
-    "   gl_Position = vec4(aPos.x, aPos.y, aPos.z, 1.0);\n"
-    "   vertexColor = vec4(1.0, 0.0, 0.0, 1.0);\n"
-    "   ourColor = aColor;\n"
-    "}\0";
-
-const char *fragmentShaderSource = "#version 330 core\n"
-    "in vec4 vertexColor;\n"
-    "in vec3 ourColor;\n"
-    "out vec4 FragColor;\n"
-    "void main()\n"
-    "{\n"
-    "   FragColor = vec4(ourColor, 1.0f);\n"
-    "}\0";
 
 //resize, its called everytime we resize the window
 //to call it we need to tell glfw
@@ -31,55 +16,6 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height)
 {
     glViewport(0, 0, width, height);
 } 
-
-unsigned int createShaderProgram (const char *vertexShaderS, const char *fragmentShaderS) {
-    //create vertex shader
-    unsigned int vertexShader;
-    vertexShader = glCreateShader(GL_VERTEX_SHADER);    //create shader
-    glShaderSource(vertexShader, 1, &vertexShaderS, NULL); //define source
-    glCompileShader(vertexShader);  //compile
-    int  success;   //error check
-    char infoLog[512];
-    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
-    if(!success)
-    {
-        glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
-        std::cout << "ERROR::SHADER::VERTEX::COMPILATION_FAILED\n" << infoLog << std::endl;
-    }
-
-    //create fragment shader
-    unsigned int fragmentShader;
-    fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fragmentShader, 1, &fragmentShaderS, NULL); 
-    glCompileShader(fragmentShader);
-    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
-    if(!success)
-    {
-        glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
-        std::cout << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED\n" << infoLog << std::endl;
-    }
-
-    //create shader program
-    unsigned int shaderProgram;
-    shaderProgram = glCreateProgram();
-    glAttachShader(shaderProgram, vertexShader); //attach shader and link them
-    glAttachShader(shaderProgram, fragmentShader);
-    glLinkProgram(shaderProgram);
-    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success); //error check
-    if(!success)
-    {
-        glGetProgramInfoLog(shaderProgram, 512, NULL, infoLog);
-        std::cout << "ERROR::SHADER::PROGRAM::COMPILATION_FAILED\n" << infoLog << std::endl;
-    }
-
-    glUseProgram(shaderProgram); //activate shader program
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);  
-    //once linked we can delete and keep the program
-    //note we can create many shaders, link them and use them whenever we want
-
-    return shaderProgram;
-}
 
 //input function
 //glfwGetKey, what window and what is pressed
@@ -90,7 +26,6 @@ void processInput(GLFWwindow *window)
 }
 
 
-
 int main()
 {
     //initialize glfw
@@ -99,6 +34,9 @@ int main()
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     // //glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE); //MAC OS
+#ifdef __APPLE__
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+#endif
 
     //create window
     GLFWwindow* window = glfwCreateWindow(800, 600, "LearnOpenGL", NULL, NULL);
@@ -124,38 +62,25 @@ int main()
     //resize
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 
-    unsigned int shaderProgram = createShaderProgram(vertexShaderSource, fragmentShaderSource);
+    Shader shaderProgram("shaders/vertex_s.vs", "shaders/fragment_s.fs");
 
-    //create triangle
-    // float vertices[] = {
-    //     -0.5f, -0.5f, 0.0f, //bottom left
-    //     0.5f, -0.5f, 0.0f, //top left
-    //     -0.5f,  0.5f, 0.0f, //bottom right
-    //     0.5f, 0.5f, 0.0f //top right
-    // };
-
-    // unsigned int indices[]={ //start from 0
-    //     0, 1, 2,    //first triangle
-    //     1, 2, 3     //second triangle
-    // };
-
-    float vertices[] = {
-        //postion            //color
-        -0.5f, 0.5f, 0.0f,    1.0f, 0.0f, 0.0f, //top
-        0.5f, 0.5f, 0.0f,    0.0f, 1.0f, 0.0f, //top right
-        0.0f, -0.5f, 0.0f,    0.0f, 0.0f, 1.0f //bottom right
+   float vertices[] = {
+        // positions          // colors           // texture coords
+        0.5f,  0.5f, 0.0f,   1.0f, 0.0f, 0.0f,   1.0f, 1.0f,   // top right
+        0.5f, -0.5f, 0.0f,   0.0f, 1.0f, 0.0f,   1.0f, 0.0f,   // bottom right
+        -0.5f, -0.5f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,   // bottom left
+        -0.5f,  0.5f, 0.0f,   1.0f, 1.0f, 0.0f,   0.0f, 1.0f    // top left 
+    };
+    unsigned int indices[] = {  
+        0, 1, 3, // first triangle
+        1, 2, 3  // second triangle
     };
 
-
-    //drawing triangle
-    //create VBO
-    unsigned int VBO;
+    //drawing shape
+    //create VBO, VAO and EBO
+    unsigned int VBO, VAO, EBO;
     glGenBuffers(1, &VBO); 
-    //create VAO
-    unsigned int VAO;
     glGenVertexArrays(1, &VAO); 
-    //create EBO
-    unsigned int EBO;
     glGenBuffers(1, &EBO);
 
     // bind the Vertex Array Object first, then bind and set vertex buffer(s), and then configure vertex attributes(s).
@@ -163,6 +88,9 @@ int main()
     //bind vbo
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    //Bind EBO
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
     //position attribute
     glVertexAttribPointer(
@@ -170,14 +98,18 @@ int main()
         3,                  // number of components per attribute
         GL_FLOAT,           // type of each component
         GL_FALSE,           // should the data be normalized?
-        6 * sizeof(float),  // stride (distance in bytes between each attribute)
+        8 * sizeof(float),  // stride (distance in bytes between each attribute)
         (void*)0            // offset (where the first attribute starts in the buffer)
     );
     glEnableVertexAttribArray(0); //enable the vertex attribute, its the layout location, can have many attributes as hardware allows
 
     //color attribute
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3* sizeof(float)));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3* sizeof(float)));
     glEnableVertexAttribArray(1);
+
+    //texture attribute
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);  
 
     // note that this is allowed, the call to glVertexAttribPointer registered VBO as the vertex attribute's bound vertex buffer object so afterwards we can safely unbind
     glBindBuffer(GL_ARRAY_BUFFER, 0); 
@@ -186,9 +118,7 @@ int main()
     // VAOs requires a call to glBindVertexArray anyways so we generally don't unbind VAOs (nor VBOs) when it's not directly necessary.
     glBindVertexArray(0); 
 
-    // //Bind EBO
-    // glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    // glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+
 
     /*
         step 1
@@ -205,7 +135,32 @@ int main()
             bind vertex array 0 (unbind)
     */
 
+    //create texture param
+    unsigned int texture;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture); 
+    //define texture wrapping, filtering and mipmaps
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_MIRRORED_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_MIRRORED_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
+    //load and create a texture
+    int width, height, nrChannels;
+    unsigned char *data = stbi_load("textures/container.jpg", &width, &height, &nrChannels, 0);
+
+    if (data) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+        glGenerateMipmap(GL_TEXTURE_2D);
+    }
+    else {
+        std::cout << "Failed to load texture" << std::endl;
+    }
+    //free image memory IMPORTANT!
+    stbi_image_free(data);
+    
 
     //main loop
     while(!glfwWindowShouldClose(window))
@@ -217,15 +172,11 @@ int main()
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f); // cleaning screen
         glClear(GL_COLOR_BUFFER_BIT);
 
-        //asigning uniform color
-        //int vextexColorLocation = glGetUniformLocation(shaderProgram, "ourColor"); //get location of uniform
-        //glUniform4f(vextexColorLocation, 0.0f, greenValue, blueValue, 1.0f); //set uniform color, can be change any where, uniform is global
-
-        glUseProgram(shaderProgram); //rendering triangle using shader program
+        shaderProgram.use();
+        glBindTexture(GL_TEXTURE_2D, texture);
         glBindVertexArray(VAO);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        //glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-        //glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0); //draw using index, bind buffer before using it
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+      
         //check all events and swap buffer
         glfwSwapBuffers(window);
         glfwPollEvents();    //SO events like key, mouse, etc
