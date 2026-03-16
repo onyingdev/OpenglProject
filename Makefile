@@ -16,4 +16,4 @@ shader_s.o: $(SHADER)
 	g++ -c $(SHADER)
 
 clean:
-	rm -f *.o
+	rm -f *.o main
