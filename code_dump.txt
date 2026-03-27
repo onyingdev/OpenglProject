@@ -1,4 +1,4 @@
-//creates triangle on window position with int size, size cant be negative
+    //creates triangle on window position with int size, size cant be negative
 float* createTriangle(float x, float y, float length, float height, float triangle[]) {
     if (height < 0 or length < 0) {
         std::cout << "Incorrect triangle size" << std::endl;

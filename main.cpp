@@ -1,11 +1,13 @@
 #include <iostream>
 #include <cmath>
-#include "glad/glad/glad.h" //glado goes first
-#include "GLFW/include/glfw3.h"
-#include "shaders/shader_s.h"
+#include "vendor/glad/glad/glad.h" //glad goes first
+#include "vendor/GLFW/include/glfw3.h"
+#include "assets/shaders/shader_s.h"
 
 #define STB_IMAGE_IMPLEMENTATION
-#include "textures/stb_image.h"
+#include "assets/textures/stb_image.h"
+
+//TODO: refactor with main to decouple functions
 
 using namespace std;
 
@@ -61,7 +63,7 @@ int main()
     //resize
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
 
-    Shader shaderProgram("shaders/vertex_s.vs", "shaders/fragment_s.fs");
+    Shader shaderProgram("assets/shaders/vertex_s.vs", "assets/shaders/fragment_s.fs");
 
    float vertices[] = {
         // positions          // colors           // texture coords
@@ -148,7 +150,7 @@ int main()
 
     //load and create a texture
     int width, height, nrChannels;
-    unsigned char *data = stbi_load("textures/container.jpg", &width, &height, &nrChannels, 0);
+    unsigned char *data = stbi_load("assets/textures/container.jpg", &width, &height, &nrChannels, 0);
 
     if (data) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
@@ -172,7 +174,7 @@ int main()
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
     stbi_set_flip_vertically_on_load(true); 
-    data = stbi_load("textures/awesomeface.png", &width, &height, &nrChannels, 0);
+    data = stbi_load("assets/textures/awesomeface.png", &width, &height, &nrChannels, 0);
     
     if (data) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);

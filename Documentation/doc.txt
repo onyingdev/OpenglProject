@@ -1,0 +1,22 @@
+folder structure:
+
+ /assets            #images, models, sound, etc...
+    /shader
+    /textures
+
+ /Documentation     #documentatio stuff
+
+ /include
+    /Core           #helpers, application, input manager, window
+    /Renderer       #opengl, vertex buffer, shader loader
+    /UI             #UI stuff
+
+ /src
+    /Core
+    /Renderer
+    /UI
+    main.cpp
+
+ /vendor
+    /glad
+    /GLFW

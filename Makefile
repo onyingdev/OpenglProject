@@ -1,7 +1,7 @@
-LIB_PATH = GLFW/lib
+LIB_PATH = vendor/GLFW/lib
 LIB_GL = libglfw3.a
-GLAD = glad/glad.c
-SHADER = shaders/shader_s.cpp
+GLAD = vendor/glad/glad.c
+SHADER = assets/shaders/shader_s.cpp
 
 make: main.o glad.o shader_s.o
 	g++ -o main main.o glad.o shader_s.o -L$(LIB_PATH) -l:$(LIB_GL)
