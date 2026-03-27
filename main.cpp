@@ -4,8 +4,9 @@
 #include "vendor/GLFW/include/glfw3.h"
 #include "assets/shaders/shader_s.h"
 
-#define STB_IMAGE_IMPLEMENTATION
-#include "assets/textures/stb_image.h"
+//#define STB_IMAGE_IMPLEMENTATION
+//#include "assets/textures/stb_image.h"
+#include "include/Core/lib_asset_loader.h"
 
 //TODO: refactor with main to decouple functions
 
@@ -138,57 +139,14 @@ int main()
 
     //create texture param
     unsigned int texture1, texture2;
-    glGenTextures(1, &texture1);
-    glBindTexture(GL_TEXTURE_2D, texture1); 
-    //define texture wrapping, filtering and mipmaps
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_MIRRORED_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_MIRRORED_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-    //load and create a texture
-    int width, height, nrChannels;
-    unsigned char *data = stbi_load("assets/textures/container.jpg", &width, &height, &nrChannels, 0);
-
-    if (data) {
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
-    }
-    else {
-        std::cout << "Failed to load texture" << std::endl;
-    }
-    //free image memory IMPORTANT!
-    stbi_image_free(data);
-
-    //texture2
-    glGenTextures(1, &texture2);
-    glBindTexture(GL_TEXTURE_2D, texture2); 
-    //define texture wrapping, filtering and mipmaps
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_MIRRORED_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_MIRRORED_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-    stbi_set_flip_vertically_on_load(true); 
-    data = stbi_load("assets/textures/awesomeface.png", &width, &height, &nrChannels, 0);
-    
-    if (data) {
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
-    }
-    else {
-        std::cout << "Failed to load texture" << std::endl;
-    }
-    //free image memory IMPORTANT!
-    stbi_image_free(data);
-    
+    texture1 = AssetLoaderLib::load_texture("assets/textures/container.jpg");
+    texture2 = AssetLoaderLib::load_texture("assets/textures/awesomeface.png");
+    //TODO: Pass program shader into renderer, create a texture loader manager to auto assign id
+    //try to reduce bind calls as much as possible, use one big texture atlas
+    //TODO: Create texture atlas generator https://stackoverflow.com/questions/9900854/opengl-creating-texture-atlas-at-run-time
     shaderProgram.use();
-    glUniform1i(glGetUniformLocation(shaderProgram.ID, "texture1"), 0);
-    shaderProgram.setInt("texture2", 1);
+    shaderProgram.setInt("texture1", 0); //set textureID to GL_TEXTUREN equivalent glUniform1i(glGetUniformLocation(ourShader.ID, "texture1"), 0); // set it manually
+    shaderProgram.setInt("texture2", 1); //TODO: optimise uniform setter with UBOs (uniform buffer objects)
 
     float contrast = 0.2f;
 
