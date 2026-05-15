@@ -22,7 +22,7 @@ endif
 #	g++ -o main main.o glad.o shader_s.o lib_asset_loader.o $(LIBS)
 
 make: main.o glad.o shader_s.o lib_asset_loader.o
-	g++ -o main main.o glad.o shader_s.o lib_asset_loader.o -L$(LIB_PATH) -l:$(LIB_GL)
+	g++ -o main main.o glad.o shader_s.o lib_asset_loader.o -L$(LIB_PATH) -l:$(LIB_GL) -lassimp
 
 main.o: main.cpp
 	g++ -c main.cpp
