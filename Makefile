@@ -4,6 +4,23 @@ GLAD = vendor/glad/glad.c
 SHADER = assets/shaders/shader_s.cpp
 ASSET_LOADER = src/Core/lib_asset_loader.cpp
 
+# WINDOWS LINKING FLAGS
+# You must install GLFW on windows
+LIBS = -lglfw3 -lgdi32 -lopengl32
+
+ifeq ($(OS),Windows_NT)
+    # Windows
+    RM = del /q /f
+    EXEC = main.exe
+else
+    # Linux / Mac
+    RM = rm -f
+    EXEC = main
+endif
+
+windows: main.o glad.o shader_s.o lib_asset_loader.o
+	g++ -o main main.o glad.o shader_s.o lib_asset_loader.o $(LIBS)
+
 make: main.o glad.o shader_s.o lib_asset_loader.o
 	g++ -o main main.o glad.o shader_s.o lib_asset_loader.o -L$(LIB_PATH) -l:$(LIB_GL)
 
@@ -20,4 +37,4 @@ lib_asset_loader.o: $(ASSET_LOADER)
 	g++ -c $(ASSET_LOADER)
 
 clean:
-	rm -f *.o main
+	$(RM) *.o $(EXEC)
