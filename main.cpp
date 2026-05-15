@@ -150,6 +150,15 @@ int main()
 
     float contrast = 0.2f;
 
+//    glm::vec4 vec(1.0f, 0.0f, 0.0f, 1.0f);
+//    glm::mat4 trans = glm::mat4(1.0f);
+//    trans = glm::translate(trans, glm::vec3(1.0f, 1.0f, 0.0f));
+//    vec = trans * vec;
+//    std::cout << vec.x << vec.y << vec.z << std::endl;
+
+
+
+
     //main loop the more you can take out of the loop the better
     while(!glfwWindowShouldClose(window))
     {
@@ -174,8 +183,13 @@ int main()
         glBindVertexArray(VAO);
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
+        glm::mat4 trans = glm::mat4(1.0f);
+        trans = glm::translate(trans, glm::vec3(0.5f, -0.5f, 0.0f));
+        trans = glm::rotate(trans, (float)glfwGetTime(), glm::vec3(0.0f, 0.0f, 1.0f));
+
         shaderProgram.setFloat("contrast", contrast);
-      
+        shaderProgram.setMat4("transform", 1, GL_FALSE, trans);
+
         //check all events and swap buffer
         glfwSwapBuffers(window);
         glfwPollEvents();    //SO events like key, mouse, etc

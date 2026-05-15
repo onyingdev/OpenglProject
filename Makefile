@@ -18,8 +18,8 @@ else
     EXEC = main
 endif
 
-windows: main.o glad.o shader_s.o lib_asset_loader.o
-	g++ -o main main.o glad.o shader_s.o lib_asset_loader.o $(LIBS)
+#windows: main.o glad.o shader_s.o lib_asset_loader.o
+#	g++ -o main main.o glad.o shader_s.o lib_asset_loader.o $(LIBS)
 
 make: main.o glad.o shader_s.o lib_asset_loader.o
 	g++ -o main main.o glad.o shader_s.o lib_asset_loader.o -L$(LIB_PATH) -l:$(LIB_GL)
