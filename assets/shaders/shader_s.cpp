@@ -105,7 +105,43 @@ void Shader::setVec4(const std::string &name, float x, float y, float z, float w
     glUniform4f(glGetUniformLocation(ID, name.c_str()), x, y, z, w);
 }
 
-void Shader::setMat4(const std::string &name, unsigned int number_matrices, unsigned char GLboolean, glm::mat4 trans) const
+void Shader::setMat2(const std::string &name, const glm::mat2 &mat) const
 {
-    glUniformMatrix4fv(glGetUniformLocation(ID, name.c_str()), number_matrices, GLboolean, glm::value_ptr(trans));
+    glUniformMatrix2fv(glGetUniformLocation(ID, name.c_str()), 1, GL_FALSE, &mat[0][0]);
+}
+
+void Shader::setMat3(const std::string &name, const glm::mat3 &mat) const
+{
+    glUniformMatrix3fv(glGetUniformLocation(ID, name.c_str()), 1, GL_FALSE, &mat[0][0]);
+}
+
+void Shader::setMat4(const std::string &name, const glm::mat4 &mat) const
+{
+    glUniformMatrix4fv(glGetUniformLocation(ID, name.c_str()), 1, GL_FALSE, &mat[0][0]);
+}
+
+// utility function for checking shader compilation/linking errors.
+// ------------------------------------------------------------------------
+void Shader::checkCompileErrors(GLuint shader, std::string type)
+{
+    GLint success;
+    GLchar infoLog[1024];
+    if (type != "PROGRAM")
+    {
+        glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+        if (!success)
+        {
+            glGetShaderInfoLog(shader, 1024, NULL, infoLog);
+            std::cout << "ERROR::SHADER_COMPILATION_ERROR of type: " << type << "\n" << infoLog << "\n -- --------------------------------------------------- -- " << std::endl;
+        }
+    }
+    else
+    {
+        glGetProgramiv(shader, GL_LINK_STATUS, &success);
+        if (!success)
+        {
+            glGetProgramInfoLog(shader, 1024, NULL, infoLog);
+            std::cout << "ERROR::PROGRAM_LINKING_ERROR of type: " << type << "\n" << infoLog << "\n -- --------------------------------------------------- -- " << std::endl;
+        }
+    }
 }

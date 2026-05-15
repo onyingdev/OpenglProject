@@ -25,7 +25,12 @@ class Shader
     void setInt(const std::string &name, int value) const;
     void setFloat(const std::string &name, float value) const;
     void setVec4(const std::string &name, float x, float y, float z, float w) const;
-    void setMat4(const std::string &name, unsigned int number_matrices, unsigned char GLboolean, glm::mat4 trans) const;
+    void setMat2(const std::string &name, const glm::mat2 &mat) const;
+    void setMat3(const std::string &name, const glm::mat3 &mat) const;
+    void setMat4(const std::string &name, const glm::mat4 &mat) const;
+
+    private:
+    void checkCompileErrors(GLuint shader, std::string type);
 };
 
 #endif
