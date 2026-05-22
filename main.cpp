@@ -9,22 +9,21 @@
 //#include "assets/textures/stb_image.h"
 //#include "include/Core/lib_asset_loader.h"
 #include "include/Render/model.h"
+#include "include/Core/input_manager.h"
 
 //TODO: refactor with main to decouple functions
 
 using namespace std;
 
 //global attributes
-float contrast = 0.5f;
-float rotation = 0.0f;
 unsigned int SCR_WIDTH = 800;
 unsigned int SCR_HEIGHT = 600;
 
 // camera
 Camera camera(glm::vec3(0.0f, 0.0f, 3.0f));
-float lastX = SCR_WIDTH / 2.0f;
-float lastY = SCR_HEIGHT / 2.0f;
-bool firstMouse = true;
+//float lastX = SCR_WIDTH / 2.0f;
+//float lastY = SCR_HEIGHT / 2.0f;
+//bool firstMouse = true;
 
 //time
 float deltaTime = 0.0f;	// Time between current frame and last frame
@@ -32,67 +31,62 @@ float lastFrame = 0.0f; // Time of last frame
 
 //resize, its called everytime we resize the window
 //to call it we need to tell glfw
-void framebuffer_size_callback(GLFWwindow* window, int width, int height)
-{
-    // 1. Tell OpenGL the new rendering dimensions
+void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
     glViewport(0, 0, width, height);
-
-    // 2. Save the new dimensions for our math
-    // Prevent division by zero if the window is minimized!
     SCR_WIDTH = width;
     SCR_HEIGHT = (height == 0) ? 1 : height;
 }
 
-void mouse_callback(GLFWwindow* window, double xpos, double ypos)
-{
-    if (firstMouse)
-    {
-        lastX = xpos;
-        lastY = ypos;
-        firstMouse = false;
-    }
+//void mouse_callback(GLFWwindow* window, double xpos, double ypos)
+//{
+//    if (firstMouse)
+//    {
+//        lastX = xpos;
+//        lastY = ypos;
+//        firstMouse = false;
+//    }
+//
+//    float xoffset = xpos - lastX;
+//    float yoffset = lastY - ypos;
+//    lastX = xpos;
+//    lastY = ypos;
+//
+//    camera.ProcessMouseMovement(xoffset, yoffset);
+//}
 
-    float xoffset = xpos - lastX;
-    float yoffset = lastY - ypos;
-    lastX = xpos;
-    lastY = ypos;
-
-    camera.ProcessMouseMovement(xoffset, yoffset);
-}
-
-//input function
-//glfwGetKey, what window and what is pressed
-void processInput(GLFWwindow *window)
-{
-    const float cameraSpeed = 2.5f * deltaTime;
-
-    if(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-        glfwSetWindowShouldClose(window, true);
-    if(glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) {
-        contrast += 0.01f;
-    }
-    if(glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) {
-        contrast -= 0.01f;
-    }
-    if(glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
-        rotation += 1.0f;
-    }
-    if(glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) {
-        rotation -= 1.0f;
-    }
-
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-        glfwSetWindowShouldClose(window, true);
-
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-        camera.ProcessKeyboard(FORWARD, deltaTime);
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-        camera.ProcessKeyboard(BACKWARD, deltaTime);
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-        camera.ProcessKeyboard(LEFT, deltaTime);
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-        camera.ProcessKeyboard(RIGHT, deltaTime);
-}
+////input function
+////glfwGetKey, what window and what is pressed
+//void processInput(GLFWwindow *window)
+//{
+//    const float cameraSpeed = 2.5f * deltaTime;
+//
+//    if(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+//        glfwSetWindowShouldClose(window, true);
+//    if(glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) {
+//        contrast += 0.01f;
+//    }
+//    if(glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) {
+//        contrast -= 0.01f;
+//    }
+//    if(glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
+//        rotation += 1.0f;
+//    }
+//    if(glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) {
+//        rotation -= 1.0f;
+//    }
+//
+//    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+//        glfwSetWindowShouldClose(window, true);
+//
+//    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+//        camera.ProcessKeyboard(FORWARD, deltaTime);
+//    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+//        camera.ProcessKeyboard(BACKWARD, deltaTime);
+//    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+//        camera.ProcessKeyboard(LEFT, deltaTime);
+//    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+//        camera.ProcessKeyboard(RIGHT, deltaTime);
+//}
 
 
 
@@ -136,10 +130,19 @@ int main()
 
     //mouse capture
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-    glfwSetCursorPosCallback(window, mouse_callback);
+    //glfwSetCursorPosCallback(window, mouse_callback);
+    if (glfwRawMouseMotionSupported()) {
+            glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        }
+
+    InputManager input(window);
+    input.BindAction("Quit", GLFW_KEY_ESCAPE);
+    input.BindAction("MoveForward", GLFW_KEY_W);
+    input.BindAction("MoveBackward", GLFW_KEY_S);
+    input.BindAction("MoveLeft", GLFW_KEY_A);
+    input.BindAction("MoveRight", GLFW_KEY_D);
 
     Shader shaderProgram("assets/shaders/vertex_s.vs", "assets/shaders/fragment_s.fs");
-
     Model ourModel("/home/vorasak/blender/backpack/backpack.obj");
 
 
@@ -147,12 +150,31 @@ int main()
     while(!glfwWindowShouldClose(window))
     {
         //input
-        processInput(window);
+        //processInput(window);
 
         //calculate physics
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
+
+        if (input.IsActionReleased("Quit")) {
+            glfwSetWindowShouldClose(window, true);
+        }
+        if (input.IsActionPressed("MoveForward")) {
+            camera.ProcessKeyboard(FORWARD, deltaTime);
+        }
+        if (input.IsActionPressed("MoveBackward")) {
+            camera.ProcessKeyboard(BACKWARD, deltaTime);
+        }
+        if (input.IsActionPressed("MoveLeft")) {
+            camera.ProcessKeyboard(LEFT, deltaTime);
+        }
+        if (input.IsActionPressed("MoveRight")) {
+            camera.ProcessKeyboard(RIGHT, deltaTime);
+        }
+
+        // Process Mouse Look
+        camera.ProcessMouseMovement(input.GetMouseOffsetX(), input.GetMouseOffsetY());
 
         //rendering commands
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f); // cleaning screen
@@ -176,6 +198,7 @@ int main()
         shaderProgram.setMat4("model", model);
         ourModel.Draw(shaderProgram);
 
+        input.ResetFrame();
 
         //check all events and swap buffer
         glfwSwapBuffers(window);
