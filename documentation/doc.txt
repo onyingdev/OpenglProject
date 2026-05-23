@@ -16,6 +16,7 @@ folder structure:
     /Core           #helpers, application, input manager, window
     /Render       #opengl, vertex buffer, shader loader
     /UI             #UI stuff
+    /Components     #basic components for building GameObjects
 
  /src
     /Core

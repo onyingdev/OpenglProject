@@ -1,15 +1,22 @@
 #include <iostream>
 #include <cmath>
+#include <memory>
 #include "vendor/glad/glad/glad.h" //glad goes first
 #include "vendor/GLFW/include/glfw3.h"
 #include "include/Render/shader_s.h"
-#include "assets/scripts/camera.h"
+//#include "assets/scripts/camera.h"
 
 //#define STB_IMAGE_IMPLEMENTATION
 //#include "assets/textures/stb_image.h"
 //#include "include/Core/lib_asset_loader.h"
 #include "include/Render/model.h"
 #include "include/Core/input_manager.h"
+#include "include/Core/component.h"
+#include "include/Core/gameObject.h"
+#include "include/Components/transformComponent.h"
+#include "include/Components/inputComponent.h"
+#include "include/Components/cameraComponent.h"
+#include "assets/scripts/cameraController.h"
 
 //TODO: refactor with main to decouple functions
 
@@ -18,12 +25,6 @@ using namespace std;
 //global attributes
 unsigned int SCR_WIDTH = 800;
 unsigned int SCR_HEIGHT = 600;
-
-// camera
-Camera camera(glm::vec3(0.0f, 0.0f, 3.0f));
-//float lastX = SCR_WIDTH / 2.0f;
-//float lastY = SCR_HEIGHT / 2.0f;
-//bool firstMouse = true;
 
 //time
 float deltaTime = 0.0f;	// Time between current frame and last frame
@@ -89,6 +90,13 @@ int main()
     input.BindAction("MoveLeft", GLFW_KEY_A);
     input.BindAction("MoveRight", GLFW_KEY_D);
 
+    auto camera = std::make_unique<GameObject>();
+    camera->addComponent<TransformComponent>()->Position = {0, 0, 3};
+    camera->addComponent<InputComponent>(&input);
+    camera->addComponent<CameraComponent>();
+    camera->addComponent<CameraController>(); //script
+    camera->start();
+
     Shader shaderProgram("assets/shaders/vertex_s.vs", "assets/shaders/fragment_s.fs");
     Model ourModel("assets/models/backpack/backpack.obj"); //TODO: change path loading system
 
@@ -96,9 +104,6 @@ int main()
     //main loop the more you can take out of the loop the better
     while(!glfwWindowShouldClose(window))
     {
-        //input
-        //processInput(window);
-
         //calculate physics
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
@@ -107,21 +112,9 @@ int main()
         if (input.IsActionReleased("Quit")) {
             glfwSetWindowShouldClose(window, true);
         }
-        if (input.IsActionPressed("MoveForward")) {
-            camera.ProcessKeyboard(FORWARD, deltaTime);
-        }
-        if (input.IsActionPressed("MoveBackward")) {
-            camera.ProcessKeyboard(BACKWARD, deltaTime);
-        }
-        if (input.IsActionPressed("MoveLeft")) {
-            camera.ProcessKeyboard(LEFT, deltaTime);
-        }
-        if (input.IsActionPressed("MoveRight")) {
-            camera.ProcessKeyboard(RIGHT, deltaTime);
-        }
 
-        // Process Mouse Look
-        camera.ProcessMouseMovement(input.GetMouseOffsetX(), input.GetMouseOffsetY());
+        // drive all components on the camera (movement + mouse look)
+        camera->update(deltaTime);
 
         //rendering commands
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f); // cleaning screen
@@ -130,13 +123,12 @@ int main()
 
         shaderProgram.use();
 
-        glm::mat4 view = camera.GetViewMatrix();
+        auto* cam = camera->getComponent<CameraComponent>(); //get camera component might be null
+        glm::mat4 view = cam->viewMatrix();
+        glm::mat4 proj = cam->projectionMatrix((float)SCR_WIDTH / (float)SCR_HEIGHT);
         shaderProgram.setMat4("view", view);
-        // Automatically adjust the aspect ratio so objects never stretch
-        glm::mat4 projection = glm::perspective(glm::radians(camera.Zoom), (float)SCR_WIDTH / (float)SCR_HEIGHT, 0.1f, 100.0f);
-        shaderProgram.setMat4("projection", projection);
+        shaderProgram.setMat4("projection", proj);
 
-//        shaderProgram.setFloat("contrast", contrast);
 
         // render the loaded model
         glm::mat4 model = glm::mat4(1.0f);

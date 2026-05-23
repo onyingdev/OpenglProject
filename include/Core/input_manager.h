@@ -5,6 +5,7 @@
 #include "../../vendor/GLFW/include/glfw3.h"
 
 //input manager class only handles inputs and mouse. Does not handle logic.
+// we can use input manager by itself but not Input Component. 
 class InputManager {
 public:
     // Pass the window in so the manager can tie itself to it
