@@ -3,15 +3,16 @@
 
 #include "../../vendor/glad/glad/glad.h"
 
-#include "../../include/Core/glm/glm/glm.hpp"
-#include "../../include/Core/glm/glm/gtc/matrix_transform.hpp"
+#include "../../vendor/glm/glm/glm.hpp"
+#include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
 #include "../../include/Core/stb_image.h"
+
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 
 #include "./mesh.h"
-#include "../../assets/shaders/shader_s.h"
+#include "../../include/Render/shader_s.h"
 
 #include <string>
 #include <fstream>

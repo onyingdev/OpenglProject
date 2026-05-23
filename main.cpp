@@ -2,7 +2,7 @@
 #include <cmath>
 #include "vendor/glad/glad/glad.h" //glad goes first
 #include "vendor/GLFW/include/glfw3.h"
-#include "assets/shaders/shader_s.h"
+#include "include/Render/shader_s.h"
 #include "assets/scripts/camera.h"
 
 //#define STB_IMAGE_IMPLEMENTATION
@@ -36,59 +36,6 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
     SCR_WIDTH = width;
     SCR_HEIGHT = (height == 0) ? 1 : height;
 }
-
-//void mouse_callback(GLFWwindow* window, double xpos, double ypos)
-//{
-//    if (firstMouse)
-//    {
-//        lastX = xpos;
-//        lastY = ypos;
-//        firstMouse = false;
-//    }
-//
-//    float xoffset = xpos - lastX;
-//    float yoffset = lastY - ypos;
-//    lastX = xpos;
-//    lastY = ypos;
-//
-//    camera.ProcessMouseMovement(xoffset, yoffset);
-//}
-
-////input function
-////glfwGetKey, what window and what is pressed
-//void processInput(GLFWwindow *window)
-//{
-//    const float cameraSpeed = 2.5f * deltaTime;
-//
-//    if(glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-//        glfwSetWindowShouldClose(window, true);
-//    if(glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) {
-//        contrast += 0.01f;
-//    }
-//    if(glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) {
-//        contrast -= 0.01f;
-//    }
-//    if(glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
-//        rotation += 1.0f;
-//    }
-//    if(glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) {
-//        rotation -= 1.0f;
-//    }
-//
-//    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-//        glfwSetWindowShouldClose(window, true);
-//
-//    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-//        camera.ProcessKeyboard(FORWARD, deltaTime);
-//    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-//        camera.ProcessKeyboard(BACKWARD, deltaTime);
-//    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-//        camera.ProcessKeyboard(LEFT, deltaTime);
-//    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-//        camera.ProcessKeyboard(RIGHT, deltaTime);
-//}
-
-
 
 int main()
 {
@@ -143,7 +90,7 @@ int main()
     input.BindAction("MoveRight", GLFW_KEY_D);
 
     Shader shaderProgram("assets/shaders/vertex_s.vs", "assets/shaders/fragment_s.fs");
-    Model ourModel("/home/vorasak/blender/backpack/backpack.obj");
+    Model ourModel("assets/models/backpack/backpack.obj"); //TODO: change path loading system
 
 
     //main loop the more you can take out of the loop the better

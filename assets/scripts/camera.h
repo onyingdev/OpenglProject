@@ -2,8 +2,8 @@
 #define CAMERA_H
 
 #include "../../vendor/glad/glad/glad.h"
-#include "../../include/Core/glm/glm/glm.hpp"
-#include "../../include/Core/glm/glm/gtc/matrix_transform.hpp"
+#include "../../vendor/glm/glm/glm.hpp"
+#include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
 
 // Defines several possible options for camera movement. Used as abstraction to stay away from window-system specific input methods
 enum Camera_Movement {

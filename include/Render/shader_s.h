@@ -2,9 +2,9 @@
 #define SHADER_H
 
 #include "../../vendor/glad/glad/glad.h"
-#include "../../include/Core/glm/glm/glm.hpp"
-#include "../../include/Core/glm/glm/gtc/matrix_transform.hpp"
-#include "../../include/Core/glm/glm/gtc/type_ptr.hpp"
+#include "../../vendor/glm/glm/glm.hpp"
+#include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
+#include "../../vendor/glm/glm/gtc/type_ptr.hpp"
 #include <string>
 #include <fstream>
 #include <sstream>

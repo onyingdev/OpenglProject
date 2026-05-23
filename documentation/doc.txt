@@ -1,22 +1,29 @@
 folder structure:
 
- /assets            #images, models, sound, etc...
-    /shader
+ /assets            #images, models, sound, etc... this is where to place everything to program games
+    /shaders
     /textures
+    /scripts
 
- /Documentation     #documentatio stuff
+ /app
+    /bin            #release folder, where the actual application is
+
+ /build             #local build objects folder
+
+ /documentation     #documentation stuff
 
  /include
     /Core           #helpers, application, input manager, window
-    /Renderer       #opengl, vertex buffer, shader loader
+    /Render       #opengl, vertex buffer, shader loader
     /UI             #UI stuff
 
  /src
     /Core
-    /Renderer
+    /Render
     /UI
     main.cpp
 
- /vendor
+ /vendor            #third party software
     /glad
     /GLFW
+    /glm

@@ -3,10 +3,10 @@
 
 #include "../../vendor/glad/glad/glad.h"// holds all OpenGL type declarations
 
-#include "../../include/Core/glm/glm/glm.hpp"
-#include "../../include/Core/glm/glm/gtc/matrix_transform.hpp"
+#include "../../vendor/glm/glm/glm.hpp"
+#include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
 
-#include "../../assets/shaders/shader_s.h"
+#include "../../include/Render/shader_s.h"
 
 #include <string>
 #include <vector>
