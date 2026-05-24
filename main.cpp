@@ -13,7 +13,7 @@
 #include "include/Core/input_manager.h"
 #include "include/Core/component.h"
 #include "include/Core/gameObject.h"
-#include "include/Components/transformComponent.h"
+#include "include/Components/transformComponent3D.h"
 #include "include/Components/inputComponent.h"
 #include "include/Components/cameraComponent.h"
 #include "assets/scripts/cameraController.h"
@@ -26,14 +26,19 @@ using namespace std;
 unsigned int SCR_WIDTH = 1920;
 unsigned int SCR_HEIGHT = 1080;
 
+// Fixed internal render resolution. The scene always renders at this size,
+// then is scaled to fit the window (with letterbox/pillarbox to preserve aspect).
+const int RENDER_WIDTH  = 320;
+const int RENDER_HEIGHT = 240;
+
 //time
 float deltaTime = 0.0f;	// Time between current frame and last frame
 float lastFrame = 0.0f; // Time of last frame
 
-//resize, its called everytime we resize the window
-//to call it we need to tell glfw
+//resize: only tracks the window size now. The viewport is set per-pass in the
+//render loop (FBO pass uses RENDER_*, blit pass uses SCR_*), so we don't call
+//glViewport here anymore.
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
-    glViewport(0, 0, width, height);
     SCR_WIDTH = width;
     SCR_HEIGHT = (height == 0) ? 1 : height;
 }
@@ -69,13 +74,35 @@ int main()
     }
 
     stbi_set_flip_vertically_on_load(true);
-    
-    //viewport for opengl to render, 
-    //this is the dimensions opengl will render not the window size
-    glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
 
     //resize
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+
+    // Offscreen framebuffer (internal resolution)
+    // Scene draws into this FBO at RENDER_WIDTH x RENDER_HEIGHT, then we blit
+    // it to the window. The blit handles scaling so the window size never
+    // affects render cost or aspect.
+    unsigned int fbo, fboColor, fboDepth;
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    // Color attachment — the texture the scene rasterises into.
+    glGenTextures(1, &fboColor);
+    glBindTexture(GL_TEXTURE_2D, fboColor);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, RENDER_WIDTH, RENDER_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);  // GL_NEAREST for pixel-art
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fboColor, 0);
+
+    // Depth attachment — renderbuffer is cheaper than a depth texture since we don't sample it.
+    glGenRenderbuffers(1, &fboDepth);
+    glBindRenderbuffer(GL_RENDERBUFFER, fboDepth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, RENDER_WIDTH, RENDER_HEIGHT);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fboDepth);
+
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::cerr << "ERROR: Offscreen framebuffer is incomplete\n";
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     //mouse capture
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -93,14 +120,14 @@ int main()
 
     auto camera = std::make_unique<GameObject>();
     camera->Name = "MainCamera";
-    camera->addComponent<TransformComponent>()->Position = {0, 0, 3};
-    //camera->addComponent<InputComponent>(&input);
+    camera->addComponent<TransformComponent>()->Position = {-3, 0, 0};
+    camera->addComponent<InputComponent>(&input);
     camera->addComponent<CameraComponent>();
     camera->addComponent<CameraController>(); //script
     camera->start();
 
     Shader shaderProgram("assets/shaders/vertex_s.vs", "assets/shaders/fragment_s.fs");
-    Model ourModel("assets/models/backpack/backpack.obj"); //TODO: change path loading system
+    Model ourModel("assets/models/fish1/fish1.obj"); //TODO: change path loading system
 
 
     //main loop the more you can take out of the loop the better
@@ -118,8 +145,10 @@ int main()
         // drive all components on the camera (movement + mouse look)
         camera->update(deltaTime);
 
-        //rendering commands
-        glClearColor(0.2f, 0.3f, 0.3f, 1.0f); // cleaning screen
+        // Pass 1, render the scene into the offscreen FBO
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glViewport(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
+        glClearColor(0.2f, 0.3f, 0.4f, 1.0f);
         glEnable(GL_DEPTH_TEST);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -127,17 +156,50 @@ int main()
 
         auto* cam = camera->getComponent<CameraComponent>(); //get camera component might be null
         glm::mat4 view = cam->viewMatrix();
-        glm::mat4 proj = cam->projectionMatrix((float)SCR_WIDTH / (float)SCR_HEIGHT);
+        // Aspect ratio is fixed by the internal resolution now, NOT the window.
+        glm::mat4 proj = cam->projectionMatrix((float)RENDER_WIDTH / (float)RENDER_HEIGHT);
         shaderProgram.setMat4("view", view);
         shaderProgram.setMat4("projection", proj);
 
-
         // render the loaded model
         glm::mat4 model = glm::mat4(1.0f);
-        model = glm::translate(model, glm::vec3(0.0f, 0.0f, 0.0f)); // translate it down so it's at the center of the scene
-        model = glm::scale(model, glm::vec3(1.0f, 1.0f, 1.0f));	// it's a bit too big for our scene, so scale it down
+        model = glm::translate(model, glm::vec3(0.0f, 0.0f, 0.0f));
+        model = glm::scale(model, glm::vec3(1.0f, 1.0f, 1.0f));
+        model = glm::rotate(model, (float)glfwGetTime() * 2, glm::vec3(0.0f, 1.0f, 0.0f));
         shaderProgram.setMat4("model", model);
         ourModel.Draw(shaderProgram);
+
+        // Pass 2, blit FBO to window, preserving aspect (letterbox/pillarbox)
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+
+        // Clear the window first so the unused area shows as black bars.
+        glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
+        glDisable(GL_DEPTH_TEST);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        // Compute destination rect that fits the render aspect inside the window.
+        const float renderAspect = (float)RENDER_WIDTH  / (float)RENDER_HEIGHT;
+        const float windowAspect = (float)SCR_WIDTH     / (float)SCR_HEIGHT;
+        int dx, dy, dw, dh;
+        if (windowAspect > renderAspect) {
+            // window is wider than render → pillarbox (black bars on left/right)
+            dh = SCR_HEIGHT;
+            dw = (int)(SCR_HEIGHT * renderAspect);
+            dx = ((int)SCR_WIDTH - dw) / 2;
+            dy = 0;
+        } else {
+            // window is taller than render → letterbox (black bars on top/bottom)
+            dw = SCR_WIDTH;
+            dh = (int)(SCR_WIDTH / renderAspect);
+            dx = 0;
+            dy = ((int)SCR_HEIGHT - dh) / 2;
+        }
+        glBlitFramebuffer(0, 0, RENDER_WIDTH, RENDER_HEIGHT,
+                          dx, dy, dx + dw, dy + dh,
+                          GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         input.ResetFrame();
 
@@ -145,6 +207,11 @@ int main()
         glfwSwapBuffers(window);
         glfwPollEvents();    //SO events like key, mouse, etc
     }
+
+    // cleanup
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &fboColor);
+    glDeleteRenderbuffers(1, &fboDepth);
 
     glfwTerminate();
     return 0;

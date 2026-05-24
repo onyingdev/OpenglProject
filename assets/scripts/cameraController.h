@@ -1,11 +1,12 @@
 #pragma once
 #include "../../include/Core/script.h"
 #include "../../include/Core/gameObject.h"
-#include "../../include/Components/transformComponent.h"
+#include "../../include/Components/transformComponent3D.h"
 #include "../../include/Components/inputComponent.h"
 #include "../../vendor/glm/glm/glm.hpp"
 #include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
 
+//Camera Controller. Controlls the movement of the object by WASD and rotation by mouse
 class CameraController : public Script {
     TransformComponent* tf = nullptr;
     InputComponent* in = nullptr;

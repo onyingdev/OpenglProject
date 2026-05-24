@@ -59,7 +59,7 @@ private:
             cout << "ERROR::ASSIMP:: " << importer.GetErrorString() << endl;
             return;
         }
-        // retrieve the directory path of the filepath
+        // retrieve the directory path of the filepath, TODO: change pathing method for searching other folders
         directory = path.substr(0, path.find_last_of('/'));
 
         // process ASSIMP's root node recursively
@@ -164,6 +164,7 @@ private:
         // 4. height maps
         std::vector<Texture> heightMaps = loadMaterialTextures(material, aiTextureType_AMBIENT, "texture_height");
         textures.insert(textures.end(), heightMaps.begin(), heightMaps.end());
+        std::cout << "Mesh UV channels: " << mesh->GetNumUVChannels() << '\n';
 
         // return a mesh object created from the extracted mesh data
         return Mesh(vertices, indices, textures);
@@ -244,4 +245,3 @@ unsigned int TextureFromFile(const char *path, const string &directory, bool gam
     return textureID;
 }
 #endif
-

@@ -2,7 +2,7 @@
 #include <functional>
 #include <string>
 #include <vector>
-#include "../Core/component.h"
+#include "../Core/Component.h"
 #include "../Core/input_manager.h"
 
 // Generic input component: pipes the InputManager into per-action callbacks.

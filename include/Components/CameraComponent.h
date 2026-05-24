@@ -1,6 +1,6 @@
 #pragma once
 #include "../Core/Component.h"
-#include "TransformComponent.h"
+#include "TransformComponent3D.h"
 class CameraComponent : public Component {
     TransformComponent* tf = nullptr;
 public:
