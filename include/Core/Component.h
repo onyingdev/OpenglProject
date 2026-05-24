@@ -1,4 +1,6 @@
 #pragma once
+#include "exceptions.h"
+
 class GameObject;
 
 class Component {

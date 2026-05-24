@@ -1,5 +1,5 @@
 #pragma once
-#include "../Core/component.h"
+#include "../Core/Component.h"
 #include "TransformComponent.h"
 class CameraComponent : public Component {
     TransformComponent* tf = nullptr;
@@ -9,6 +9,7 @@ public:
 
     void start() override {
         tf = owner->getComponent<TransformComponent>();   // cache pointer
+        if (!tf) throw MissingComponentException("CameraComponent", "TransformComponent");
     }
     glm::mat4 viewMatrix() const {
         return glm::lookAt(tf->Position, tf->Position + tf->forward(), tf->up());

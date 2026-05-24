@@ -23,8 +23,8 @@
 using namespace std;
 
 //global attributes
-unsigned int SCR_WIDTH = 800;
-unsigned int SCR_HEIGHT = 600;
+unsigned int SCR_WIDTH = 1920;
+unsigned int SCR_HEIGHT = 1080;
 
 //time
 float deltaTime = 0.0f;	// Time between current frame and last frame
@@ -51,7 +51,7 @@ int main()
 #endif
 
     //create window
-    GLFWwindow* window = glfwCreateWindow(800, 600, "OpenGL", NULL, NULL);
+    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "OpenGL", NULL, NULL);
     if (window == NULL)
     {
         std::cout << "Failed to create GLFW window" << std::endl;
@@ -59,6 +59,7 @@ int main()
         return -1;
     }
     glfwMakeContextCurrent(window);
+    glfwSwapInterval( 0 ); //disable vsync
   
     //initialize GLAD
     if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
@@ -71,7 +72,7 @@ int main()
     
     //viewport for opengl to render, 
     //this is the dimensions opengl will render not the window size
-    glViewport(0, 0, 800, 600);
+    glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
 
     //resize
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
@@ -91,8 +92,9 @@ int main()
     input.BindAction("MoveRight", GLFW_KEY_D);
 
     auto camera = std::make_unique<GameObject>();
+    camera->Name = "MainCamera";
     camera->addComponent<TransformComponent>()->Position = {0, 0, 3};
-    camera->addComponent<InputComponent>(&input);
+    //camera->addComponent<InputComponent>(&input);
     camera->addComponent<CameraComponent>();
     camera->addComponent<CameraController>(); //script
     camera->start();

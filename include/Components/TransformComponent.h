@@ -1,5 +1,5 @@
 #pragma once
-#include "../Core/component.h"
+#include "../Core/Component.h"
 #include "../../vendor/glm/glm/glm.hpp"
 #include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
 

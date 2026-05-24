@@ -17,7 +17,10 @@ public:
     void start() override {
         tf = owner->getComponent<TransformComponent>();
         in = owner->getComponent<InputComponent>();
-        if (!tf || !in) return;   // missing dependency → silent no-op
+        //if (!tf || !in) return;   // missing dependency → silent no-op
+        //TODO: modify for automatic naming on throw exception
+        if (!tf) throw MissingComponentException("CameraScript", "TransformComponent");
+        if (!in) throw MissingComponentException("CameraScript", "InputComponent");
 
         // Keyboard movement (WASD). Checks Enabled so disabling the script
         // also disables its callbacks (which would otherwise keep firing).
