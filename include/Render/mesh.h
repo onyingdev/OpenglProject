@@ -9,6 +9,7 @@
 #include "../../include/Render/shader_s.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 using namespace std;
 
@@ -56,6 +57,39 @@ public:
         setupMesh();
     }
 
+    // GL buffers are unique GPU resources; copying would alias them and double-free in the dtor.
+    Mesh(const Mesh&) = delete;
+    Mesh& operator=(const Mesh&) = delete;
+
+    // Move transfers buffer ownership and zeroes the source so its dtor is a no-op.
+    // noexcept is required for vector<Mesh> reallocation to use move (instead of refusing to compile).
+    Mesh(Mesh&& other) noexcept
+        : vertices(std::move(other.vertices)),
+          indices(std::move(other.indices)),
+          textures(std::move(other.textures)),
+          VAO(other.VAO), VBO(other.VBO), EBO(other.EBO)
+    {
+        other.VAO = other.VBO = other.EBO = 0;
+    }
+
+    Mesh& operator=(Mesh&& other) noexcept
+    {
+        if (this != &other) {
+            releaseBuffers();
+            vertices = std::move(other.vertices);
+            indices  = std::move(other.indices);
+            textures = std::move(other.textures);
+            VAO = other.VAO; VBO = other.VBO; EBO = other.EBO;
+            other.VAO = other.VBO = other.EBO = 0;
+        }
+        return *this;
+    }
+
+    ~Mesh()
+    {
+        releaseBuffers();
+    }
+
     // render the mesh
     void Draw(Shader &shader)
     {
@@ -97,6 +131,13 @@ public:
 private:
     // render data
     unsigned int VBO, EBO;
+
+    void releaseBuffers()
+    {
+        if (VAO) { glDeleteVertexArrays(1, &VAO); VAO = 0; }
+        if (VBO) { glDeleteBuffers(1, &VBO); VBO = 0; }
+        if (EBO) { glDeleteBuffers(1, &EBO); EBO = 0; }
+    }
 
     // initializes all the buffer objects/arrays
     void setupMesh()

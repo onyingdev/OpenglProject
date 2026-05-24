@@ -28,8 +28,8 @@ unsigned int SCR_HEIGHT = 1080;
 
 // Fixed internal render resolution. The scene always renders at this size,
 // then is scaled to fit the window (with letterbox/pillarbox to preserve aspect).
-const int RENDER_WIDTH  = 320;
-const int RENDER_HEIGHT = 240;
+const int RENDER_WIDTH  = 1920;
+const int RENDER_HEIGHT = 1080;
 
 //time
 float deltaTime = 0.0f;	// Time between current frame and last frame
@@ -117,6 +117,8 @@ int main()
     input.BindAction("MoveBackward", GLFW_KEY_S);
     input.BindAction("MoveLeft", GLFW_KEY_A);
     input.BindAction("MoveRight", GLFW_KEY_D);
+    input.BindAction("MoveUp", GLFW_KEY_Q);
+    input.BindAction("MoveDown", GLFW_KEY_E);
 
     auto camera = std::make_unique<GameObject>();
     camera->Name = "MainCamera";
@@ -127,7 +129,7 @@ int main()
     camera->start();
 
     Shader shaderProgram("assets/shaders/vertex_s.vs", "assets/shaders/fragment_s.fs");
-    Model ourModel("assets/models/fish1/fish1.obj"); //TODO: change path loading system
+    Model ourModel("assets/models/nier/2B.obj"); //TODO: change path loading system
 
 
     //main loop the more you can take out of the loop the better

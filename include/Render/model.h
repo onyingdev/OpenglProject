@@ -39,6 +39,37 @@ public:
         loadModel(path);
     }
 
+    // Mesh is move-only and Model owns GPU texture IDs, so block copies and define moves.
+    Model(const Model&) = delete;
+    Model& operator=(const Model&) = delete;
+
+    Model(Model&& other) noexcept
+        : textures_loaded(std::move(other.textures_loaded)),
+          meshes(std::move(other.meshes)),
+          directory(std::move(other.directory)),
+          gammaCorrection(other.gammaCorrection)
+    {
+        other.textures_loaded.clear(); // moved-from vector is valid but unspecified; make sure dtor sees nothing to free.
+    }
+
+    Model& operator=(Model&& other) noexcept
+    {
+        if (this != &other) {
+            releaseTextures();
+            textures_loaded = std::move(other.textures_loaded);
+            meshes          = std::move(other.meshes);
+            directory       = std::move(other.directory);
+            gammaCorrection = other.gammaCorrection;
+            other.textures_loaded.clear();
+        }
+        return *this;
+    }
+
+    ~Model()
+    {
+        releaseTextures();
+    }
+
     // draws the model, and thus all its meshes
     void Draw(Shader &shader)
     {
@@ -47,13 +78,21 @@ public:
     }
 
 private:
+    void releaseTextures()
+    {
+        for (auto& tex : textures_loaded) {
+            if (tex.id) glDeleteTextures(1, &tex.id);
+            tex.id = 0;
+        }
+    }
+
     // loads a model with supported ASSIMP extensions from file and stores the resulting meshes in the meshes vector.
     void loadModel(string const &path)
     {
         // read file via ASSIMP
         Assimp::Importer importer;
-        const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_FlipUVs | aiProcess_CalcTangentSpace);
-        // check for errors
+        //const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_FlipUVs | aiProcess_CalcTangentSpace);
+        const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_CalcTangentSpace);
         if(!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) // if is Not Zero
         {
             cout << "ERROR::ASSIMP:: " << importer.GetErrorString() << endl;
@@ -152,19 +191,22 @@ private:
         // specular: texture_specularN
         // normal: texture_normalN
 
-        // 1. diffuse maps
+        // 1. diffuse / base color (glTF and FBX expose base color under aiTextureType_BASE_COLOR)
         vector<Texture> diffuseMaps = loadMaterialTextures(material, aiTextureType_DIFFUSE, "texture_diffuse");
+        if (diffuseMaps.empty())
+            diffuseMaps = loadMaterialTextures(material, aiTextureType_BASE_COLOR, "texture_diffuse");
         textures.insert(textures.end(), diffuseMaps.begin(), diffuseMaps.end());
         // 2. specular maps
         vector<Texture> specularMaps = loadMaterialTextures(material, aiTextureType_SPECULAR, "texture_specular");
         textures.insert(textures.end(), specularMaps.begin(), specularMaps.end());
-        // 3. normal maps
-        std::vector<Texture> normalMaps = loadMaterialTextures(material, aiTextureType_HEIGHT, "texture_normal");
+        // 3. normal maps (NORMALS for glTF/FBX; OBJ's map_Bump arrives as HEIGHT, fall back to it)
+        vector<Texture> normalMaps = loadMaterialTextures(material, aiTextureType_NORMALS, "texture_normal");
+        if (normalMaps.empty())
+            normalMaps = loadMaterialTextures(material, aiTextureType_HEIGHT, "texture_normal");
         textures.insert(textures.end(), normalMaps.begin(), normalMaps.end());
-        // 4. height maps
-        std::vector<Texture> heightMaps = loadMaterialTextures(material, aiTextureType_AMBIENT, "texture_height");
+        // 4. height / displacement maps
+        vector<Texture> heightMaps = loadMaterialTextures(material, aiTextureType_DISPLACEMENT, "texture_height");
         textures.insert(textures.end(), heightMaps.begin(), heightMaps.end());
-        std::cout << "Mesh UV channels: " << mesh->GetNumUVChannels() << '\n';
 
         // return a mesh object created from the extracted mesh data
         return Mesh(vertices, indices, textures);
@@ -212,20 +254,29 @@ unsigned int TextureFromFile(const char *path, const string &directory, bool gam
 
     unsigned int textureID;
     glGenTextures(1, &textureID);
+    glBindTexture(GL_TEXTURE_2D, textureID);
 
     int width, height, nrComponents;
     unsigned char *data = stbi_load(filename.c_str(), &width, &height, &nrComponents, 0);
     if (data)
     {
-        GLenum format;
-        if (nrComponents == 1)
+        GLenum format = GL_RGB;
+        // For 1- and 2-channel images, swizzle on read so a shader sampling .rgb sees grayscale,
+        // not a pure-red image. Without this, any grayscale PNG used as a diffuse map renders red.
+        if (nrComponents == 1) {
             format = GL_RED;
-        else if (nrComponents == 3)
+            GLint swizzle[4] = { GL_RED, GL_RED, GL_RED, GL_ONE };
+            glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, swizzle);
+        } else if (nrComponents == 2) {
+            format = GL_RG;
+            GLint swizzle[4] = { GL_RED, GL_RED, GL_RED, GL_GREEN };
+            glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, swizzle);
+        } else if (nrComponents == 3) {
             format = GL_RGB;
-        else if (nrComponents == 4)
+        } else if (nrComponents == 4) {
             format = GL_RGBA;
+        }
 
-        glBindTexture(GL_TEXTURE_2D, textureID);
         glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
         glGenerateMipmap(GL_TEXTURE_2D);
 
@@ -238,8 +289,12 @@ unsigned int TextureFromFile(const char *path, const string &directory, bool gam
     }
     else
     {
-        std::cout << "Texture failed to load at path: " << path << std::endl;
-        stbi_image_free(data);
+        // Magenta 1x1 fallback so missing textures are visually obvious (pink, not driver-dependent red/black).
+        std::cout << "Texture failed to load at path: " << filename << std::endl;
+        const unsigned char magenta[4] = { 255, 0, 255, 255 };
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, magenta);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     }
 
     return textureID;
