@@ -16,6 +16,7 @@
 #include "include/Components/transformComponent3D.h"
 #include "include/Components/inputComponent.h"
 #include "include/Components/cameraComponent.h"
+#include "include/Components/MeshComponent.h"
 #include "assets/scripts/cameraController.h"
 
 //TODO: refactor with main to decouple functions
@@ -128,8 +129,14 @@ int main()
     camera->addComponent<CameraController>(); //script
     camera->start();
 
+    auto actor = std::make_unique<GameObject>();
+    actor->Name = "2B";
+    actor->addComponent<TransformComponent>()->Position = {0, 0, 0};
+    actor->addComponent<MeshComponent>("assets/models/nier/2B.obj");
+    actor->start();
+
     Shader shaderProgram("assets/shaders/vertex_s.vs", "assets/shaders/fragment_s.fs");
-    Model ourModel("assets/models/nier/2B.obj"); //TODO: change path loading system
+    // Model ourModel("assets/models/nier/2B.obj"); //TODO: change path loading system
 
 
     //main loop the more you can take out of the loop the better
@@ -164,12 +171,15 @@ int main()
         shaderProgram.setMat4("projection", proj);
 
         // render the loaded model
-        glm::mat4 model = glm::mat4(1.0f);
-        model = glm::translate(model, glm::vec3(0.0f, 0.0f, 0.0f));
-        model = glm::scale(model, glm::vec3(1.0f, 1.0f, 1.0f));
-        model = glm::rotate(model, (float)glfwGetTime() * 2, glm::vec3(0.0f, 1.0f, 0.0f));
-        shaderProgram.setMat4("model", model);
-        ourModel.Draw(shaderProgram);
+        // glm::mat4 model = glm::mat4(1.0f);
+        // model = glm::translate(model, glm::vec3(0.0f, 0.0f, 0.0f));
+        // model = glm::scale(model, glm::vec3(1.0f, 1.0f, 1.0f));
+        // model = glm::rotate(model, (float)glfwGetTime() * 2, glm::vec3(0.0f, 1.0f, 0.0f));
+        // shaderProgram.setMat4("model", model);
+        // ourModel.Draw(shaderProgram);
+
+        actor->update(deltaTime);
+        actor->getComponent<MeshComponent>()->draw(shaderProgram);  
 
         // Pass 2, blit FBO to window, preserving aspect (letterbox/pillarbox)
         glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
