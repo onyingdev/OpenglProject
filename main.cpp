@@ -58,6 +58,7 @@ int main()
 #endif
 
     //create window
+    //TODO: add fullscreen option - uncomment to enable: glfwGetPrimaryMonitor() instead of NULL
     GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "OpenGL", NULL, NULL);
     if (window == NULL)
     {
@@ -121,6 +122,7 @@ int main()
     input.BindAction("MoveRight", GLFW_KEY_D);
     input.BindAction("MoveUp", GLFW_KEY_Q);
     input.BindAction("MoveDown", GLFW_KEY_E);
+    //TODO: add ToggleFullscreen action (F11) with glfwSetWindowMonitor
 
     auto camera = std::make_unique<GameObject>();
     camera->Name = "MainCamera";
