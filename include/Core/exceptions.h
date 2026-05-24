@@ -1,6 +1,7 @@
 #pragma once
 #include <stdexcept>
 #include <string>
+#include <iostream>
 
 //exceptions class, this is where all the exceptions are defined
 
@@ -57,6 +58,24 @@ public:
 
     const std::string RequesterName;
     const std::string ErrorComponentName;
+};
+
+
+// Non-fatal counterparts of the above: emit a warning to stderr instead of throwing.
+// Use these when a dependency is optional and the GameObject can still function without it.
+class ComponentWarning {
+public:
+    static void missing(const std::string& requester, const std::string& missing) {
+        std::cerr << "[" << requester << "] warning: missing component: " << missing << "\n";
+    }
+
+    static void incompatible(const std::string& requester, const std::string& illegal) {
+        std::cerr << "[" << requester << "] warning: incompatible with: " << illegal << "\n";
+    }
+
+    static void conflicting(const std::string& requester, const std::string& conflict) {
+        std::cerr << "[" << requester << "] warning: conflicting with: " << conflict << "\n";
+    }
 };
 
 

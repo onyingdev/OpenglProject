@@ -23,7 +23,18 @@ else
 endif
 
 # === Build rules ===
+.PHONY: all clean scripts
+
 all: main.o glad.o shader_s.o lib_asset_loader.o input_manager.o
+	g++ -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o $(LIBS)
+
+# Force-rebuild only main.o (which transitively includes all header-only scripts
+# and components) and relink. Use this when you've only edited files under
+# assets/scripts/ or include/ — skips recompiling glad/shader/asset_loader/input_manager.
+# Their .o files are listed as deps so a fresh checkout still works (they'll be
+# built once and then reused on subsequent `make scripts` runs).
+recompile: glad.o shader_s.o lib_asset_loader.o input_manager.o
+	g++ -c main.cpp
 	g++ -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o $(LIBS)
 
 main.o: main.cpp

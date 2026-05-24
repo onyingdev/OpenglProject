@@ -17,7 +17,10 @@
 #include "include/Components/InputComponent.h"
 #include "include/Components/CameraComponent.h"
 #include "include/Components/MeshComponent.h"
+#include "include/Components/CharacterComponent3D.h"
+
 #include "assets/scripts/cameraController.h"
+#include "assets/scripts/characterController.h"
 #include "assets/scripts/spinModel.h"
 
 //TODO: refactor with main to decouple functions
@@ -130,14 +133,24 @@ int main()
     camera->addComponent<InputComponent>(&input);
     camera->addComponent<CameraComponent>();
     camera->addComponent<CameraController>(); //script
+    camera->getComponent<CameraController>()->Enabled = false;
     camera->start();
 
     auto actor = std::make_unique<GameObject>();
-    actor->Name = "2B";
+    actor->Name = "Player";
     actor->addComponent<TransformComponent>()->Position = {0, 0, 0};
-    actor->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
-    actor->addComponent<SpinModel>();
+    actor->addComponent<MeshComponent>("assets/models/nier/2B.obj");
+    actor->addComponent<InputComponent>(&input);
+    actor->addComponent<CharacterComponent>();
+    actor->addComponent<CharacterController>();
     actor->start();
+
+    // auto actor = std::make_unique<GameObject>();
+    // actor->Name = "2B";
+    // actor->addComponent<TransformComponent>()->Position = {0, 0, 0};
+    // actor->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
+    // actor->addComponent<SpinModel>();
+    // actor->start();
 
     Shader shaderProgram("assets/shaders/vertex_s.vs", "assets/shaders/fragment_s.fs");
     // Model ourModel("assets/models/nier/2B.obj"); //TODO: change path loading system
