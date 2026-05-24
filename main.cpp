@@ -18,6 +18,7 @@
 #include "include/Components/cameraComponent.h"
 #include "include/Components/MeshComponent.h"
 #include "assets/scripts/cameraController.h"
+#include "assets/scripts/spinModel.h"
 
 //TODO: refactor with main to decouple functions
 
@@ -133,6 +134,7 @@ int main()
     actor->Name = "2B";
     actor->addComponent<TransformComponent>()->Position = {0, 0, 0};
     actor->addComponent<MeshComponent>("assets/models/nier/2B.obj");
+    actor->addComponent<SpinModel>();
     actor->start();
 
     Shader shaderProgram("assets/shaders/vertex_s.vs", "assets/shaders/fragment_s.fs");
