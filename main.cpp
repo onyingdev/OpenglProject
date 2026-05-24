@@ -11,11 +11,11 @@
 //#include "include/Core/lib_asset_loader.h"
 #include "include/Render/model.h"
 #include "include/Core/input_manager.h"
-#include "include/Core/component.h"
-#include "include/Core/gameObject.h"
-#include "include/Components/transformComponent3D.h"
-#include "include/Components/inputComponent.h"
-#include "include/Components/cameraComponent.h"
+#include "include/Core/Component.h"
+#include "include/Core/GameObject.h"
+#include "include/Components/TransformComponent3D.h"
+#include "include/Components/InputComponent.h"
+#include "include/Components/CameraComponent.h"
 #include "include/Components/MeshComponent.h"
 #include "assets/scripts/cameraController.h"
 #include "assets/scripts/spinModel.h"
@@ -133,7 +133,7 @@ int main()
     auto actor = std::make_unique<GameObject>();
     actor->Name = "2B";
     actor->addComponent<TransformComponent>()->Position = {0, 0, 0};
-    actor->addComponent<MeshComponent>("assets/models/nier/2B.obj");
+    actor->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
     actor->addComponent<SpinModel>();
     actor->start();
 

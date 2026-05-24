@@ -1,8 +1,8 @@
 #pragma once
 #include "../../include/Core/script.h"
-#include "../../include/Core/gameObject.h"
-#include "../../include/Components/transformComponent3D.h"
-#include "../../include/Components/inputComponent.h"
+#include "../../include/Core/GameObject.h"
+#include "../../include/Components/TransformComponent3D.h"
+#include "../../include/Components/InputComponent.h"
 #include "../../vendor/glm/glm/glm.hpp"
 #include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
 

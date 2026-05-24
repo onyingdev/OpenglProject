@@ -1,7 +1,7 @@
 #pragma once
 #include "../../include/Core/script.h"
-#include "../../include/Core/gameObject.h"
-#include "../../include/Components/transformComponent3D.h"
+#include "../../include/Core/GameObject.h"
+#include "../../include/Components/TransformComponent3D.h"
 
 // Spins the attached GameObject around the Y axis at SpinSpeed degrees/second.
 class SpinModel : public Script {
