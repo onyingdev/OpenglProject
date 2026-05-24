@@ -13,18 +13,23 @@ class CharacterController : public Script {
     InputComponent* in = nullptr;
     InputManager* im = nullptr;
     glm::vec3 Velocity{0.0f};
+    MeshComponent* mesh = nullptr; // optional, for visual facing direction
 
 public:
-    float MoveSpeed    = 2.5f;  // units / second (max speed)
-    float Acceleration = 10.0f; // units / second^2 while input is held
-    float Deceleration = 15.0f; // units / second^2 while no input
+    float MoveSpeed    = 3.0f;  // units / second (max speed)
+    float Acceleration = 15.0f; // units / second^2 while input is held
+    float Deceleration = 10.0f; // units / second^2 while no input
     glm::vec3 dir{0.0f};        //facing direction
+    float RotationSpeed = 180.0f; 
 
     void start() override {
         tf = owner->getComponent<TransformComponent>();
         in = owner->getComponent<InputComponent>();
+        mesh = owner->getComponent<MeshComponent>();
         if (!tf) throw MissingComponentException("CharacterController", "TransformComponent");
         if (!in) throw MissingComponentException("CharacterController", "InputComponent");
+        if (!mesh) ComponentWarning::missing("CharacterController", "MeshComponent");
+        else mesh->PositionSource = MeshComponent::Source::Owner; //mesh position inherits from player object
         im = in->GetManager();
     }
 
@@ -43,6 +48,8 @@ public:
         if (im->IsActionPressed("MoveLeft"))     dir -= tf->right();
         if (im->IsActionPressed("MoveUp"))       dir += tf->up();
         if (im->IsActionPressed("MoveDown"))     dir -= tf->up();
+        if (im->IsActionPressed("RotateRight"))  mesh->localTransform.RotationEuler.x -= RotationSpeed * dt;
+        if (im->IsActionPressed("RotateLeft"))   mesh->localTransform.RotationEuler.x += RotationSpeed * dt;
 
         // Normalize so diagonals aren't faster than straight lines.
         glm::vec3 target{0.0f};
