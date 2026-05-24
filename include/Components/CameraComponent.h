@@ -1,9 +1,10 @@
 #pragma once
-#include "../Core/Component.h"
-#include "TransformComponent3D.h"
-class CameraComponent : public Component {
+#include "../Core/SpatialComponent.h"
+
+class CameraComponent : public SpatialComponent {
     TransformComponent* tf = nullptr;
 public:
+
     float Fov = 45.0f;
     float NearPlane = 0.1f, FarPlane = 100.0f;
 

@@ -1,0 +1,1 @@
+//Stores the list of actions and their corresponding callbacks. The input component will call the callbacks when the corresponding action is triggered.

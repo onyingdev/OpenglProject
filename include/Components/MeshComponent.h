@@ -1,5 +1,5 @@
 #pragma once
-#include "../Core/Component.h"
+#include "../Core/SpatialComponent.h"
 #include "../Render/model.h"
 #include "../Render/shader_s.h"
 #include "TransformComponent3D.h"
@@ -10,7 +10,7 @@
 #include <utility>
 
 // Attach to a GameObject to give it a renderable mesh model.
-class MeshComponent : public Component {
+class MeshComponent : public SpatialComponent {
     TransformComponent* tf = nullptr;
 public:
     enum class RenderMode { Solid, Wireframe, Hidden };
@@ -27,18 +27,24 @@ public:
     void start() override {
         tf = owner->getComponent<TransformComponent>();
         if (!tf) throw MissingComponentException("MeshComponent", "TransformComponent");
+        else localTransform = *tf;
     }
 
     void draw(Shader& shader) {
         if (Mode == RenderMode::Hidden || !ModelRef) return;
 
+        // Pick each axis from the owner's transform or the local override.
+        const glm::vec3& pos = (PositionSource == Source::Owner) ? tf->Position      : localTransform.Position;
+        const glm::vec3& rot = (RotationSource == Source::Owner) ? tf->RotationEuler : localTransform.RotationEuler;
+        const glm::vec3& scl = (ScaleSource    == Source::Owner) ? tf->Scale         : localTransform.Scale;
+
         // Rotation order matches TransformComponent::forward(): yaw(Y), pitch(X), roll(Z).
         glm::mat4 m(1.0f);
-        m = glm::translate(m, tf->Position);
-        m = glm::rotate(m, glm::radians(tf->RotationEuler.x), glm::vec3(0, 1, 0));
-        m = glm::rotate(m, glm::radians(tf->RotationEuler.y), glm::vec3(1, 0, 0));
-        m = glm::rotate(m, glm::radians(tf->RotationEuler.z), glm::vec3(0, 0, 1));
-        m = glm::scale(m, tf->Scale);
+        m = glm::translate(m, pos);
+        m = glm::rotate(m, glm::radians(rot.x), glm::vec3(0, 1, 0));
+        m = glm::rotate(m, glm::radians(rot.y), glm::vec3(1, 0, 0));
+        m = glm::rotate(m, glm::radians(rot.z), glm::vec3(0, 0, 1));
+        m = glm::scale(m, scl);
         shader.setMat4("model", m);
 
         if (Mode == RenderMode::Wireframe) {

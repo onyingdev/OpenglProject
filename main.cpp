@@ -22,6 +22,7 @@
 #include "assets/scripts/cameraController.h"
 #include "assets/scripts/characterController.h"
 #include "assets/scripts/spinModel.h"
+#include "assets/scripts/cameraFollow.h"
 
 //TODO: refactor with main to decouple functions
 
@@ -119,38 +120,51 @@ int main()
 
     InputManager input(window);
     input.BindAction("Quit", GLFW_KEY_ESCAPE);
-    input.BindAction("MoveForward", GLFW_KEY_W);
+    // input.BindAction("CameraMoveForward", GLFW_KEY_W);
+    // input.BindAction("CameraMoveBackward", GLFW_KEY_S);
+    // input.BindAction("CameraMoveLeft", GLFW_KEY_A);
+    // input.BindAction("CameraMoveRight", GLFW_KEY_D);
+    // input.BindAction("CameraMoveUp", GLFW_KEY_Q);
+    // input.BindAction("CameraMoveDown", GLFW_KEY_E);
     input.BindAction("MoveBackward", GLFW_KEY_S);
-    input.BindAction("MoveLeft", GLFW_KEY_A);
+    input.BindAction("MoveForward", GLFW_KEY_W);
     input.BindAction("MoveRight", GLFW_KEY_D);
-    input.BindAction("MoveUp", GLFW_KEY_Q);
-    input.BindAction("MoveDown", GLFW_KEY_E);
+    input.BindAction("MoveLeft", GLFW_KEY_A);
+    input.BindAction("RotateRight", GLFW_KEY_M);
+    input.BindAction("RotateLeft", GLFW_KEY_N);
+
+
+
     //TODO: add ToggleFullscreen action (F11) with glfwSetWindowMonitor
+
+    auto playground = std::make_unique<GameObject>();
+    playground->Name = "playground";
+    playground->addComponent<TransformComponent>()->Position = {0, 0, 0};
+    playground->addComponent<MeshComponent>("assets/models/test_playground/testPlayground.obj");
+    //playground->getComponent<TransformComponent>()->Scale = {0.2f, 0.2f, 0.2f}; 
+    playground->start();
+
+
+    auto player = std::make_unique<GameObject>();
+    player->Name = "Player";
+    player->addComponent<TransformComponent>()->Position = {0, 0, 0};
+    player->addComponent<MeshComponent>("assets/models/nier/2B.obj");
+    player->addComponent<InputComponent>(&input);
+    player->addComponent<CharacterComponent>();
+    player->addComponent<CharacterController>();
+    //player->addComponent<SpinModel>();
+    player->start();
 
     auto camera = std::make_unique<GameObject>();
     camera->Name = "MainCamera";
-    camera->addComponent<TransformComponent>()->Position = {-3, 0, 0};
-    camera->addComponent<InputComponent>(&input);
+    camera->addComponent<TransformComponent>()->owner = player.get(); 
+    //camera->addComponent<InputComponent>(&input);
     camera->addComponent<CameraComponent>();
-    camera->addComponent<CameraController>(); //script
-    camera->getComponent<CameraController>()->Enabled = false;
+    camera->addComponent<CameraFollow>(); //script
+    //camera->getComponent<CameraController>()->Enabled = false;
     camera->start();
 
-    auto actor = std::make_unique<GameObject>();
-    actor->Name = "Player";
-    actor->addComponent<TransformComponent>()->Position = {0, 0, 0};
-    actor->addComponent<MeshComponent>("assets/models/nier/2B.obj");
-    actor->addComponent<InputComponent>(&input);
-    actor->addComponent<CharacterComponent>();
-    actor->addComponent<CharacterController>();
-    actor->start();
 
-    // auto actor = std::make_unique<GameObject>();
-    // actor->Name = "2B";
-    // actor->addComponent<TransformComponent>()->Position = {0, 0, 0};
-    // actor->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
-    // actor->addComponent<SpinModel>();
-    // actor->start();
 
     Shader shaderProgram("assets/shaders/vertex_s.vs", "assets/shaders/fragment_s.fs");
     // Model ourModel("assets/models/nier/2B.obj"); //TODO: change path loading system
@@ -187,16 +201,12 @@ int main()
         shaderProgram.setMat4("view", view);
         shaderProgram.setMat4("projection", proj);
 
-        // render the loaded model
-        // glm::mat4 model = glm::mat4(1.0f);
-        // model = glm::translate(model, glm::vec3(0.0f, 0.0f, 0.0f));
-        // model = glm::scale(model, glm::vec3(1.0f, 1.0f, 1.0f));
-        // model = glm::rotate(model, (float)glfwGetTime() * 2, glm::vec3(0.0f, 1.0f, 0.0f));
-        // shaderProgram.setMat4("model", model);
-        // ourModel.Draw(shaderProgram);
-
-        actor->update(deltaTime);
-        actor->getComponent<MeshComponent>()->draw(shaderProgram);  
+        player->update(deltaTime);
+        player->getComponent<MeshComponent>()->draw(shaderProgram);  
+        playground->update(deltaTime);
+        playground->getComponent<MeshComponent>()->draw(shaderProgram);  
+        // cube->update(deltaTime);
+        // cube->getComponent<MeshComponent>()->draw(shaderProgram);  
 
         // Pass 2, blit FBO to window, preserving aspect (letterbox/pillarbox)
         glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);

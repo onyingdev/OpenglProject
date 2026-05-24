@@ -5,7 +5,7 @@
 #include "InputComponent.h"
 
 // Character 3D. Basic character for player model
-class CharacterComponent : public Component {
+class CharacterComponent : public SpatialComponent {
     TransformComponent* tf = nullptr;
     MeshComponent* mesh = nullptr;
     InputComponent* in = nullptr; //we may or may not need this but generally character have input
