@@ -1,0 +1,1 @@
+//renamed ColliderComponent to BoundingBoxComponent.

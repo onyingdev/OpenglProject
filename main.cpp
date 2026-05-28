@@ -18,6 +18,7 @@
 #include "include/Components/CameraComponent.h"
 #include "include/Components/MeshComponent.h"
 #include "include/Components/CharacterComponent3D.h"
+#include "include/Components/ColliderComponent3D.h"
 
 #include "assets/scripts/cameraController.h"
 #include "assets/scripts/characterController.h"
@@ -49,6 +50,7 @@ void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
     SCR_HEIGHT = (height == 0) ? 1 : height;
 }
 
+// TODO: Apply an Adapter Pattern for Graphic API. We want to migrate to Vulkan or any rendering API in the near future.
 int main()
 {
     //initialize glfw
@@ -152,16 +154,25 @@ int main()
     player->addComponent<InputComponent>(&input);
     player->addComponent<CharacterComponent>();
     player->addComponent<CharacterController>();
+    player->addComponent<ColliderComponent3D>();
     //player->addComponent<SpinModel>();
     player->start();
 
+    auto fish = std::make_unique<GameObject>();
+    fish->Name = "Fish";
+    fish->addComponent<TransformComponent>()->Position = {5, 0, 0};
+    fish->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
+    fish->addComponent<ColliderComponent3D>();
+    fish->addComponent<SpinModel>();
+    fish->start();
+
     auto camera = std::make_unique<GameObject>();
     camera->Name = "MainCamera";
-    camera->addComponent<TransformComponent>()->owner = player.get(); 
-    //camera->addComponent<InputComponent>(&input);
+    camera->addComponent<TransformComponent>();
+    //camera->addComponent<TransformComponent>()->owner = player.get(); 
     camera->addComponent<CameraComponent>();
     camera->addComponent<CameraFollow>(); //script
-    //camera->getComponent<CameraController>()->Enabled = false;
+    camera->getComponent<CameraFollow>()->Target = player.get();
     camera->start();
 
 
@@ -202,9 +213,13 @@ int main()
         shaderProgram.setMat4("projection", proj);
 
         player->update(deltaTime);
+        player->getComponent<ColliderComponent3D>()->tickWorld(); // check collisions before drawing
         player->getComponent<MeshComponent>()->draw(shaderProgram);  
         playground->update(deltaTime);
         playground->getComponent<MeshComponent>()->draw(shaderProgram);  
+        fish->update(deltaTime);
+        fish->getComponent<ColliderComponent3D>()->tickWorld(); // check collisions before drawing
+        fish->getComponent<MeshComponent>()->draw(shaderProgram);
         // cube->update(deltaTime);
         // cube->getComponent<MeshComponent>()->draw(shaderProgram);  
 

@@ -14,16 +14,16 @@ public:
     void start() override {
         mesh = owner->getComponent<MeshComponent>();
         if (!mesh) throw MissingComponentException("SpinModel", "MeshComponent");
-        else mesh->RotationSource = SpatialComponent::Source::Local; //define source
     }
 
     void tick(float dt) override {
         // RotationEuler is in degrees: x=yaw(Y), y=pitch(X), z=roll(Z). See TransformComponent3D.h.
-        mesh->localTransform.RotationEuler.x += SpinSpeed * dt;
+        // localRotation() returns a mutable ref and switches the rotation axis to local in the same call.
+        glm::vec3& rot = mesh->localRotation();
+        rot.x += SpinSpeed * dt;
 
         // Keep the angle in [0,360) to avoid float precision issues eventually causing it to stop spinning.
         // improbable but good practice. If performance is a concern, can remove this and let it spin indefinitely.
-        if (mesh->localTransform.RotationEuler.x >= 360.0f) 
-            mesh->localTransform.RotationEuler.x -= 360.0f;
+        if (rot.x >= 360.0f) rot.x -= 360.0f;
     }
 };

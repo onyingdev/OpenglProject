@@ -29,7 +29,7 @@ public:
         if (!tf) throw MissingComponentException("CharacterController", "TransformComponent");
         if (!in) throw MissingComponentException("CharacterController", "InputComponent");
         if (!mesh) ComponentWarning::missing("CharacterController", "MeshComponent");
-        else mesh->PositionSource = MeshComponent::Source::Owner; //mesh position inherits from player object
+        else mesh->useOwnerPosition(); //mesh position inherits from player object
         im = in->GetManager();
     }
 
@@ -48,8 +48,8 @@ public:
         if (im->IsActionPressed("MoveLeft"))     dir -= tf->right();
         if (im->IsActionPressed("MoveUp"))       dir += tf->up();
         if (im->IsActionPressed("MoveDown"))     dir -= tf->up();
-        if (im->IsActionPressed("RotateRight"))  mesh->localTransform.RotationEuler.x -= RotationSpeed * dt;
-        if (im->IsActionPressed("RotateLeft"))   mesh->localTransform.RotationEuler.x += RotationSpeed * dt;
+        if (im->IsActionPressed("RotateRight"))  mesh->localRotation().x -= RotationSpeed * dt;
+        if (im->IsActionPressed("RotateLeft"))   mesh->localRotation().x += RotationSpeed * dt;
 
         // Normalize so diagonals aren't faster than straight lines.
         glm::vec3 target{0.0f};

@@ -2,16 +2,12 @@
 #include "../Core/SpatialComponent.h"
 #include "../Render/model.h"
 #include "../Render/shader_s.h"
-#include "TransformComponent3D.h"
-#include "../../vendor/glm/glm/glm.hpp"
-#include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
 #include <memory>
 #include <string>
 #include <utility>
 
 // Attach to a GameObject to give it a renderable mesh model.
 class MeshComponent : public SpatialComponent {
-    TransformComponent* tf = nullptr;
 public:
     enum class RenderMode { Solid, Wireframe, Hidden };
 
@@ -24,19 +20,12 @@ public:
     // prefer constructing one shared_ptr<Model> externally and passing it in to avoid duplicate GPU uploads.
     explicit MeshComponent(const std::string& path) : ModelRef(std::make_shared<Model>(path)) {}
 
-    void start() override {
-        tf = owner->getComponent<TransformComponent>();
-        if (!tf) throw MissingComponentException("MeshComponent", "TransformComponent");
-        else localTransform = *tf;
-    }
-
     void draw(Shader& shader) {
         if (Mode == RenderMode::Hidden || !ModelRef) return;
 
-        // Pick each axis from the owner's transform or the local override.
-        const glm::vec3& pos = (PositionSource == Source::Owner) ? tf->Position      : localTransform.Position;
-        const glm::vec3& rot = (RotationSource == Source::Owner) ? tf->RotationEuler : localTransform.RotationEuler;
-        const glm::vec3& scl = (ScaleSource    == Source::Owner) ? tf->Scale         : localTransform.Scale;
+        const glm::vec3& pos = position();
+        const glm::vec3& rot = rotation();
+        const glm::vec3& scl = scale();
 
         // Rotation order matches TransformComponent::forward(): yaw(Y), pitch(X), roll(Z).
         glm::mat4 m(1.0f);
