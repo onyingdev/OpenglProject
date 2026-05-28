@@ -1,21 +1,21 @@
 # OpenGL Project - Game Engine
 
-Un motor gráfico 3D basado en OpenGL escrito en C++, con un sistema de componentes flexible para construir aplicaciones gráficas e interactivas.
+A 3D graphics engine based on OpenGL written in C++, with a flexible component system for building graphical and interactive applications similar to Unity and Godot.
 
-## Características
+## Features
 
-- **Renderizado 3D con OpenGL 3.3 Core** - Soporte para shaders y rendering moderno
-- **Sistema de Componentes** - Arquitectura GameObject/Component para organizar código
-- **Carga de Modelos 3D** - Importa modelos OBJ, FBX y otros formatos vía ASSIMP
-- **Sistema de Entrada** - Manejo de teclado y ratón con AcciónActions
-- **Shaders Personalizados** - Sistema de carga y compilación de shaders (vertex/fragment)
-- **Cámara 3D** - Componente de cámara con proyección perspective y movimiento libre
-- **Scripts** - Sistema extensible de Scripts para lógica de comportamiento
-- **Escalado Interno** - Renderizado a resolución fija con escala a ventana (letterbox/pillarbox)
+- **Decoupled Rendering Layer (in development)** - Adapter layer allows to swap between OpenGL, Vulkan and Other rendering APIs
+- **Component System** - Component Pattern used for creating GameObjects
+- **3D Model Loading** - Imports OBJ, FBX, and other model formats via ASSIMP (need expansion and refinement)
+- **Input System** - Keyboard and mouse handling with Actions
+- **Custom Shaders** - System for loading and compiling shaders (vertex/fragment)
+- **Scripts System** - Extensible Script system for behavior logic.
+- **Internal Scaling** - Rendering at a fixed resolution with scaling to the window (letterbox/pillarbox)
+- more features no yet defined...
 
-## Requisitos
+## Requirements
 
-### Dependencias del Sistema
+### System Dependencies
 
 - **Linux (Fedora 44)**:
   ```bash
@@ -27,7 +27,7 @@ Un motor gráfico 3D basado en OpenGL escrito en C++, con un sistema de componen
   sudo apt install libglfw3-dev libassimp-dev
   ```
 
-- **macOS** (con Homebrew):
+- **macOS** (with Homebrew):
   ```bash
   brew install glfw assimp
   ```
@@ -37,100 +37,114 @@ Un motor gráfico 3D basado en OpenGL escrito en C++, con un sistema de componen
   pacman -S mingw-w64-ucrt-x86_64-glfw mingw-w64-ucrt-x86_64-assimp
   ```
 
-### Herramientas de Desarrollo
+### Development Tools
 
-- **Compilador**: GCC/G++ (C++17 o superior)
+- **Compiler**: GCC/G++ (C++17 or higher)
 - **Build**: Make
-- **IDE (opcional)**: CLion, VSCode
+- **IDE (optional)**: CLion, VSCode
 
-## Compilación y Ejecución
+## Building and Running
 
-### Compilar
+### Build
 
 ```bash
 make
 ```
 
-### Ejecutar
+### Run
 
 ```bash
 ./main
 ```
 
-### Limpiar
+### Clean
 
 ```bash
 make clean
 ```
 
-## Estructura del Proyecto
+## Project Structure
 
 ```
 .
-├── assets/                 # Contenido del juego
-│   ├── models/            # Modelos 3D (OBJ, FBX, etc.)
-│   ├── shaders/           # Archivos de shaders (*.vs, *.fs)
-│   ├── textures/          # Texturas e imágenes
-│   └── scripts/           # Scripts de comportamiento (C++)
-├── include/               # Headers públicos
-│   ├── Components/        # Componentes reutilizables
-│   ├── Core/              # Sistema base (GameObject, Component, Input)
-│   └── Render/            # Renderizado (Shader, Model, Mesh)
-├── src/                   # Implementación
-│   ├── Core/              # Implementación de Core
-│   └── Render/            # Implementación de Render
-├── vendor/                # Dependencias externas
+├── assets/                 # Game content
+│   ├── models/            # 3D models (OBJ, FBX, etc.)
+│   ├── shaders/           # Shader files (*.vs, *.fs)
+│   ├── textures/          # Textures and images
+│   └── scripts/           # Behavior scripts (C++)
+├── include/               # Public headers
+│   ├── Components/        # Reusable components
+│   ├── Core/              # Base system (GameObject, Component, Input)
+│   └── Render/            # Rendering (Shader, Model, Mesh)
+├── src/                   # Implementation
+│   ├── Core/              # Core implementation
+│   └── Render/            # Render implementation
+├── vendor/                # External dependencies
 │   ├── glad/              # OpenGL loader
-│   ├── GLFW/              # Ventana y entrada
-│   └── glm/               # Matemáticas vectoriales
-├── main.cpp               # Punto de entrada
-├── Makefile               # Script de compilación
-└── README.md              # Este archivo
+│   ├── GLFW/              # Window and input
+│   └── glm/               # Vector math
+├── main.cpp               # Entry point
+├── Makefile               # Build script
+└── README.md              # This file
 ```
 
-## Componentes Disponibles
+## GameObjects and Components
 
-La arquitectura está basada en GameObjects que contienen Componentes:
+The architecture is based on the Component Pattern (by Bob Nystrom). A GameObject is defined as a class that is composed primarily by components. Components are individual pieces that can define a characteristic, attribute or behaviour and they can be built from other components but always have unique piece of code that changes their attributes.
 
 ### Core Components
 
-- **TransformComponent3D** - Posición, rotación (Euler) y escala en 3D
-- **CameraComponent** - Cámara con proyección perspective
-- **InputComponent** - Manejo de entrada de teclado y ratón
-- **MeshComponent** - Renderización de modelos 3D
+The Core Components forms the basis for all components and are required by the software to work.
 
-### Componentes Adicionales
+- **Component** - The template for all components, they inherit from here.
+- **TransformComponent3D** - Position, rotation (Euler), and scale in 3D
+- **Script** - The components for scripting
+- **Scene** - This component contains objects like a package that can be loaded/unloaded. 
+- **InputComponent** - Keyboard and mouse input handling
 
-- **RigidBodyComponent3D** - Física (cuerpo rígido)
-- **ColliderComponent3D** - Colisiones 3D
-- **SoundComponent3D** - Audio espacial 3D
-- **TerrainComponent3D** - Terreno procedural
+### Primary Components
+
+The Primary Components are directly derived from the Core Components, these are used make programming easier
+
+- **SpatialComponent (requires refactor)** - The spatial component is the most important component of the primary, since they are inherited from this one. Basically any component that has the attribute to be able to be place anywhere is a Spatial Component.
+- **CameraComponent** - Camera with perspective projection
+- **MeshComponent** - 3D model rendering
+- **ColliderComponent3D** - 3D collisions
+- **RigidBodyComponent3D** - Physics (rigid body)
+- **SoundComponent3D** - 3D spatial audio
+
+### Additional Components
+
+Additional Components derived from other components, makes programming much easier
+
+- **TerrainComponent3D** - Procedural terrain/LOD maps
+- **CharacterComponent3D** - Defines a GameObject as a playable character
 
 ### System Scripts
 
-- **CameraController** - Movimiento de cámara con WASD y mouse look
-- **SpinModel** - Rotación automática en el eje Y
+- **CameraController** - Camera movement with WASD and mouse look
+- **SpinModel** - Automatic rotation on the Y axis
 
-## Uso Básico
+## Basic Usage
 
-### Crear un GameObject con Componentes
+### Create a GameObject with Components
 
 ```cpp
 auto myObject = std::make_unique<GameObject>();
 myObject->Name = "MyActor";
 
-// Añadir componentes
+// Add components
 myObject->addComponent<TransformComponent>()->Position = {0, 0, 0};
 myObject->addComponent<MeshComponent>("assets/models/mymodel.obj");
-myObject->addComponent<MyScript>();  // Script personalizado
+myObject->addComponent<MyScript>();  // Custom script
 
-// Inicializar
+// Initialize
 myObject->start();
 ```
 
-### Crear un Script Personalizado
+### Create a Custom Script
 
-Hereda de `Script` e implementa `start()` y `tick(dt)`:
+Inherit from `Script` and implement `start()` and `tick(dt)`:
 
 ```cpp
 class MyScript : public Script {
@@ -139,16 +153,18 @@ class MyScript : public Script {
 public:
     void start() override {
         tf = owner->getComponent<TransformComponent>();
+        //place this check if the component is mandatory
+        if (!tf) throw MissingComponentException("MyScript", "TransformComponent");
     }
     
     void tick(float dt) override {
-        // Lógica del juego aquí
+        // Game logic here
         tf->Position.y += 1.0f * dt;
     }
 };
 ```
 
-### Crear un Shader Personalizado
+### Create a Custom Shader
 
 **assets/shaders/custom.vs** (Vertex Shader):
 ```glsl
@@ -170,49 +186,51 @@ void main() {
 out vec4 FragColor;
 
 void main() {
-    FragColor = vec4(1.0, 0.0, 0.0, 1.0);  // Rojo
+    FragColor = vec4(1.0, 0.0, 0.0, 1.0);  // Red
 }
 ```
 
-## Control en Tiempo de Ejecución
+## Runtime Controls
 
-| Tecla | Acción |
+Currently this will change
+
+| Key | Action |
 |-------|--------|
-| W | Mover adelante |
-| S | Mover atrás |
-| A | Mover izquierda |
-| D | Mover derecha |
-| Q | Mover arriba |
-| E | Mover abajo |
-| Ratón | Rotar vista |
-| ESC | Salir |
+| W | Move forward |
+| S | Move backward |
+| A | Move left |
+| D | Move right |
+| Q | Move up |
+| E | Move down |
+| Mouse | Rotate view |
+| ESC | Exit |
 
-## Configuración de Resolución
+## Resolution Configuration
 
-En `main.cpp`:
+In `main.cpp`:
 
 ```cpp
-// Resolución de ventana
+// Window resolution
 unsigned int SCR_WIDTH = 1920;
 unsigned int SCR_HEIGHT = 1080;
 
-// Resolución interna de renderizado (independiente de ventana)
+// Internal rendering resolution (independent of window)
 const int RENDER_WIDTH  = 1920;
 const int RENDER_HEIGHT = 1080;
 ```
 
-## Detalles Técnicos
+## Technical Details
 
-### Renderizado Offscreen
+### Offscreen Rendering
 
-El proyecto utiliza Framebuffer Objects (FBO) para:
-- Renderizar a una resolución interna fija
-- Escalar a la resolución de ventana sin afectar rendimiento
-- Mantener aspect ratio constante (letterbox/pillarbox)
+The project uses Framebuffer Objects (FBO) to:
+- Render at a fixed internal resolution
+- Scale to window resolution without affecting performance
+- Maintain a constant aspect ratio (letterbox/pillarbox)
 
-### Sistema de Entrada
+### Input System
 
-El `InputManager` mapea acciones a teclas:
+The `InputManager` maps actions to keys:
 
 ```cpp
 InputManager input(window);
@@ -220,44 +238,44 @@ input.BindAction("Jump", GLFW_KEY_SPACE);
 input.IsActionPressed("Jump");
 ```
 
-### Sistema de Componentes
+### Component System
 
-Basado en templates C++ para tipos estáticos:
+Based on C++ templates for static types:
 
 ```cpp
-// Obtener componente (nullptr si no existe)
+// Get component (nullptr if it doesn't exist)
 auto* camera = gameObject->getComponent<CameraComponent>();
 
-// Añadir componente
+// Add component
 auto* mesh = gameObject->addComponent<MeshComponent>("path/to/model.obj");
 ```
 
 ## Troubleshooting
 
 ### "Failed to initialize GLAD"
-Asegúrate que OpenGL 3.3 o superior está disponible en tu GPU.
+Make sure OpenGL 3.3 or higher is available on your GPU.
 
 ### "Texture failed to load"
-Verifica que las rutas de texturas sean relativas al directorio de ejecución.
+Verify that texture paths are relative to the execution directory.
 
-### Errores de compilación con includes
-Ejecuta `make clean` y vuelve a compilar.
+### Compilation errors with includes
+Run `make clean` and rebuild.
 
-## Licencia
+## License
 
-Este proyecto está disponible bajo la licencia MIT.
+This project is available under the MIT license.
 
-## Notas de Desarrollo
+## Development Notes
 
-- El sistema de componentes usa `std::unique_ptr` para gestión automática de memoria
-- Los Scripts se ejecutan en orden de adición
-- TransformComponent3D usa ángulos de Euler (grados) para rotación
-- Todos los shaders deben estar en formato GLSL 3.30
+- The component system uses `std::unique_ptr` for automatic memory management
+- Scripts run in order of addition
+- TransformComponent3D uses Euler angles (degrees) for rotation
+- All shaders must be in GLSL 3.30 format
 
-## Siguiente Pasos
+## Next Steps
 
-- [ ] Implementar sistema de física más completo
-- [ ] Añadir GUI/HUD
-- [ ] Optimizar culling de geometría
-- [ ] Sistema de partículas
-- [ ] Iluminación dinámica
+- [ ] Implement a more complete physics system
+- [ ] Add GUI/HUD
+- [ ] Optimize geometry culling
+- [ ] Particle system
+- [ ] Dynamic lighting
