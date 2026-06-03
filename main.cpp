@@ -122,18 +122,19 @@ int main()
 
     InputManager input(window);
     input.BindAction("Quit", GLFW_KEY_ESCAPE);
-    // input.BindAction("CameraMoveForward", GLFW_KEY_W);
-    // input.BindAction("CameraMoveBackward", GLFW_KEY_S);
-    // input.BindAction("CameraMoveLeft", GLFW_KEY_A);
-    // input.BindAction("CameraMoveRight", GLFW_KEY_D);
-    // input.BindAction("CameraMoveUp", GLFW_KEY_Q);
-    // input.BindAction("CameraMoveDown", GLFW_KEY_E);
-    input.BindAction("MoveBackward", GLFW_KEY_S);
-    input.BindAction("MoveForward", GLFW_KEY_W);
-    input.BindAction("MoveRight", GLFW_KEY_D);
-    input.BindAction("MoveLeft", GLFW_KEY_A);
+    input.BindAction("CameraMoveForward", GLFW_KEY_W);
+    input.BindAction("CameraMoveBackward", GLFW_KEY_S);
+    input.BindAction("CameraMoveLeft", GLFW_KEY_A);
+    input.BindAction("CameraMoveRight", GLFW_KEY_D);
+    input.BindAction("CameraMoveUp", GLFW_KEY_Q);
+    input.BindAction("CameraMoveDown", GLFW_KEY_E);
+    input.BindAction("MoveBackward", GLFW_KEY_DOWN);
+    input.BindAction("MoveForward", GLFW_KEY_UP);
+    input.BindAction("MoveRight", GLFW_KEY_RIGHT);
+    input.BindAction("MoveLeft", GLFW_KEY_LEFT);
     input.BindAction("RotateRight", GLFW_KEY_M);
     input.BindAction("RotateLeft", GLFW_KEY_N);
+    input.BindAction("ToggleBlinn", GLFW_KEY_B);
 
 
 
@@ -149,7 +150,7 @@ int main()
 
     auto player = std::make_unique<GameObject>();
     player->Name = "Player";
-    player->addComponent<TransformComponent>()->Position = {0, 0, 0};
+    player->addComponent<TransformComponent>()->Position = {2.0f, -1.0f, 0};
     player->addComponent<MeshComponent>("assets/models/nier/2B.obj");
     player->addComponent<InputComponent>(&input);
     player->addComponent<CharacterComponent>();
@@ -161,7 +162,7 @@ int main()
     auto fish = std::make_unique<GameObject>();
     fish->Name = "Fish";
     fish->addComponent<TransformComponent>()->Position = {5, 0, 0};
-    fish->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
+    fish->addComponent<MeshComponent>("assets/models/1meterCube/cube1m.obj");
     fish->addComponent<ColliderComponent3D>();
     fish->addComponent<SpinModel>();
     fish->start();
@@ -170,15 +171,25 @@ int main()
     camera->Name = "MainCamera";
     camera->addComponent<TransformComponent>();
     //camera->addComponent<TransformComponent>()->owner = player.get(); 
+    camera->addComponent<InputComponent>(&input);
     camera->addComponent<CameraComponent>();
-    camera->addComponent<CameraFollow>(); //script
-    camera->getComponent<CameraFollow>()->Target = player.get();
+    camera->addComponent<CameraController>();
+
+    //camera->addComponent<CameraFollow>(); //script
+    //camera->getComponent<CameraFollow>()->Target = player.get();
     camera->start();
 
 
 
     Shader shaderProgram("assets/shaders/vertex_s.vs", "assets/shaders/fragment_s.fs");
-    // Model ourModel("assets/models/nier/2B.obj"); //TODO: change path loading system
+    Shader shaderLight("assets/shaders/light_s.vs", "assets/shaders/light_s.fs");
+    Shader shaderLighting("assets/shaders/advanced_lighting.vs", "assets/shaders/advanced_lighting.fs");
+
+    // Specular model used by shaderLighting. false = Phong (sharp cutoff at grazing
+    // angles), true = Blinn-Phong (smooth halfway-vector falloff). Toggled with B.
+    bool blinn = false;
+
+    //TODO: change path loading system
 
 
     //main loop the more you can take out of the loop the better
@@ -192,6 +203,10 @@ int main()
         if (input.IsActionReleased("Quit")) {
             glfwSetWindowShouldClose(window, true);
         }
+        if (input.IsActionReleased("ToggleBlinn")) {
+            blinn = !blinn;
+            std::cout << (blinn ? "Blinn-Phong" : "Phong") << '\n';
+        }
 
         // drive all components on the camera (movement + mouse look)
         camera->update(deltaTime);
@@ -199,29 +214,47 @@ int main()
         // Pass 1, render the scene into the offscreen FBO
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
-        glClearColor(0.2f, 0.3f, 0.4f, 1.0f);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glEnable(GL_DEPTH_TEST);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        shaderProgram.use();
 
         auto* cam = camera->getComponent<CameraComponent>(); //get camera component might be null
         glm::mat4 view = cam->viewMatrix();
         // Aspect ratio is fixed by the internal resolution now, NOT the window.
         glm::mat4 proj = cam->projectionMatrix((float)RENDER_WIDTH / (float)RENDER_HEIGHT);
-        shaderProgram.setMat4("view", view);
-        shaderProgram.setMat4("projection", proj);
+        const glm::vec3 camPos = cam->owner->getComponent<TransformComponent>()->Position;
 
+        // Update all transforms before drawing so the light source's position
+        // (read off the fish below) is current for this frame.
         player->update(deltaTime);
-        player->getComponent<ColliderComponent3D>()->tickWorld(); // check collisions before drawing
-        player->getComponent<MeshComponent>()->draw(shaderProgram);  
-        playground->update(deltaTime);
-        playground->getComponent<MeshComponent>()->draw(shaderProgram);  
         fish->update(deltaTime);
-        fish->getComponent<ColliderComponent3D>()->tickWorld(); // check collisions before drawing
-        fish->getComponent<MeshComponent>()->draw(shaderProgram);
-        // cube->update(deltaTime);
-        // cube->getComponent<MeshComponent>()->draw(shaderProgram);  
+        ColliderComponent3D::tickWorld();
+
+        // Light source: the spinning cube. Drawn first with the unlit shader so
+        // we can sample its transform for lightPos before lighting the player.
+        const glm::vec3 lightPos = fish->getComponent<TransformComponent>()->Position;
+
+        shaderLight.use();
+        shaderLight.setMat4("view", view);
+        shaderLight.setMat4("projection", proj);
+        fish->getComponent<MeshComponent>()->draw(shaderLight);
+
+        // Lit object: the player. advanced_lighting samples texture_diffuse1 for
+        // base color (bound automatically by Mesh::Draw) and branches on `blinn`
+        // between Phong and Blinn-Phong specular.
+        shaderLighting.use();
+        shaderLighting.setMat4("view", view);
+        shaderLighting.setMat4("projection", proj);
+        shaderLighting.setVec3("lightPos", lightPos.x, lightPos.y, lightPos.z);
+        shaderLighting.setVec3("viewPos",  camPos.x,   camPos.y,   camPos.z);
+        shaderLighting.setBool("blinn", blinn);
+        player->getComponent<MeshComponent>()->draw(shaderLighting);
+
+        //playground->update(deltaTime);
+        //shaderProgram.use();
+        //shaderProgram.setMat4("view", view);
+        //shaderProgram.setMat4("projection", proj);
+        //playground->getComponent<MeshComponent>()->draw(shaderProgram);
 
         // Pass 2, blit FBO to window, preserving aspect (letterbox/pillarbox)
         glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
@@ -266,6 +299,13 @@ int main()
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &fboColor);
     glDeleteRenderbuffers(1, &fboDepth);
+
+    // Release GPU-owning objects while the GL context is still alive.
+    // Mesh/Model dtors call glDelete*; running them after glfwTerminate() segfaults.
+    playground.reset();
+    player.reset();
+    fish.reset();
+    camera.reset();
 
     glfwTerminate();
     return 0;

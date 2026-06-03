@@ -3,6 +3,7 @@
 #include "../../include/Core/GameObject.h"
 #include "../../include/Components/TransformComponent3D.h"
 #include "../../include/Components/InputComponent.h"
+#include "../../include/Components/CameraComponent.h"
 #include "../../vendor/glm/glm/glm.hpp"
 #include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
 
@@ -10,6 +11,7 @@
 class CameraController : public Script {
     TransformComponent* tf = nullptr;
     InputComponent* in = nullptr;
+    CameraComponent* cam = nullptr;
 public:
 //TODO: add a attach variable to put any type of variable to the script
 // like an array of movements to they can be used.
@@ -20,10 +22,14 @@ public:
     void start() override {
         tf = owner->getComponent<TransformComponent>();
         in = owner->getComponent<InputComponent>();
+        cam = owner->getComponent<CameraComponent>();
+        if (!cam) throw MissingComponentException("CameraFollow", "CameraComponent");
         //if (!tf || !in) return;   // missing dependency → silent no-op
         //TODO: modify for automatic naming on throw exception
-        if (!tf) throw MissingComponentException("CameraScript", "TransformComponent");
         if (!in) throw MissingComponentException("CameraScript", "InputComponent");
+
+        cam ->useOwnerPosition();
+        cam ->useOwnerRotation();
 
         // Keyboard movement (WASD). Checks Enabled so disabling the script
         // also disables its callbacks (which would otherwise keep firing).
