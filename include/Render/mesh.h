@@ -9,7 +9,6 @@
 #include "../../include/Render/shader_s.h"
 
 #include <string>
-#include <utility>
 #include <vector>
 using namespace std;
 
@@ -57,41 +56,8 @@ public:
         setupMesh();
     }
 
-    // GL buffers are unique GPU resources; copying would alias them and double-free in the dtor.
-    Mesh(const Mesh&) = delete;
-    Mesh& operator=(const Mesh&) = delete;
-
-    // Move transfers buffer ownership and zeroes the source so its dtor is a no-op.
-    // noexcept is required for vector<Mesh> reallocation to use move (instead of refusing to compile).
-    Mesh(Mesh&& other) noexcept
-        : vertices(std::move(other.vertices)),
-          indices(std::move(other.indices)),
-          textures(std::move(other.textures)),
-          VAO(other.VAO), VBO(other.VBO), EBO(other.EBO)
-    {
-        other.VAO = other.VBO = other.EBO = 0;
-    }
-
-    Mesh& operator=(Mesh&& other) noexcept
-    {
-        if (this != &other) {
-            releaseBuffers();
-            vertices = std::move(other.vertices);
-            indices  = std::move(other.indices);
-            textures = std::move(other.textures);
-            VAO = other.VAO; VBO = other.VBO; EBO = other.EBO;
-            other.VAO = other.VBO = other.EBO = 0;
-        }
-        return *this;
-    }
-
-    ~Mesh()
-    {
-        releaseBuffers();
-    }
-
     // render the mesh
-    void Draw(Shader &shader)
+    void Draw(Shader &shader) 
     {
         // bind appropriate textures
         unsigned int diffuseNr  = 1;
@@ -118,7 +84,7 @@ public:
             // and finally bind the texture
             glBindTexture(GL_TEXTURE_2D, textures[i].id);
         }
-
+        
         // draw mesh
         glBindVertexArray(VAO);
         glDrawElements(GL_TRIANGLES, static_cast<unsigned int>(indices.size()), GL_UNSIGNED_INT, 0);
@@ -129,15 +95,8 @@ public:
     }
 
 private:
-    // render data
+    // render data 
     unsigned int VBO, EBO;
-
-    void releaseBuffers()
-    {
-        if (VAO) { glDeleteVertexArrays(1, &VAO); VAO = 0; }
-        if (VBO) { glDeleteBuffers(1, &VBO); VBO = 0; }
-        if (EBO) { glDeleteBuffers(1, &EBO); EBO = 0; }
-    }
 
     // initializes all the buffer objects/arrays
     void setupMesh()
@@ -153,20 +112,20 @@ private:
         // A great thing about structs is that their memory layout is sequential for all its items.
         // The effect is that we can simply pass a pointer to the struct and it translates perfectly to a glm::vec3/2 array which
         // again translates to 3/2 floats which translates to a byte array.
-        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), &vertices[0], GL_STATIC_DRAW);
+        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), &vertices[0], GL_STATIC_DRAW);  
 
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), &indices[0], GL_STATIC_DRAW);
 
         // set the vertex attribute pointers
         // vertex Positions
-        glEnableVertexAttribArray(0);
+        glEnableVertexAttribArray(0);	
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
         // vertex normals
-        glEnableVertexAttribArray(1);
+        glEnableVertexAttribArray(1);	
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
         // vertex texture coords
-        glEnableVertexAttribArray(2);
+        glEnableVertexAttribArray(2);	
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoords));
         // vertex tangent
         glEnableVertexAttribArray(3);
@@ -185,4 +144,3 @@ private:
     }
 };
 #endif
-

@@ -18,7 +18,9 @@ public:
     explicit MeshComponent(std::shared_ptr<Model> model) : ModelRef(std::move(model)) {}
     // Convenience: load a model from disk. For multiple instances of the same model,
     // prefer constructing one shared_ptr<Model> externally and passing it in to avoid duplicate GPU uploads.
-    explicit MeshComponent(const std::string& path) : ModelRef(std::make_shared<Model>(path)) {}
+    // flipUVs: forward to Model — set true for models authored with the LearnOpenGL UV convention.
+    explicit MeshComponent(const std::string& path, bool flipUVs = false)
+        : ModelRef(std::make_shared<Model>(path, false, flipUVs)) {}
 
     void draw(Shader& shader) {
         if (Mode == RenderMode::Hidden || !ModelRef) return;

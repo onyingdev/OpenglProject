@@ -86,32 +86,76 @@ int main()
 
     //resize
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_MULTISAMPLE);   
 
-    // Offscreen framebuffer (internal resolution)
-    // Scene draws into this FBO at RENDER_WIDTH x RENDER_HEIGHT, then we blit
-    // it to the window. The blit handles scaling so the window size never
-    // affects render cost or aspect.
+    // MSAA samples per pixel for the offscreen scene FBO.
+    const int MSAA_SAMPLES = 2;
+
+    // Pass 1 target: multisample FBO. The scene rasterises here with MSAA_SAMPLES
+    // samples per pixel; we never sample it in a shader, only resolve it by blit
+    // into the intermediate FBO below.
     unsigned int fbo, fboColor, fboDepth;
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
-    // Color attachment — the texture the scene rasterises into.
+    // Color: multisample texture. Could also be a multisample renderbuffer; texture
+    // is here purely to match the LearnOpenGL example structure.
     glGenTextures(1, &fboColor);
-    glBindTexture(GL_TEXTURE_2D, fboColor);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, RENDER_WIDTH, RENDER_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);  // GL_NEAREST for pixel-art
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, fboColor, 0);
+    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, fboColor);
+    glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, MSAA_SAMPLES, GL_RGB, RENDER_WIDTH, RENDER_HEIGHT, GL_TRUE);
+    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, fboColor, 0);
 
-    // Depth attachment — renderbuffer is cheaper than a depth texture since we don't sample it.
+    // Depth: matching multisample renderbuffer. Must match color's sample count or
+    // the framebuffer is incomplete.
     glGenRenderbuffers(1, &fboDepth);
     glBindRenderbuffer(GL_RENDERBUFFER, fboDepth);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, RENDER_WIDTH, RENDER_HEIGHT);
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, MSAA_SAMPLES, GL_DEPTH_COMPONENT24, RENDER_WIDTH, RENDER_HEIGHT);
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fboDepth);
 
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-        std::cerr << "ERROR: Offscreen framebuffer is incomplete\n";
+        std::cerr << "ERROR: MSAA framebuffer is incomplete\n";
+
+    // Pass 1.5 target: single-sample FBO that receives the resolved MSAA color via
+    // glBlitFramebuffer. Its color texture is then sampled by the screen quad in
+    // pass 2.
+    unsigned int intermediateFbo, screenTexture;
+    glGenFramebuffers(1, &intermediateFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, intermediateFbo);
+    glGenTextures(1, &screenTexture);
+    glBindTexture(GL_TEXTURE_2D, screenTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, RENDER_WIDTH, RENDER_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, screenTexture, 0);
+
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::cerr << "ERROR: Intermediate framebuffer is incomplete\n";
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // Fullscreen quad in NDC space. With glViewport set to the letterbox rect
+    // before drawing, this maps to exactly that rect on the window.
+    const float quadVertices[] = {
+        // pos        uv
+        -1.0f,  1.0f, 0.0f, 1.0f,
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+    };
+    unsigned int quadVAO, quadVBO;
+    glGenVertexArrays(1, &quadVAO);
+    glGenBuffers(1, &quadVBO);
+    glBindVertexArray(quadVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glBindVertexArray(0);
 
     //mouse capture
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -134,7 +178,6 @@ int main()
     input.BindAction("MoveLeft", GLFW_KEY_LEFT);
     input.BindAction("RotateRight", GLFW_KEY_M);
     input.BindAction("RotateLeft", GLFW_KEY_N);
-    input.BindAction("ToggleBlinn", GLFW_KEY_B);
 
 
 
@@ -151,18 +194,19 @@ int main()
     auto player = std::make_unique<GameObject>();
     player->Name = "Player";
     player->addComponent<TransformComponent>()->Position = {2.0f, -1.0f, 0};
-    player->addComponent<MeshComponent>("assets/models/nier/2B.obj");
+    //player->addComponent<MeshComponent>("assets/models/nier/2B.obj");
+    player->addComponent<MeshComponent>("assets/models/backpack/backpack.obj", /*flipUVs=*/true); 
+    //flip UVs. Different models have different conventions, flip them if troubleshooting.
     player->addComponent<InputComponent>(&input);
+    player->addComponent<ColliderComponent3D>();
     player->addComponent<CharacterComponent>();
     player->addComponent<CharacterController>();
-    player->addComponent<ColliderComponent3D>();
-    //player->addComponent<SpinModel>();
     player->start();
 
     auto fish = std::make_unique<GameObject>();
     fish->Name = "Fish";
     fish->addComponent<TransformComponent>()->Position = {5, 0, 0};
-    fish->addComponent<MeshComponent>("assets/models/1meterCube/cube1m.obj");
+    fish->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
     fish->addComponent<ColliderComponent3D>();
     fish->addComponent<SpinModel>();
     fish->start();
@@ -184,10 +228,9 @@ int main()
     Shader shaderProgram("assets/shaders/vertex_s.vs", "assets/shaders/fragment_s.fs");
     Shader shaderLight("assets/shaders/light_s.vs", "assets/shaders/light_s.fs");
     Shader shaderLighting("assets/shaders/advanced_lighting.vs", "assets/shaders/advanced_lighting.fs");
-
-    // Specular model used by shaderLighting. false = Phong (sharp cutoff at grazing
-    // angles), true = Blinn-Phong (smooth halfway-vector falloff). Toggled with B.
-    bool blinn = false;
+    Shader msaaPost("assets/shaders/msaa_post.vs", "assets/shaders/msaa_post.fs");
+    msaaPost.use();
+    msaaPost.setInt("screenTexture", 0);
 
     //TODO: change path loading system
 
@@ -202,10 +245,6 @@ int main()
 
         if (input.IsActionReleased("Quit")) {
             glfwSetWindowShouldClose(window, true);
-        }
-        if (input.IsActionReleased("ToggleBlinn")) {
-            blinn = !blinn;
-            std::cout << (blinn ? "Blinn-Phong" : "Phong") << '\n';
         }
 
         // drive all components on the camera (movement + mouse look)
@@ -247,7 +286,7 @@ int main()
         shaderLighting.setMat4("projection", proj);
         shaderLighting.setVec3("lightPos", lightPos.x, lightPos.y, lightPos.z);
         shaderLighting.setVec3("viewPos",  camPos.x,   camPos.y,   camPos.z);
-        shaderLighting.setBool("blinn", blinn);
+        shaderLighting.setBool("blinn", true);
         player->getComponent<MeshComponent>()->draw(shaderLighting);
 
         //playground->update(deltaTime);
@@ -256,37 +295,44 @@ int main()
         //shaderProgram.setMat4("projection", proj);
         //playground->getComponent<MeshComponent>()->draw(shaderProgram);
 
-        // Pass 2, blit FBO to window, preserving aspect (letterbox/pillarbox)
+        // Pass 1.5: resolve MSAA. Source and dest rects must match in size when the
+        // source has samples > 0, so we resolve at native render resolution into
+        // the single-sample intermediate FBO.
         glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, intermediateFbo);
+        glBlitFramebuffer(0, 0, RENDER_WIDTH, RENDER_HEIGHT,
+                          0, 0, RENDER_WIDTH, RENDER_HEIGHT,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
-        // Clear the window first so the unused area shows as black bars.
-        glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
+        // Pass 2: draw a fullscreen quad sampling the resolved texture into the
+        // letterbox/pillarbox region of the window. The viewport handles scaling.
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glDisable(GL_DEPTH_TEST);
+        glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        // Compute destination rect that fits the render aspect inside the window.
-        const float renderAspect = (float)RENDER_WIDTH  / (float)RENDER_HEIGHT;
-        const float windowAspect = (float)SCR_WIDTH     / (float)SCR_HEIGHT;
+        const float renderAspect = (float)RENDER_WIDTH / (float)RENDER_HEIGHT;
+        const float windowAspect = (float)SCR_WIDTH    / (float)SCR_HEIGHT;
         int dx, dy, dw, dh;
         if (windowAspect > renderAspect) {
-            // window is wider than render → pillarbox (black bars on left/right)
             dh = SCR_HEIGHT;
             dw = (int)(SCR_HEIGHT * renderAspect);
             dx = ((int)SCR_WIDTH - dw) / 2;
             dy = 0;
         } else {
-            // window is taller than render → letterbox (black bars on top/bottom)
             dw = SCR_WIDTH;
             dh = (int)(SCR_WIDTH / renderAspect);
             dx = 0;
             dy = ((int)SCR_HEIGHT - dh) / 2;
         }
-        glBlitFramebuffer(0, 0, RENDER_WIDTH, RENDER_HEIGHT,
-                          dx, dy, dx + dw, dy + dh,
-                          GL_COLOR_BUFFER_BIT, GL_LINEAR);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(dx, dy, dw, dh);
+        msaaPost.use();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, screenTexture);
+        glBindVertexArray(quadVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
 
         input.ResetFrame();
 
@@ -299,6 +345,10 @@ int main()
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &fboColor);
     glDeleteRenderbuffers(1, &fboDepth);
+    glDeleteFramebuffers(1, &intermediateFbo);
+    glDeleteTextures(1, &screenTexture);
+    glDeleteVertexArrays(1, &quadVAO);
+    glDeleteBuffers(1, &quadVBO);
 
     // Release GPU-owning objects while the GL context is still alive.
     // Mesh/Model dtors call glDelete*; running them after glfwTerminate() segfaults.

@@ -32,9 +32,14 @@ public:
     vector<Mesh>    meshes;
     string directory;
     bool gammaCorrection;
+    bool flipUVs = false;
 
     // constructor, expects a filepath to a 3D model.
-    Model(string const &path, bool gamma = false) : gammaCorrection(gamma)
+    // flipUVs: vertically flip UVs at load. Set true for models authored with the
+    // LearnOpenGL/UE convention (e.g. backpack); leave false otherwise. Combine with
+    // stbi_set_flip_vertically_on_load to choose the correct net orientation.
+    Model(string const &path, bool gamma = false, bool flipUVs = false)
+        : gammaCorrection(gamma), flipUVs(flipUVs)
     {
         loadModel(path);
     }
@@ -47,7 +52,8 @@ public:
         : textures_loaded(std::move(other.textures_loaded)),
           meshes(std::move(other.meshes)),
           directory(std::move(other.directory)),
-          gammaCorrection(other.gammaCorrection)
+          gammaCorrection(other.gammaCorrection),
+          flipUVs(other.flipUVs)
     {
         other.textures_loaded.clear(); // moved-from vector is valid but unspecified; make sure dtor sees nothing to free.
     }
@@ -60,6 +66,7 @@ public:
             meshes          = std::move(other.meshes);
             directory       = std::move(other.directory);
             gammaCorrection = other.gammaCorrection;
+            flipUVs         = other.flipUVs;
             other.textures_loaded.clear();
         }
         return *this;
@@ -91,8 +98,9 @@ private:
     {
         // read file via ASSIMP
         Assimp::Importer importer;
-        //const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_FlipUVs | aiProcess_CalcTangentSpace);
-        const aiScene* scene = importer.ReadFile(path, aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_CalcTangentSpace);
+        unsigned int flags = aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_CalcTangentSpace;
+        if (flipUVs) flags |= aiProcess_FlipUVs;
+        const aiScene* scene = importer.ReadFile(path, flags);
         if(!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) // if is Not Zero
         {
             cout << "ERROR::ASSIMP:: " << importer.GetErrorString() << endl;
