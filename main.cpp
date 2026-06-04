@@ -166,12 +166,12 @@ int main()
 
     InputManager input(window);
     input.BindAction("Quit", GLFW_KEY_ESCAPE);
-    input.BindAction("CameraMoveForward", GLFW_KEY_W);
-    input.BindAction("CameraMoveBackward", GLFW_KEY_S);
-    input.BindAction("CameraMoveLeft", GLFW_KEY_A);
-    input.BindAction("CameraMoveRight", GLFW_KEY_D);
-    input.BindAction("CameraMoveUp", GLFW_KEY_Q);
-    input.BindAction("CameraMoveDown", GLFW_KEY_E);
+    // input.BindAction("CameraMoveForward", GLFW_KEY_W);
+    // input.BindAction("CameraMoveBackward", GLFW_KEY_S);
+    // input.BindAction("CameraMoveLeft", GLFW_KEY_A);
+    // input.BindAction("CameraMoveRight", GLFW_KEY_D);
+    // input.BindAction("CameraMoveUp", GLFW_KEY_Q);
+    // input.BindAction("CameraMoveDown", GLFW_KEY_E);
     input.BindAction("MoveBackward", GLFW_KEY_DOWN);
     input.BindAction("MoveForward", GLFW_KEY_UP);
     input.BindAction("MoveRight", GLFW_KEY_RIGHT);
@@ -188,7 +188,7 @@ int main()
 
     auto playground = std::make_unique<GameObject>();
     playground->Name = "playground";
-    playground->addComponent<TransformComponent>()->Position = {0, 0, 0};
+    playground->addComponent<TransformComponent>()->Position = {0, -1, 0};
     playground->addComponent<MeshComponent>("assets/models/test_playground/testPlayground.obj");
     //playground->getComponent<TransformComponent>()->Scale = {0.2f, 0.2f, 0.2f}; 
     playground->start();
@@ -232,10 +232,10 @@ int main()
     //camera->addComponent<TransformComponent>()->owner = player.get(); 
     camera->addComponent<InputComponent>(&input);
     camera->addComponent<CameraComponent>();
-    camera->addComponent<CameraController>();
+    // camera->addComponent<CameraController>();
 
-    //camera->addComponent<CameraFollow>(); //script
-    //camera->getComponent<CameraFollow>()->Target = player.get();
+    camera->addComponent<CameraFollow>(); //script
+    camera->getComponent<CameraFollow>()->Target = player.get();
     camera->start();
     bool flashlightOn = false;
 
@@ -361,11 +361,11 @@ int main()
 
         player->getComponent<MeshComponent>()->draw(shaderLighting);
 
-        //playground->update(deltaTime);
-        //shaderProgram.use();
-        //shaderProgram.setMat4("view", view);
-        //shaderProgram.setMat4("projection", proj);
-        //playground->getComponent<MeshComponent>()->draw(shaderProgram);
+        playground->update(deltaTime);
+        // shaderProgram.use();
+        // shaderProgram.setMat4("view", view);
+        // shaderProgram.setMat4("projection", proj);
+        playground->getComponent<MeshComponent>()->draw(shaderLighting);
 
         // Pass 1.5: resolve MSAA. Source and dest rects must match in size when the
         // source has samples > 0, so we resolve at native render resolution into
