@@ -108,7 +108,11 @@ public:
     static void tickWorld() {
         auto& list = AllColliders();
         //std::cout << list.size() << std::endl;
-        for (auto* c : list) c->thisFrame.clear();
+        for (auto* c : list) {
+            c->thisFrame.clear();
+            const glm::vec3& p = c->position();
+            //std::cout << "[Collider] pos=(" << p.x << ", " << p.y << ", " << p.z << ")\n";
+        }
 
         for (size_t i = 0; i < list.size(); ++i) {
             for (size_t j = i + 1; j < list.size(); ++j) {
@@ -120,7 +124,7 @@ public:
                 if (a->Shape->intersects(*b->Shape,
                                          a->position(), a->scale(),
                                          b->position(), b->scale())) {
-                                            std::cout << "Collision Enter " << std::endl;
+                                            //std::cout << "Collision Enter " << std::endl;
                     a->thisFrame.insert(b);
                     b->thisFrame.insert(a);
                 }
@@ -131,7 +135,7 @@ public:
         for (auto* c : list) {
             for (auto* other : c->thisFrame) {
                 if (c->lastFrame.count(other)) {
-                    std::cout << "Collision Enter " << std::endl;
+                    //std::cout << "Collision Enter " << std::endl;
                     if (c->OnStay) c->OnStay(other);
                 } else {
                     std::cout << "Collision Enter " << std::endl;
@@ -140,7 +144,7 @@ public:
             }
             for (auto* other : c->lastFrame) {
                 if (!c->thisFrame.count(other)) {
-                    std::cout << "Collision Enter " << std::endl;
+                    std::cout << "Collision Exit " << std::endl;
                     if (c->OnExit) c->OnExit(other);
                 }
             }

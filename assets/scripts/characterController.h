@@ -4,6 +4,7 @@
 #include "../../include/Components/TransformComponent3D.h"
 #include "../../include/Components/InputComponent.h"
 #include "../../vendor/glm/glm/glm.hpp"
+#include "../../include/Components/ColliderComponent3D.h"
 
 // Character controller. Movement is integrated in tick() so we can model
 // acceleration and deceleration properly (input handlers only fire while held,
@@ -14,6 +15,7 @@ class CharacterController : public Script {
     InputManager* im = nullptr;
     glm::vec3 Velocity{0.0f};
     MeshComponent* mesh = nullptr; // optional, for visual facing direction
+    ColliderComponent3D* collider = nullptr; // optional, for collision detection
 
 public:
     float MoveSpeed    = 3.0f;  // units / second (max speed)
@@ -26,10 +28,13 @@ public:
         tf = owner->getComponent<TransformComponent>();
         in = owner->getComponent<InputComponent>();
         mesh = owner->getComponent<MeshComponent>();
+        collider = owner->getComponent<ColliderComponent3D>();
         if (!tf) throw MissingComponentException("CharacterController", "TransformComponent");
         if (!in) throw MissingComponentException("CharacterController", "InputComponent");
         if (!mesh) ComponentWarning::missing("CharacterController", "MeshComponent");
         else mesh->useOwnerPosition(); //mesh position inherits from player object
+        if (!collider) ComponentWarning::missing("CharacterController", "ColliderComponent3D");
+        else collider->useOwnerPosition(); collider->useOwnerRotation();//collider position inherits from player object
         im = in->GetManager();
     }
 

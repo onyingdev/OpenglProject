@@ -1,5 +1,8 @@
 .vscode
+.claude
 .vs
 .idea
 *.o
 *.exe
+main.exe
+main.o

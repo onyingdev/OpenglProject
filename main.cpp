@@ -25,7 +25,7 @@
 #include "assets/scripts/spinModel.h"
 #include "assets/scripts/cameraFollow.h"
 
-//TODO: refactor with main to decouple functions
+//TODO: refactor with main to decouple functions into ENGINE and APP.
 
 using namespace std;
 
@@ -178,6 +178,9 @@ int main()
     input.BindAction("MoveLeft", GLFW_KEY_LEFT);
     input.BindAction("RotateRight", GLFW_KEY_M);
     input.BindAction("RotateLeft", GLFW_KEY_N);
+    input.BindAction("ToggleFlashlight", GLFW_KEY_F);
+    // input.BindAction("MSAA_UP", GLFW_KEY_K);
+    // input.BindAction("MSAA_DOWN", GLFW_KEY_J);
 
 
 
@@ -193,27 +196,39 @@ int main()
 
     auto player = std::make_unique<GameObject>();
     player->Name = "Player";
-    player->addComponent<TransformComponent>()->Position = {2.0f, -1.0f, 0};
-    //player->addComponent<MeshComponent>("assets/models/nier/2B.obj");
-    player->addComponent<MeshComponent>("assets/models/backpack/backpack.obj", /*flipUVs=*/true); 
+    player->addComponent<TransformComponent>()->Position = {0, -1, 0};
+    player->addComponent<MeshComponent>("assets/models/nier/2B.obj");
+    //player->addComponent<MeshComponent>("assets/models/backpack/backpack.obj", /*flipUVs=*/true); 
     //flip UVs. Different models have different conventions, flip them if troubleshooting.
     player->addComponent<InputComponent>(&input);
     player->addComponent<ColliderComponent3D>();
     player->addComponent<CharacterComponent>();
-    player->addComponent<CharacterController>();
+    player->addComponent<ColliderComponent3D>();
+    player->addComponent<CharacterController>(); //scripts always goes last.
+    //player->addComponent<SpinModel>();
     player->start();
 
     auto fish = std::make_unique<GameObject>();
     fish->Name = "Fish";
-    fish->addComponent<TransformComponent>()->Position = {5, 0, 0};
+    fish->addComponent<TransformComponent>()->Position = {2, 0, 0};
     fish->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
     fish->addComponent<ColliderComponent3D>();
     fish->addComponent<SpinModel>();
     fish->start();
+    const glm::vec3 lightColor(1.0f, 0.0f, 0.0f);
+
+    auto fish2 = std::make_unique<GameObject>();
+    fish2->Name = "Fish2";
+    fish2->addComponent<TransformComponent>()->Position = {-2, 0, 0};
+    fish2->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
+    fish2->addComponent<ColliderComponent3D>();
+    fish2->addComponent<SpinModel>();
+    fish2->start();
+    const glm::vec3 lightColor2(0.0f, 0.0f, 1.0f);
 
     auto camera = std::make_unique<GameObject>();
     camera->Name = "MainCamera";
-    camera->addComponent<TransformComponent>();
+    camera->addComponent<TransformComponent>()->Position = {-1, 1, 0};
     //camera->addComponent<TransformComponent>()->owner = player.get(); 
     camera->addComponent<InputComponent>(&input);
     camera->addComponent<CameraComponent>();
@@ -222,6 +237,7 @@ int main()
     //camera->addComponent<CameraFollow>(); //script
     //camera->getComponent<CameraFollow>()->Target = player.get();
     camera->start();
+    bool flashlightOn = false;
 
 
 
@@ -231,9 +247,6 @@ int main()
     Shader msaaPost("assets/shaders/msaa_post.vs", "assets/shaders/msaa_post.fs");
     msaaPost.use();
     msaaPost.setInt("screenTexture", 0);
-
-    //TODO: change path loading system
-
 
     //main loop the more you can take out of the loop the better
     while(!glfwWindowShouldClose(window))
@@ -246,6 +259,17 @@ int main()
         if (input.IsActionReleased("Quit")) {
             glfwSetWindowShouldClose(window, true);
         }
+        if (input.IsActionReleased("ToggleFlashlight")) {
+            flashlightOn = !flashlightOn;
+        }
+        // if (input.IsActionReleased("MSAA_UP") && msaaSamples < 16) {
+        //     msaaSamples *= 2;
+        //     std::cout << "MSAA samples: " << msaaSamples << '\n';
+        // }
+        // if (input.IsActionReleased("MSAA_DOWN") && msaaSamples > 2) {
+        //     msaaSamples /= 2;
+        //     std::cout << "MSAA samples: " << msaaSamples << '\n';
+        // }
 
         // drive all components on the camera (movement + mouse look)
         camera->update(deltaTime);
@@ -253,7 +277,7 @@ int main()
         // Pass 1, render the scene into the offscreen FBO
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
         glEnable(GL_DEPTH_TEST);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -267,16 +291,23 @@ int main()
         // (read off the fish below) is current for this frame.
         player->update(deltaTime);
         fish->update(deltaTime);
+        fish2->update(deltaTime);
         ColliderComponent3D::tickWorld();
 
         // Light source: the spinning cube. Drawn first with the unlit shader so
         // we can sample its transform for lightPos before lighting the player.
         const glm::vec3 lightPos = fish->getComponent<TransformComponent>()->Position;
+        const glm::vec3 lightPos2 = fish2->getComponent<TransformComponent>()->Position;
 
         shaderLight.use();
         shaderLight.setMat4("view", view);
         shaderLight.setMat4("projection", proj);
+
+        shaderLight.setVec3("lightColor", lightColor.x, lightColor.y, lightColor.z);
         fish->getComponent<MeshComponent>()->draw(shaderLight);
+
+        shaderLight.setVec3("lightColor", lightColor2.x, lightColor2.y, lightColor2.z);
+        fish2->getComponent<MeshComponent>()->draw(shaderLight);
 
         // Lit object: the player. advanced_lighting samples texture_diffuse1 for
         // base color (bound automatically by Mesh::Draw) and branches on `blinn`
@@ -284,9 +315,50 @@ int main()
         shaderLighting.use();
         shaderLighting.setMat4("view", view);
         shaderLighting.setMat4("projection", proj);
-        shaderLighting.setVec3("lightPos", lightPos.x, lightPos.y, lightPos.z);
-        shaderLighting.setVec3("viewPos",  camPos.x,   camPos.y,   camPos.z);
-        shaderLighting.setBool("blinn", true);
+        shaderLighting.setVec3("viewPos", camPos.x, camPos.y, camPos.z);
+        shaderLighting.setFloat("shininess", 32.0f);
+
+        // Directional light: a dim white "sun" so surfaces facing away from the
+        // point lights aren't pitch black.
+        shaderLighting.setVec3("dirLight.direction", -0.2f, -1.0f, -0.3f);
+        shaderLighting.setVec3("dirLight.ambient",   0.05f, 0.05f, 0.05f);
+        shaderLighting.setVec3("dirLight.diffuse",   0.30f, 0.30f, 0.30f);
+        shaderLighting.setVec3("dirLight.specular",  0.40f, 0.40f, 0.40f);
+
+        // Point lights: index 0 = fish (lightColor), 1 = fish2 (lightColor2).
+        // The cube each light is drawn as uses the same color, so the lamp you see
+        // matches the light it casts. Unused slots are zeroed (constant=1 keeps
+        // attenuation finite so a 0 color contributes exactly 0, never NaN).
+        auto setPointLight = [&](int i, const glm::vec3& pos, const glm::vec3& color, bool on) {
+            std::string p = "pointLights[" + std::to_string(i) + "].";
+            shaderLighting.setVec3(p + "position", pos.x, pos.y, pos.z);
+            shaderLighting.setFloat(p + "constant", 1.0f);
+            shaderLighting.setFloat(p + "linear",    on ? 0.09f  : 0.0f);
+            shaderLighting.setFloat(p + "quadratic", on ? 0.032f : 0.0f);
+            glm::vec3 c = on ? color : glm::vec3(0.0f);
+            shaderLighting.setVec3(p + "ambient",  0.05f * c.x, 0.05f * c.y, 0.05f * c.z);
+            shaderLighting.setVec3(p + "diffuse",  c.x, c.y, c.z);
+            shaderLighting.setVec3(p + "specular", c.x, c.y, c.z);
+        };
+        setPointLight(0, lightPos,  lightColor,  true);
+        setPointLight(1, lightPos2, lightColor2, true);
+        setPointLight(2, glm::vec3(0.0f), glm::vec3(0.0f), false);
+        setPointLight(3, glm::vec3(0.0f), glm::vec3(0.0f), false);
+
+        // Spotlight: a flashlight locked to the camera (position + facing).
+        const glm::vec3 camFront = cam->forward();
+        glm::vec3 sc = flashlightOn ? glm::vec3(1.0f) : glm::vec3(0.0f);
+        shaderLighting.setVec3("spotLight.position",  camPos.x,   camPos.y,   camPos.z);
+        shaderLighting.setVec3("spotLight.direction", camFront.x, camFront.y, camFront.z);
+        shaderLighting.setFloat("spotLight.cutOff",      glm::cos(glm::radians(12.5f)));
+        shaderLighting.setFloat("spotLight.outerCutOff", glm::cos(glm::radians(17.5f)));
+        shaderLighting.setFloat("spotLight.constant",  1.0f);
+        shaderLighting.setFloat("spotLight.linear",    0.09f);
+        shaderLighting.setFloat("spotLight.quadratic", 0.032f);
+        shaderLighting.setVec3("spotLight.ambient",  0.0f, 0.0f, 0.0f);
+        shaderLighting.setVec3("spotLight.diffuse",  sc.x, sc.y, sc.z);
+        shaderLighting.setVec3("spotLight.specular", sc.x, sc.y, sc.z);
+
         player->getComponent<MeshComponent>()->draw(shaderLighting);
 
         //playground->update(deltaTime);
@@ -355,6 +427,7 @@ int main()
     playground.reset();
     player.reset();
     fish.reset();
+    fish2.reset();
     camera.reset();
 
     glfwTerminate();

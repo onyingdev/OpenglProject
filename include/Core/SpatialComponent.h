@@ -18,7 +18,7 @@ public:
     glm::vec3 Scale{1.0f};
 
     glm::vec3 forward() const {
-        const glm::vec3& r = rotation();   // resolved per-axis, respects setLocal*/useOwner*
+        const glm::vec3& r = rotation(); 
         float y = glm::radians(r.x), p = glm::radians(r.y);
         return glm::normalize(glm::vec3(cos(y)*cos(p), sin(p), sin(y)*cos(p)));
     }
