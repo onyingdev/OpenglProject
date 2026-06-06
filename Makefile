@@ -1,3 +1,9 @@
+# === Flags ===
+# OpenMP: enables the #pragma omp parallel collision sweep in
+# include/Components/ColliderComponent3D.h. Needed on both the compile of
+# main.o and the final link (to pull in the libgomp runtime).
+OPENMP = -fopenmp
+
 # === Source files ===
 GLAD          = vendor/glad/glad.c
 SHADER        = src/Render/shader_s.cpp
@@ -26,7 +32,7 @@ endif
 .PHONY: all clean scripts
 
 all: main.o glad.o shader_s.o lib_asset_loader.o input_manager.o
-	g++ -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o $(LIBS)
+	g++ $(OPENMP) -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o $(LIBS)
 
 # Force-rebuild only main.o (which transitively includes all header-only scripts
 # and components) and relink. Use this when you've only edited files under
@@ -34,11 +40,11 @@ all: main.o glad.o shader_s.o lib_asset_loader.o input_manager.o
 # Their .o files are listed as deps so a fresh checkout still works (they'll be
 # built once and then reused on subsequent `make scripts` runs).
 recompile: glad.o shader_s.o lib_asset_loader.o input_manager.o
-	g++ -c main.cpp
-	g++ -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o $(LIBS)
+	g++ $(OPENMP) -c main.cpp
+	g++ $(OPENMP) -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o $(LIBS)
 
 main.o: main.cpp
-	g++ -c main.cpp
+	g++ $(OPENMP) -c main.cpp
 
 glad.o: $(GLAD)
 	gcc -c $(GLAD)

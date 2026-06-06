@@ -35,8 +35,8 @@ unsigned int SCR_HEIGHT = 1080;
 
 // Fixed internal render resolution. The scene always renders at this size,
 // then is scaled to fit the window (with letterbox/pillarbox to preserve aspect).
-const int RENDER_WIDTH  = 1920;
-const int RENDER_HEIGHT = 1080;
+const int RENDER_WIDTH  = 1280;
+const int RENDER_HEIGHT = 720;
 
 //time
 float deltaTime = 0.0f;	// Time between current frame and last frame
@@ -201,9 +201,8 @@ int main()
     //player->addComponent<MeshComponent>("assets/models/backpack/backpack.obj", /*flipUVs=*/true); 
     //flip UVs. Different models have different conventions, flip them if troubleshooting.
     player->addComponent<InputComponent>(&input);
-    player->addComponent<ColliderComponent3D>();
+    player->addComponent<ColliderComponent3D>()->Shape = std::make_unique<BoxShape>(glm::vec3(0.5f, 1.0f, 0.5f));
     player->addComponent<CharacterComponent>();
-    player->addComponent<ColliderComponent3D>();
     player->addComponent<CharacterController>(); //scripts always goes last.
     //player->addComponent<SpinModel>();
     player->start();
@@ -212,7 +211,7 @@ int main()
     fish->Name = "Fish";
     fish->addComponent<TransformComponent>()->Position = {2, 0, 0};
     fish->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
-    fish->addComponent<ColliderComponent3D>();
+    fish->addComponent<ColliderComponent3D>()->Shape = std::make_unique<SphereShape>(0.5f);
     fish->addComponent<SpinModel>();
     fish->start();
     const glm::vec3 lightColor(1.0f, 0.0f, 0.0f);
@@ -221,7 +220,7 @@ int main()
     fish2->Name = "Fish2";
     fish2->addComponent<TransformComponent>()->Position = {-2, 0, 0};
     fish2->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
-    fish2->addComponent<ColliderComponent3D>();
+    fish2->addComponent<ColliderComponent3D>()->Shape = std::make_unique<SphereShape>(0.5f);
     fish2->addComponent<SpinModel>();
     fish2->start();
     const glm::vec3 lightColor2(0.0f, 0.0f, 1.0f);

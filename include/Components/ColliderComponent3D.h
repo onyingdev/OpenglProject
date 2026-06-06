@@ -2,12 +2,17 @@
 #include "../Core/SpatialComponent.h"
 #include "../../vendor/glm/glm/glm.hpp"
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <unordered_set>
 #include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 // This is vibecoded needs revision ASAP
-// TODO: write BoundingBoxComponent.
+// TODO: check code and optimize multithread.
+// BUG: well more than a BUG is an optimization. Optimize the code using OpenMP. Sometimes the collider stutter on enter or exit, but that its due to the std::cout.
 
 // Phase 1 skeleton:
 //   - One primitive shape (AABB box), with a hierarchy so Sphere/Capsule slot in later
@@ -28,6 +33,7 @@ class ColliderComponent3D;
 // transform is supplied at test time so the shape itself stays pose-free.
 
 class BoxShape;
+class SphereShape;
 
 class ColliderShape {
 public:
@@ -42,6 +48,10 @@ public:
     virtual bool intersectsBox(const BoxShape& other,
                                const glm::vec3& selfPos,  const glm::vec3& selfScale,
                                const glm::vec3& otherPos, const glm::vec3& otherScale) const = 0;
+    
+    virtual bool intersectsSphere(const SphereShape& other,
+                                  const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                                  const glm::vec3& otherPos, const glm::vec3& otherScale) const = 0;
 };
 
 class BoxShape : public ColliderShape {
@@ -59,8 +69,8 @@ public:
     }
 
     bool intersectsBox(const BoxShape& other,
-                       const glm::vec3& selfPos,  const glm::vec3& selfScale,
-                       const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+                        const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                        const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
         // AABB only — rotation ignored at this phase. Becomes SAT in Phase 4.
         const glm::vec3 aMin = selfPos  - HalfExtents       * selfScale;
         const glm::vec3 aMax = selfPos  + HalfExtents       * selfScale;
@@ -70,7 +80,63 @@ public:
                (aMin.y <= bMax.y && aMax.y >= bMin.y) &&
                (aMin.z <= bMax.z && aMax.z >= bMin.z);
     }
+
+    // Body is defined out-of-line below, after SphereShape becomes a complete
+    // type — we can't call SphereShape members while it's only forward-declared.
+    bool intersectsSphere(const SphereShape& other,
+                          const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                          const glm::vec3& otherPos, const glm::vec3& otherScale) const override;
 };
+
+//checks exclusively spheres, doesnt allow ellipsoids. 
+class SphereShape : public ColliderShape {
+public:
+    float Radius = 0.5f; // local radius; world radius = Radius * scale
+
+    explicit SphereShape(float radius = 0.5f) : Radius(radius) {}
+
+    bool intersects(const ColliderShape& other,
+                    const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                    const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+        // Forward to the other shape's sphere-handler.
+        return other.intersectsSphere(*this, otherPos, otherScale, selfPos, selfScale);
+    }
+
+    //sphere-box.
+    bool intersectsBox(const BoxShape& other,
+                        const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                        const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+        // Box-sphere intersection. Rotation still ignored.
+        const glm::vec3 boxHalf = other.HalfExtents * otherScale;
+        const glm::vec3 boxCenter = otherPos;
+        const glm::vec3 sphereCenter = selfPos;
+        const float sphereRadius = Radius * selfScale.x; // uniform scale only for now
+
+        // Find the point on the box closest to the sphere center.
+        const glm::vec3 closestPoint = glm::clamp(sphereCenter, boxCenter - boxHalf, boxCenter + boxHalf);
+        const float distance = glm::distance(sphereCenter, closestPoint);
+        return distance < sphereRadius;
+    }
+
+    //sphere-sphere.
+    bool intersectsSphere(const SphereShape& other,
+                          const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                          const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+        // Simple distance check — rotation is not relevant for spheres.
+        const float distance = glm::distance(selfPos, otherPos);
+        const float sumRadii = Radius * selfScale.x + other.Radius * otherScale.x;
+        return distance < sumRadii;
+    }
+};
+
+// Out-of-line: SphereShape is now complete, so calling its members is legal.
+inline bool BoxShape::intersectsSphere(const SphereShape& other,
+                                       const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                                       const glm::vec3& otherPos, const glm::vec3& otherScale) const {
+    // Box-sphere is symmetric, so forward to the sphere's box-handler.
+    return other.intersectsBox(*this, otherPos, otherScale, selfPos, selfScale);
+}
+
 
 // -----------------------------------------------------------------------------
 // ColliderComponent3D
@@ -95,7 +161,7 @@ public:
 
     void start() override {
         SpatialComponent::start();
-        if (!Shape) Shape = std::make_unique<BoxShape>(); // sensible default
+        if (!Shape) std::cerr << "Warning: ColliderComponent3D on " << owner->Name << " has no shape.\n";
         AllColliders().push_back(this);
     }
 
@@ -114,22 +180,45 @@ public:
             //std::cout << "[Collider] pos=(" << p.x << ", " << p.y << ", " << p.z << ")\n";
         }
 
-        for (size_t i = 0; i < list.size(); ++i) {
-            for (size_t j = i + 1; j < list.size(); ++j) {
-                auto* a = list[i];
-                auto* b = list[j];
-                if (!passesMask(a, b)) continue;
-                if (!a->Shape || !b->Shape) continue;
+        // for (size_t i = 0; i < list.size(); ++i) {
+        //     for (size_t j = i + 1; j < list.size(); ++j) {
+        //         auto* a = list[i];
+        //         auto* b = list[j];
+        //         if (!passesMask(a, b)) continue;
+        //         if (!a->Shape || !b->Shape) continue;
 
-                if (a->Shape->intersects(*b->Shape,
-                                         a->position(), a->scale(),
-                                         b->position(), b->scale())) {
-                                            //std::cout << "Collision Enter " << std::endl;
+        //         if (a->Shape->intersects(*b->Shape,
+        //                                  a->position(), a->scale(),
+        //                                  b->position(), b->scale())) {
+        //                                     //std::cout << "Collision Enter " << std::endl;
+        //             a->thisFrame.insert(b);
+        //             b->thisFrame.insert(a);
+        //         }
+        //     }
+        // }
+
+        #pragma omp parallel for schedule(dynamic)
+        for (size_t i = 0; i < list.size(); ++i) {
+#ifdef _OPENMP
+            // DEBUG only: shows which thread took collider i. The cout serializes
+            // the threads (critical) and flushes, so remove it for real timing.
+            #pragma omp critical
+            std::cout << "[collider " << i << "] thread "
+                      << omp_get_thread_num() << "/" << omp_get_num_threads() << "\n";
+#endif
+            auto* a = list[i];
+            a->thisFrame.clear();
+            if (!a->Shape) continue;
+            for (size_t j = 0; j < list.size(); ++j) {
+                if (j == i) continue;
+                auto* b = list[j];
+                if (!passesMask(a, b) || !b->Shape) continue;
+                if (a->Shape->intersects(*b->Shape, a->position(), a->scale(),
+                                                    b->position(), b->scale()))
                     a->thisFrame.insert(b);
-                    b->thisFrame.insert(a);
-                }
             }
         }
+
 
         // Diff against previous frame to fire enter/stay/exit.
         for (auto* c : list) {
@@ -138,13 +227,13 @@ public:
                     //std::cout << "Collision Enter " << std::endl;
                     if (c->OnStay) c->OnStay(other);
                 } else {
-                    std::cout << "Collision Enter " << std::endl;
+                    // std::cout << "Collision Enter " << std::endl; // blocking flush -> frame stutter on enter
                     if (c->OnEnter) c->OnEnter(other);
                 }
             }
             for (auto* other : c->lastFrame) {
                 if (!c->thisFrame.count(other)) {
-                    std::cout << "Collision Exit " << std::endl;
+                    // std::cout << "Collision Exit " << std::endl; // blocking flush -> frame stutter on exit
                     if (c->OnExit) c->OnExit(other);
                 }
             }
