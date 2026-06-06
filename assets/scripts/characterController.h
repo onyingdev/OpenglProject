@@ -1,10 +1,10 @@
 #pragma once
-#include "../../include/Core/script.h"
-#include "../../include/Core/GameObject.h"
-#include "../../include/Components/TransformComponent3D.h"
-#include "../../include/Components/InputComponent.h"
-#include "../../vendor/glm/glm/glm.hpp"
-#include "../../include/Components/ColliderComponent3D.h"
+#include "Core/script.h"
+#include "Core/GameObject.h"
+#include "Components/TransformComponent3D.h"
+#include "Components/InputComponent.h"
+#include <glm/glm.hpp>
+#include "Components/ColliderComponent3D.h"
 
 // Character controller. Movement is integrated in tick() so we can model
 // acceleration and deceleration properly (input handlers only fire while held,

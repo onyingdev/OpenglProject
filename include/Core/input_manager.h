@@ -1,8 +1,8 @@
 #pragma once
 #include <string>
 #include <unordered_map>
-#include "../../vendor/glad/glad/glad.h"
-#include "../../vendor/GLFW/include/glfw3.h"
+#include <glad/glad.h>
+#include <glfw3.h>
 
 //input manager class only handles inputs and mouse. Does not handle logic.
 // we can use input manager by itself but not Input Component. 

@@ -1,8 +1,8 @@
 #pragma once
-#include "../Core/Component.h"
-#include "../Core/GameObject.h"
-#include "../../vendor/glm/glm/glm.hpp"
-#include "../Components/TransformComponent3D.h"
+#include "Core/Component.h"
+#include "Core/GameObject.h"
+#include <glm/glm.hpp>
+#include "Components/TransformComponent3D.h"
 
 // Spatial: a component with a local transform that can resolve each axis from
 // either the owner's TransformComponent or its own local copy. Per-axis source

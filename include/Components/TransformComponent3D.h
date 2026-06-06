@@ -1,7 +1,7 @@
 #pragma once
-#include "../Core/Component.h"
-#include "../../vendor/glm/glm/glm.hpp"
-#include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
+#include "Core/Component.h"
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 // Plain transform data: position/rotation/scale plus basis helpers. No Component
 // base, so it carries no vtable pointer and no owner — embed it directly wherever

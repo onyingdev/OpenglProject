@@ -1,7 +1,7 @@
 #pragma once
-#include "../Core/SpatialComponent.h"
-#include "../Render/model.h"
-#include "../Render/shader_s.h"
+#include "Core/SpatialComponent.h"
+#include "Render/model.h"
+#include "Render/shader_s.h"
 #include <memory>
 #include <string>
 #include <utility>

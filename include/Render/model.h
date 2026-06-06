@@ -1,18 +1,18 @@
 #ifndef MODEL_H
 #define MODEL_H
 
-#include "../../vendor/glad/glad/glad.h"
+#include <glad/glad.h>
 
-#include "../../vendor/glm/glm/glm.hpp"
-#include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
-#include "../../include/Core/stb_image.h"
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include "Core/stb_image.h"
 
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 
-#include "./mesh.h"
-#include "../../include/Render/shader_s.h"
+#include "Render/mesh.h"
+#include "Render/shader_s.h"
 
 #include <string>
 #include <fstream>

@@ -1,24 +1,24 @@
 #include <iostream>
 #include <cmath>
 #include <memory>
-#include "vendor/glad/glad/glad.h" //glad goes first
-#include "vendor/GLFW/include/glfw3.h"
-#include "include/Render/shader_s.h"
+#include <glad/glad.h> //glad goes first
+#include <glfw3.h>
+#include "Render/shader_s.h"
 //#include "assets/scripts/camera.h"
 
 //#define STB_IMAGE_IMPLEMENTATION
 //#include "assets/textures/stb_image.h"
-//#include "include/Core/lib_asset_loader.h"
-#include "include/Render/model.h"
-#include "include/Core/input_manager.h"
-#include "include/Core/Component.h"
-#include "include/Core/GameObject.h"
-#include "include/Components/TransformComponent3D.h"
-#include "include/Components/InputComponent.h"
-#include "include/Components/CameraComponent.h"
-#include "include/Components/MeshComponent.h"
-#include "include/Components/CharacterComponent3D.h"
-#include "include/Components/ColliderComponent3D.h"
+//#include "Core/lib_asset_loader.h"
+#include "Render/model.h"
+#include "Core/input_manager.h"
+#include "Core/Component.h"
+#include "Core/GameObject.h"
+#include "Components/TransformComponent3D.h"
+#include "Components/InputComponent.h"
+#include "Components/CameraComponent.h"
+#include "Components/MeshComponent.h"
+#include "Components/CharacterComponent3D.h"
+#include "Components/ColliderComponent3D.h"
 
 #include "assets/scripts/cameraController.h"
 #include "assets/scripts/characterController.h"
@@ -35,8 +35,8 @@ unsigned int SCR_HEIGHT = 1080;
 
 // Fixed internal render resolution. The scene always renders at this size,
 // then is scaled to fit the window (with letterbox/pillarbox to preserve aspect).
-const int RENDER_WIDTH  = 1280;
-const int RENDER_HEIGHT = 720;
+const int RENDER_WIDTH  = 1920;
+const int RENDER_HEIGHT = 1080;
 
 //time
 float deltaTime = 0.0f;	// Time between current frame and last frame
@@ -223,7 +223,7 @@ int main()
     fish2->addComponent<ColliderComponent3D>()->Shape = std::make_unique<SphereShape>(0.5f);
     fish2->addComponent<SpinModel>();
     fish2->start();
-    const glm::vec3 lightColor2(0.0f, 0.0f, 1.0f);
+    const glm::vec3 lightColor2(0.0f, 0.0f, 0.5f);
 
     auto camera = std::make_unique<GameObject>();
     camera->Name = "MainCamera";

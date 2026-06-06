@@ -1,5 +1,5 @@
 #pragma once
-#include "Component.h"
+#include "Core/Component.h"
 
 // A Script is a Component that holds *game-specific* behavior.
 //

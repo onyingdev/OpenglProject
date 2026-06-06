@@ -1,5 +1,5 @@
 #pragma once
-#include "../Core/SpatialComponent.h"
+#include "Core/SpatialComponent.h"
 
 // Pure camera: knows how to produce view/projection matrices from whatever
 // position/rotation it resolves to. It does NOT decide where that data comes from.

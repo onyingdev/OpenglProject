@@ -4,6 +4,17 @@
 # main.o and the final link (to pull in the libgomp runtime).
 OPENMP = -fopenmp
 
+# Include search roots. With these, sources include headers by stable logical
+# path (e.g. "Core/Component.h", <glm/glm.hpp>) instead of brittle ../../ chains,
+# so moving a file only changes a -I root here, not every relative include.
+#   -I.                     -> project root (resolves "assets/scripts/..." in main.cpp)
+#   -Iinclude               -> engine headers: "Core/...", "Render/...", "Components/..."
+#   -isystem vendor/glad    -> <glad/glad.h>, <KHR/khrplatform.h>
+#   -isystem vendor/glm     -> <glm/glm.hpp>, <glm/gtc/...>
+#   -isystem vendor/GLFW... -> <glfw3.h>
+# (-isystem also silences warnings originating in third-party headers.)
+INCLUDES = -I. -Iinclude -isystem vendor/glad -isystem vendor/glm -isystem vendor/GLFW/include
+
 # === Source files ===
 GLAD          = vendor/glad/glad.c
 SHADER        = src/Render/shader_s.cpp
@@ -40,23 +51,23 @@ all: main.o glad.o shader_s.o lib_asset_loader.o input_manager.o
 # Their .o files are listed as deps so a fresh checkout still works (they'll be
 # built once and then reused on subsequent `make scripts` runs).
 recompile: glad.o shader_s.o lib_asset_loader.o input_manager.o
-	g++ $(OPENMP) -c main.cpp
+	g++ $(OPENMP) $(INCLUDES) -c main.cpp
 	g++ $(OPENMP) -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o $(LIBS)
 
 main.o: main.cpp
-	g++ $(OPENMP) -c main.cpp
+	g++ $(OPENMP) $(INCLUDES) -c main.cpp
 
 glad.o: $(GLAD)
-	gcc -c $(GLAD)
+	gcc $(INCLUDES) -c $(GLAD)
 
 shader_s.o: $(SHADER)
-	g++ -c $(SHADER)
+	g++ $(INCLUDES) -c $(SHADER)
 
 lib_asset_loader.o: $(ASSET_LOADER)
-	g++ -c $(ASSET_LOADER)
+	g++ $(INCLUDES) -c $(ASSET_LOADER)
 
 input_manager.o: $(INPUT_MANAGER)
-	g++ -c $(INPUT_MANAGER)
+	g++ $(INCLUDES) -c $(INPUT_MANAGER)
 
 clean:
 	$(RM) *.o $(EXEC)

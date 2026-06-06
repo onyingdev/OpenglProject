@@ -1,7 +1,7 @@
 #pragma once
-#include "../Core/SpatialComponent.h"
-#include "MeshComponent.h"
-#include "InputComponent.h"
+#include "Core/SpatialComponent.h"
+#include "Components/MeshComponent.h"
+#include "Components/InputComponent.h"
 
 // Character 3D. Basic character for player model
 class CharacterComponent : public SpatialComponent {

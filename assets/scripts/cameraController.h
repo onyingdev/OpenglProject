@@ -1,11 +1,11 @@
 #pragma once
-#include "../../include/Core/script.h"
-#include "../../include/Core/GameObject.h"
-#include "../../include/Components/TransformComponent3D.h"
-#include "../../include/Components/InputComponent.h"
-#include "../../include/Components/CameraComponent.h"
-#include "../../vendor/glm/glm/glm.hpp"
-#include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
+#include "Core/script.h"
+#include "Core/GameObject.h"
+#include "Components/TransformComponent3D.h"
+#include "Components/InputComponent.h"
+#include "Components/CameraComponent.h"
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 //Camera Controller. Controlls the movement of the object by WASD and rotation by mouse
 class CameraController : public Script {

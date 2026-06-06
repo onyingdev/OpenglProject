@@ -1,9 +1,9 @@
 #ifndef CAMERA_H
 #define CAMERA_H
 // DEPRECATED, example of how we can create an object through via script. 
-#include "../../vendor/glad/glad/glad.h"
-#include "../../vendor/glm/glm/glm.hpp"
-#include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
+#include <glad/glad.h>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 // Defines several possible options for camera movement. Used as abstraction to stay away from window-system specific input methods
 enum Camera_Movement {
