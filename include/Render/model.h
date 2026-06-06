@@ -12,7 +12,8 @@
 #include <assimp/postprocess.h>
 
 #include "Render/mesh.h"
-#include "Render/shader_s.h"
+#include "Render/API/IShader.h"
+#include "Render/API/IModel.h"
 
 #include <string>
 #include <fstream>
@@ -24,7 +25,8 @@ using namespace std;
 
 unsigned int TextureFromFile(const char *path, const string &directory, bool gamma = false);
 
-class Model
+// OpenGL implementation of IModel: loads via Assimp and owns its meshes + textures.
+class Model : public IModel
 {
 public:
     // model data
@@ -78,7 +80,7 @@ public:
     }
 
     // draws the model, and thus all its meshes
-    void Draw(Shader &shader)
+    void Draw(IShader &shader) override
     {
         for(unsigned int i = 0; i < meshes.size(); i++)
             meshes[i].Draw(shader);

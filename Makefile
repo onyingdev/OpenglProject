@@ -20,6 +20,7 @@ GLAD          = vendor/glad/glad.c
 SHADER        = src/Render/shader_s.cpp
 ASSET_LOADER  = src/Core/lib_asset_loader.cpp
 INPUT_MANAGER = src/Core/input_manager.cpp
+GL_RENDERER   = src/Render/OpenGLRenderer.cpp
 
 # === Platform-specific settings ===
 ifeq ($(OS),Windows_NT)
@@ -42,20 +43,23 @@ endif
 # === Build rules ===
 .PHONY: all clean scripts
 
-all: main.o glad.o shader_s.o lib_asset_loader.o input_manager.o
-	g++ $(OPENMP) -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o $(LIBS)
+all: main.o glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o
+	g++ $(OPENMP) -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o $(LIBS)
 
 # Force-rebuild only main.o (which transitively includes all header-only scripts
 # and components) and relink. Use this when you've only edited files under
 # assets/scripts/ or include/ — skips recompiling glad/shader/asset_loader/input_manager.
 # Their .o files are listed as deps so a fresh checkout still works (they'll be
 # built once and then reused on subsequent `make scripts` runs).
-recompile: glad.o shader_s.o lib_asset_loader.o input_manager.o
+recompile: glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o
 	g++ $(OPENMP) $(INCLUDES) -c main.cpp
-	g++ $(OPENMP) -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o $(LIBS)
+	g++ $(OPENMP) -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o $(LIBS)
 
 main.o: main.cpp
 	g++ $(OPENMP) $(INCLUDES) -c main.cpp
+
+OpenGLRenderer.o: $(GL_RENDERER)
+	g++ $(OPENMP) $(INCLUDES) -c $(GL_RENDERER)
 
 glad.o: $(GLAD)
 	gcc $(INCLUDES) -c $(GLAD)

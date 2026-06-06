@@ -6,7 +6,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
-#include "Render/shader_s.h"
+#include "Render/API/IShader.h"
+#include "Render/API/IMesh.h"
 
 #include <string>
 #include <vector>
@@ -37,7 +38,8 @@ struct Texture {
     string path;
 };
 
-class Mesh {
+// OpenGL implementation of IMesh. Owns the VAO/VBO/EBO for one mesh.
+class Mesh : public IMesh {
 public:
     // mesh Data
     vector<Vertex>       vertices;
@@ -57,7 +59,7 @@ public:
     }
 
     // render the mesh
-    void Draw(Shader &shader) 
+    void Draw(IShader &shader) override
     {
         // bind appropriate textures
         unsigned int diffuseNr  = 1;
@@ -79,8 +81,9 @@ public:
              else if(name == "texture_height")
                 number = std::to_string(heightNr++); // transfer unsigned int to string
 
-            // now set the sampler to the correct texture unit
-            glUniform1i(glGetUniformLocation(shader.ID, (name + number).c_str()), i);
+            // now set the sampler to the correct texture unit (via the interface,
+            // no direct access to a backend-specific program handle)
+            shader.setInt(name + number, i);
             // and finally bind the texture
             glBindTexture(GL_TEXTURE_2D, textures[i].id);
         }

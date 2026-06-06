@@ -1,15 +1,11 @@
 #include <iostream>
 #include <cmath>
 #include <memory>
-#include <glad/glad.h> //glad goes first
+#include <glad/glad.h> //glad goes first (for the GLADloadproc type)
 #include <glfw3.h>
-#include "Render/shader_s.h"
-//#include "assets/scripts/camera.h"
 
-//#define STB_IMAGE_IMPLEMENTATION
-//#include "assets/textures/stb_image.h"
-//#include "Core/lib_asset_loader.h"
-#include "Render/model.h"
+#include "Render/model.h"               // model loading (+ stb image: stbi_set_flip_vertically_on_load)
+#include "Render/GL/OpenGLRenderer.h"   // concrete backend; also brings IRenderer + render types
 #include "Core/Engine/input_manager.h"
 
 #include "Core/Components/Component.h"
@@ -27,7 +23,8 @@
 #include "assets/scripts/spinModel.h"
 #include "assets/scripts/cameraFollow.h"
 
-//TODO: refactor with main to decouple functions into ENGINE and APP.
+// TODO: continue the decouple — extract Window (GLFW) and Engine (the loop) so main
+// collapses to ~6 lines. This pass moved all rendering behind IRenderer.
 
 using namespace std;
 
@@ -35,8 +32,9 @@ using namespace std;
 unsigned int SCR_WIDTH = 1920;
 unsigned int SCR_HEIGHT = 1080;
 
-// Fixed internal render resolution. The scene always renders at this size,
-// then is scaled to fit the window (with letterbox/pillarbox to preserve aspect).
+// Fixed internal render resolution. The scene renders at this size; the renderer
+// scales it to the window (letterbox/pillarbox). Now lives in RenderSettings and is
+// changeable at runtime via renderer->applySettings().
 const int RENDER_WIDTH  = 1920;
 const int RENDER_HEIGHT = 1080;
 
@@ -44,15 +42,13 @@ const int RENDER_HEIGHT = 1080;
 float deltaTime = 0.0f;	// Time between current frame and last frame
 float lastFrame = 0.0f; // Time of last frame
 
-//resize: only tracks the window size now. The viewport is set per-pass in the
-//render loop (FBO pass uses RENDER_*, blit pass uses SCR_*), so we don't call
-//glViewport here anymore.
+// resize: only tracks the window size. The renderer's present pass reads it each
+// frame via onResize(), so we don't touch any GL state here.
 void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
     SCR_WIDTH = width;
     SCR_HEIGHT = (height == 0) ? 1 : height;
 }
 
-// TODO: Apply an Adapter Pattern for Graphic API. We want to migrate to Vulkan or any rendering API in the near future.
 int main()
 {
     //initialize glfw
@@ -60,13 +56,12 @@ int main()
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    // //glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE); //MAC OS
 #ifdef __APPLE__
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
     //create window
-    //TODO: add fullscreen option - uncomment to enable: glfwGetPrimaryMonitor() instead of NULL
+    //TODO: add fullscreen option - glfwGetPrimaryMonitor() instead of NULL
     GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "OpenGL", NULL, NULL);
     if (window == NULL)
     {
@@ -75,105 +70,37 @@ int main()
         return -1;
     }
     glfwMakeContextCurrent(window);
-    glfwSwapInterval( 0 ); //disable vsync
-  
-    //initialize GLAD
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
-    {
-        std::cout << "Failed to initialize GLAD" << std::endl;
+    glfwSwapInterval(0); //disable vsync
+
+    // Renderer: the ONLY place the concrete GL backend is named. Everything below
+    // talks to the IRenderer interface, so swapping backends is a one-line change.
+    std::unique_ptr<IRenderer> renderer =
+        std::make_unique<OpenGLRenderer>((GLADloadproc)glfwGetProcAddress);
+
+    // Resolution + anti-aliasing are runtime-tunable: change these fields and call
+    // renderer->applySettings(...) again at any time to rebuild the targets.
+    RenderSettings rs;
+    rs.renderWidth  = RENDER_WIDTH;
+    rs.renderHeight = RENDER_HEIGHT;
+    rs.aa           = AntiAliasing::MSAA;
+    rs.msaaSamples  = 2;
+    renderer->applySettings(rs);
+
+    if (!renderer->init(SCR_WIDTH, SCR_HEIGHT)) {   // loads GLAD, builds targets + shaders
+        glfwTerminate();
         return -1;
     }
 
     stbi_set_flip_vertically_on_load(true);
 
-    //resize
+    //resize + mouse capture
     glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-    glEnable(GL_DEPTH_TEST);
-    glDisable(GL_MULTISAMPLE);   
-
-    // MSAA samples per pixel for the offscreen scene FBO.
-    const int MSAA_SAMPLES = 2;
-
-    // Pass 1 target: multisample FBO. The scene rasterises here with MSAA_SAMPLES
-    // samples per pixel; we never sample it in a shader, only resolve it by blit
-    // into the intermediate FBO below.
-    unsigned int fbo, fboColor, fboDepth;
-    glGenFramebuffers(1, &fbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-
-    // Color: multisample texture. Could also be a multisample renderbuffer; texture
-    // is here purely to match the LearnOpenGL example structure.
-    glGenTextures(1, &fboColor);
-    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, fboColor);
-    glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, MSAA_SAMPLES, GL_RGB, RENDER_WIDTH, RENDER_HEIGHT, GL_TRUE);
-    glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, fboColor, 0);
-
-    // Depth: matching multisample renderbuffer. Must match color's sample count or
-    // the framebuffer is incomplete.
-    glGenRenderbuffers(1, &fboDepth);
-    glBindRenderbuffer(GL_RENDERBUFFER, fboDepth);
-    glRenderbufferStorageMultisample(GL_RENDERBUFFER, MSAA_SAMPLES, GL_DEPTH_COMPONENT24, RENDER_WIDTH, RENDER_HEIGHT);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, fboDepth);
-
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-        std::cerr << "ERROR: MSAA framebuffer is incomplete\n";
-
-    // Pass 1.5 target: single-sample FBO that receives the resolved MSAA color via
-    // glBlitFramebuffer. Its color texture is then sampled by the screen quad in
-    // pass 2.
-    unsigned int intermediateFbo, screenTexture;
-    glGenFramebuffers(1, &intermediateFbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, intermediateFbo);
-    glGenTextures(1, &screenTexture);
-    glBindTexture(GL_TEXTURE_2D, screenTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, RENDER_WIDTH, RENDER_HEIGHT, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, screenTexture, 0);
-
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-        std::cerr << "ERROR: Intermediate framebuffer is incomplete\n";
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    // Fullscreen quad in NDC space. With glViewport set to the letterbox rect
-    // before drawing, this maps to exactly that rect on the window.
-    const float quadVertices[] = {
-        // pos        uv
-        -1.0f,  1.0f, 0.0f, 1.0f,
-        -1.0f, -1.0f, 0.0f, 0.0f,
-         1.0f, -1.0f, 1.0f, 0.0f,
-        -1.0f,  1.0f, 0.0f, 1.0f,
-         1.0f, -1.0f, 1.0f, 0.0f,
-         1.0f,  1.0f, 1.0f, 1.0f,
-    };
-    unsigned int quadVAO, quadVBO;
-    glGenVertexArrays(1, &quadVAO);
-    glGenBuffers(1, &quadVBO);
-    glBindVertexArray(quadVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, quadVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(1);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
-    glBindVertexArray(0);
-
-    //mouse capture
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-    //glfwSetCursorPosCallback(window, mouse_callback);
-    if (glfwRawMouseMotionSupported()) {
-            glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
-        }
+    if (glfwRawMouseMotionSupported())
+        glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
 
     InputManager input(window);
     input.BindAction("Quit", GLFW_KEY_ESCAPE);
-    // input.BindAction("CameraMoveForward", GLFW_KEY_W);
-    // input.BindAction("CameraMoveBackward", GLFW_KEY_S);
-    // input.BindAction("CameraMoveLeft", GLFW_KEY_A);
-    // input.BindAction("CameraMoveRight", GLFW_KEY_D);
-    // input.BindAction("CameraMoveUp", GLFW_KEY_Q);
-    // input.BindAction("CameraMoveDown", GLFW_KEY_E);
     input.BindAction("MoveBackward", GLFW_KEY_DOWN);
     input.BindAction("MoveForward", GLFW_KEY_UP);
     input.BindAction("MoveRight", GLFW_KEY_RIGHT);
@@ -181,32 +108,24 @@ int main()
     input.BindAction("RotateRight", GLFW_KEY_M);
     input.BindAction("RotateLeft", GLFW_KEY_N);
     input.BindAction("ToggleFlashlight", GLFW_KEY_F);
-    // input.BindAction("MSAA_UP", GLFW_KEY_K);
-    // input.BindAction("MSAA_DOWN", GLFW_KEY_J);
+    //TODO: bind AA/resolution toggles here and call renderer->applySettings() at runtime.
 
-
-
-    //TODO: add ToggleFullscreen action (F11) with glfwSetWindowMonitor
-
+    //TODO: Create scene loader. Injects the objects from a JSON file.
+    // ===== Scene =====
     auto playground = std::make_unique<GameObject>();
     playground->Name = "playground";
     playground->addComponent<TransformComponent3D>()->Position = {0, -1, 0};
     playground->addComponent<MeshComponent>("assets/models/test_playground/testPlayground.obj");
-    //playground->getComponent<TransformComponent3D>()->Scale = {0.2f, 0.2f, 0.2f}; 
     playground->start();
-
 
     auto player = std::make_unique<GameObject>();
     player->Name = "Player";
     player->addComponent<TransformComponent3D>()->Position = {0, -1, 0};
     player->addComponent<MeshComponent>("assets/models/nier/2B.obj");
-    //player->addComponent<MeshComponent>("assets/models/backpack/backpack.obj", /*flipUVs=*/true); 
-    //flip UVs. Different models have different conventions, flip them if troubleshooting.
     player->addComponent<InputComponent>(&input);
     player->addComponent<ColliderComponent3D>()->Shape = std::make_unique<BoxShape>(glm::vec3(0.5f, 1.0f, 0.5f));
     player->addComponent<CharacterComponent>();
-    player->addComponent<CharacterController>(); //scripts always goes last.
-    //player->addComponent<SpinModel>();
+    player->addComponent<CharacterController>(); //scripts always go last.
     player->start();
 
     auto fish = std::make_unique<GameObject>();
@@ -230,206 +149,112 @@ int main()
     auto camera = std::make_unique<GameObject>();
     camera->Name = "MainCamera";
     camera->addComponent<TransformComponent3D>()->Position = {-1, 1, 0};
-    //camera->addComponent<TransformComponent3D>()->owner = player.get(); 
     camera->addComponent<InputComponent>(&input);
     camera->addComponent<CameraComponent>();
-    // camera->addComponent<CameraController>();
-
     camera->addComponent<CameraFollow>(); //script
     camera->getComponent<CameraFollow>()->Target = player.get();
     camera->start();
+
     bool flashlightOn = false;
 
+    // Build a point light from a lamp's position + color (mirrors the old setPointLight).
+    auto makePoint = [](const glm::vec3& pos, const glm::vec3& color) {
+        PointLight pl;
+        pl.position  = pos;
+        pl.constant  = 1.0f; pl.linear = 0.09f; pl.quadratic = 0.032f;
+        pl.ambient   = 0.05f * color;
+        pl.diffuse   = color;
+        pl.specular  = color;
+        pl.enabled   = true;
+        return pl;
+    };
 
-
-    Shader shaderProgram("assets/shaders/vertex_s.vs", "assets/shaders/fragment_s.fs");
-    Shader shaderLight("assets/shaders/light_s.vs", "assets/shaders/light_s.fs");
-    Shader shaderLighting("assets/shaders/advanced_lighting.vs", "assets/shaders/advanced_lighting.fs");
-    Shader msaaPost("assets/shaders/msaa_post.vs", "assets/shaders/msaa_post.fs");
-    msaaPost.use();
-    msaaPost.setInt("screenTexture", 0);
-
-    //main loop the more you can take out of the loop the better
-    while(!glfwWindowShouldClose(window))
+    //main loop — the more you can take out of the loop the better
+    while (!glfwWindowShouldClose(window))
     {
-        //calculate physics
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
-        if (input.IsActionReleased("Quit")) {
-            glfwSetWindowShouldClose(window, true);
-        }
-        if (input.IsActionReleased("ToggleFlashlight")) {
-            flashlightOn = !flashlightOn;
-        }
-        // if (input.IsActionReleased("MSAA_UP") && msaaSamples < 16) {
-        //     msaaSamples *= 2;
-        //     std::cout << "MSAA samples: " << msaaSamples << '\n';
-        // }
-        // if (input.IsActionReleased("MSAA_DOWN") && msaaSamples > 2) {
-        //     msaaSamples /= 2;
-        //     std::cout << "MSAA samples: " << msaaSamples << '\n';
-        // }
+        if (input.IsActionReleased("Quit"))             glfwSetWindowShouldClose(window, true);
+        if (input.IsActionReleased("ToggleFlashlight")) flashlightOn = !flashlightOn;
 
-        // drive all components on the camera (movement + mouse look)
+        // --- update simulation ---
         camera->update(deltaTime);
-
-        // Pass 1, render the scene into the offscreen FBO
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glViewport(0, 0, RENDER_WIDTH, RENDER_HEIGHT);
-        glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
-        glEnable(GL_DEPTH_TEST);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        auto* cam = camera->getComponent<CameraComponent>(); //get camera component might be null
-        glm::mat4 view = cam->viewMatrix();
-        // Aspect ratio is fixed by the internal resolution now, NOT the window.
-        glm::mat4 proj = cam->projectionMatrix((float)RENDER_WIDTH / (float)RENDER_HEIGHT);
-        const glm::vec3 camPos = cam->owner->getComponent<TransformComponent3D>()->Position;
-
-        // Update all transforms before drawing so the light source's position
-        // (read off the fish below) is current for this frame.
         player->update(deltaTime);
         fish->update(deltaTime);
         fish2->update(deltaTime);
+        playground->update(deltaTime);
         ColliderComponent3D::tickWorld();
 
-        // Light source: the spinning cube. Drawn first with the unlit shader so
-        // we can sample its transform for lightPos before lighting the player.
-        const glm::vec3 lightPos = fish->getComponent<TransformComponent3D>()->Position;
+        // --- gather camera for this frame ---
+        auto* cam = camera->getComponent<CameraComponent>();
+        const RenderSettings& settings = renderer->settings();
+        const float aspect = (float)settings.renderWidth / (float)settings.renderHeight;
+
+        CameraView cv;
+        cv.view       = cam->viewMatrix();
+        cv.projection = cam->projectionMatrix(aspect);
+        cv.position   = cam->owner->getComponent<TransformComponent3D>()->Position;
+
+        // --- gather lights: two fish are point lamps, flashlight is a camera spot ---
+        const glm::vec3 lightPos  = fish->getComponent<TransformComponent3D>()->Position;
         const glm::vec3 lightPos2 = fish2->getComponent<TransformComponent3D>()->Position;
 
-        shaderLight.use();
-        shaderLight.setMat4("view", view);
-        shaderLight.setMat4("projection", proj);
+        LightSet lights;
+        lights.dir.direction = {-0.2f, -1.0f, -0.3f};
+        lights.dir.ambient   = { 0.05f, 0.05f, 0.05f};
+        lights.dir.diffuse   = { 0.30f, 0.30f, 0.30f};
+        lights.dir.specular  = { 0.40f, 0.40f, 0.40f};
+        lights.points.push_back(makePoint(lightPos,  lightColor));
+        lights.points.push_back(makePoint(lightPos2, lightColor2));
 
-        shaderLight.setVec3("lightColor", lightColor.x, lightColor.y, lightColor.z);
-        fish->getComponent<MeshComponent>()->draw(shaderLight);
+        lights.spot.position    = cv.position;
+        lights.spot.direction   = cam->forward();
+        lights.spot.cutOff      = glm::cos(glm::radians(12.5f));
+        lights.spot.outerCutOff = glm::cos(glm::radians(17.5f));
+        lights.spot.constant    = 1.0f;
+        lights.spot.linear      = 0.09f;
+        lights.spot.quadratic   = 0.032f;
+        lights.spot.diffuse     = glm::vec3(1.0f);
+        lights.spot.specular    = glm::vec3(1.0f);
+        lights.spot.enabled     = flashlightOn;
 
-        shaderLight.setVec3("lightColor", lightColor2.x, lightColor2.y, lightColor2.z);
-        fish2->getComponent<MeshComponent>()->draw(shaderLight);
+        // --- render ---
+        renderer->onResize(SCR_WIDTH, SCR_HEIGHT);
+        renderer->beginScene(cv);
+        renderer->setLights(lights);
 
-        // Lit object: the player. advanced_lighting samples texture_diffuse1 for
-        // base color (bound automatically by Mesh::Draw) and branches on `blinn`
-        // between Phong and Blinn-Phong specular.
-        shaderLighting.use();
-        shaderLighting.setMat4("view", view);
-        shaderLighting.setMat4("projection", proj);
-        shaderLighting.setVec3("viewPos", camPos.x, camPos.y, camPos.z);
-        shaderLighting.setFloat("shininess", 32.0f);
+        // Fish are unlit lamps (drawn in their own color); player + playground are lit.
+        RenderItem fishItem = fish->getComponent<MeshComponent>()->renderItem();
+        fishItem.material = MaterialKind::Unlit;  fishItem.unlitColor = lightColor;
+        renderer->submit(fishItem);
 
-        // Directional light: a dim white "sun" so surfaces facing away from the
-        // point lights aren't pitch black.
-        shaderLighting.setVec3("dirLight.direction", -0.2f, -1.0f, -0.3f);
-        shaderLighting.setVec3("dirLight.ambient",   0.05f, 0.05f, 0.05f);
-        shaderLighting.setVec3("dirLight.diffuse",   0.30f, 0.30f, 0.30f);
-        shaderLighting.setVec3("dirLight.specular",  0.40f, 0.40f, 0.40f);
+        RenderItem fish2Item = fish2->getComponent<MeshComponent>()->renderItem();
+        fish2Item.material = MaterialKind::Unlit;  fish2Item.unlitColor = lightColor2;
+        renderer->submit(fish2Item);
 
-        // Point lights: index 0 = fish (lightColor), 1 = fish2 (lightColor2).
-        // The cube each light is drawn as uses the same color, so the lamp you see
-        // matches the light it casts. Unused slots are zeroed (constant=1 keeps
-        // attenuation finite so a 0 color contributes exactly 0, never NaN).
-        auto setPointLight = [&](int i, const glm::vec3& pos, const glm::vec3& color, bool on) {
-            std::string p = "pointLights[" + std::to_string(i) + "].";
-            shaderLighting.setVec3(p + "position", pos.x, pos.y, pos.z);
-            shaderLighting.setFloat(p + "constant", 1.0f);
-            shaderLighting.setFloat(p + "linear",    on ? 0.09f  : 0.0f);
-            shaderLighting.setFloat(p + "quadratic", on ? 0.032f : 0.0f);
-            glm::vec3 c = on ? color : glm::vec3(0.0f);
-            shaderLighting.setVec3(p + "ambient",  0.05f * c.x, 0.05f * c.y, 0.05f * c.z);
-            shaderLighting.setVec3(p + "diffuse",  c.x, c.y, c.z);
-            shaderLighting.setVec3(p + "specular", c.x, c.y, c.z);
-        };
-        setPointLight(0, lightPos,  lightColor,  true);
-        setPointLight(1, lightPos2, lightColor2, true);
-        setPointLight(2, glm::vec3(0.0f), glm::vec3(0.0f), false);
-        setPointLight(3, glm::vec3(0.0f), glm::vec3(0.0f), false);
+        renderer->submit(player->getComponent<MeshComponent>()->renderItem());
+        renderer->submit(playground->getComponent<MeshComponent>()->renderItem());
 
-        // Spotlight: a flashlight locked to the camera (position + facing).
-        const glm::vec3 camFront = cam->forward();
-        glm::vec3 sc = flashlightOn ? glm::vec3(1.0f) : glm::vec3(0.0f);
-        shaderLighting.setVec3("spotLight.position",  camPos.x,   camPos.y,   camPos.z);
-        shaderLighting.setVec3("spotLight.direction", camFront.x, camFront.y, camFront.z);
-        shaderLighting.setFloat("spotLight.cutOff",      glm::cos(glm::radians(12.5f)));
-        shaderLighting.setFloat("spotLight.outerCutOff", glm::cos(glm::radians(17.5f)));
-        shaderLighting.setFloat("spotLight.constant",  1.0f);
-        shaderLighting.setFloat("spotLight.linear",    0.09f);
-        shaderLighting.setFloat("spotLight.quadratic", 0.032f);
-        shaderLighting.setVec3("spotLight.ambient",  0.0f, 0.0f, 0.0f);
-        shaderLighting.setVec3("spotLight.diffuse",  sc.x, sc.y, sc.z);
-        shaderLighting.setVec3("spotLight.specular", sc.x, sc.y, sc.z);
-
-        player->getComponent<MeshComponent>()->draw(shaderLighting);
-
-        playground->update(deltaTime);
-        // shaderProgram.use();
-        // shaderProgram.setMat4("view", view);
-        // shaderProgram.setMat4("projection", proj);
-        playground->getComponent<MeshComponent>()->draw(shaderLighting);
-
-        // Pass 1.5: resolve MSAA. Source and dest rects must match in size when the
-        // source has samples > 0, so we resolve at native render resolution into
-        // the single-sample intermediate FBO.
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, intermediateFbo);
-        glBlitFramebuffer(0, 0, RENDER_WIDTH, RENDER_HEIGHT,
-                          0, 0, RENDER_WIDTH, RENDER_HEIGHT,
-                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
-
-        // Pass 2: draw a fullscreen quad sampling the resolved texture into the
-        // letterbox/pillarbox region of the window. The viewport handles scaling.
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glDisable(GL_DEPTH_TEST);
-        glViewport(0, 0, SCR_WIDTH, SCR_HEIGHT);
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-
-        const float renderAspect = (float)RENDER_WIDTH / (float)RENDER_HEIGHT;
-        const float windowAspect = (float)SCR_WIDTH    / (float)SCR_HEIGHT;
-        int dx, dy, dw, dh;
-        if (windowAspect > renderAspect) {
-            dh = SCR_HEIGHT;
-            dw = (int)(SCR_HEIGHT * renderAspect);
-            dx = ((int)SCR_WIDTH - dw) / 2;
-            dy = 0;
-        } else {
-            dw = SCR_WIDTH;
-            dh = (int)(SCR_WIDTH / renderAspect);
-            dx = 0;
-            dy = ((int)SCR_HEIGHT - dh) / 2;
-        }
-        glViewport(dx, dy, dw, dh);
-        msaaPost.use();
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, screenTexture);
-        glBindVertexArray(quadVAO);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        glBindVertexArray(0);
+        renderer->endScene();
 
         input.ResetFrame();
 
-        //check all events and swap buffer
+        //check all events and swap buffers
         glfwSwapBuffers(window);
-        glfwPollEvents();    //SO events like key, mouse, etc
+        glfwPollEvents();
     }
 
-    // cleanup
-    glDeleteFramebuffers(1, &fbo);
-    glDeleteTextures(1, &fboColor);
-    glDeleteRenderbuffers(1, &fboDepth);
-    glDeleteFramebuffers(1, &intermediateFbo);
-    glDeleteTextures(1, &screenTexture);
-    glDeleteVertexArrays(1, &quadVAO);
-    glDeleteBuffers(1, &quadVBO);
-
-    // Release GPU-owning objects while the GL context is still alive.
-    // Mesh/Model dtors call glDelete*; running them after glfwTerminate() segfaults.
+    // cleanup: release GPU-owning objects while the GL context is still alive.
+    // Mesh/Model dtors call glDelete*; the renderer deletes its FBOs/shaders/quad.
+    // All must run before glfwTerminate().
     playground.reset();
     player.reset();
     fish.reset();
     fish2.reset();
     camera.reset();
+    renderer.reset();
 
     glfwTerminate();
     return 0;

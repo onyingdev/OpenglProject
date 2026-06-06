@@ -1,0 +1,270 @@
+#include "Render/GL/OpenGLRenderer.h"
+#include "Render/API/IModel.h"   // complete type needed to call IModel::Draw
+#include <iostream>
+#include <string>
+
+OpenGLRenderer::OpenGLRenderer(GLADloadproc loader) : m_loader(loader) {}
+
+OpenGLRenderer::~OpenGLRenderer() {
+    destroyTargets();
+    if (m_quadVbo) glDeleteBuffers(1, &m_quadVbo);
+    if (m_quadVao) glDeleteVertexArrays(1, &m_quadVao);
+}
+
+bool OpenGLRenderer::init(int fbW, int fbH) {
+    if (!m_glLoaded) {
+        if (!gladLoadGLLoader(m_loader)) {
+            std::cerr << "OpenGLRenderer: failed to initialize GLAD\n";
+            return false;
+        }
+        m_glLoaded = true;
+    }
+    m_fbWidth  = fbW;
+    m_fbHeight = (fbH == 0) ? 1 : fbH;
+
+    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_MULTISAMPLE);   // the multisample FBO drives AA, not global state
+
+    // Built-in shaders (the GL backend owns them; RenderItems pick a material, not a shader).
+    m_lit   = std::make_unique<Shader>("assets/shaders/advanced_lighting.vs", "assets/shaders/advanced_lighting.fs");
+    m_unlit = std::make_unique<Shader>("assets/shaders/light_s.vs",           "assets/shaders/light_s.fs");
+    m_post  = std::make_unique<Shader>("assets/shaders/msaa_post.vs",         "assets/shaders/msaa_post.fs");
+    m_post->use();
+    m_post->setInt("screenTexture", 0);
+
+    buildQuad();
+    buildTargets();
+    return true;
+}
+
+void OpenGLRenderer::buildQuad() {
+    // Fullscreen quad in NDC; the present pass scales it into the letterbox rect.
+    const float quad[] = {
+        // pos        uv
+        -1.0f,  1.0f, 0.0f, 1.0f,
+        -1.0f, -1.0f, 0.0f, 0.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+        -1.0f,  1.0f, 0.0f, 1.0f,
+         1.0f, -1.0f, 1.0f, 0.0f,
+         1.0f,  1.0f, 1.0f, 1.0f,
+    };
+    glGenVertexArrays(1, &m_quadVao);
+    glGenBuffers(1, &m_quadVbo);
+    glBindVertexArray(m_quadVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_quadVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glBindVertexArray(0);
+}
+
+void OpenGLRenderer::destroyTargets() {
+    if (m_sceneDepth)   { glDeleteRenderbuffers(1, &m_sceneDepth); m_sceneDepth = 0; }
+    if (m_sceneColor)   { glDeleteTextures(1, &m_sceneColor);      m_sceneColor = 0; }
+    if (m_sceneFbo)     { glDeleteFramebuffers(1, &m_sceneFbo);    m_sceneFbo = 0; }
+    if (m_resolveColor) { glDeleteTextures(1, &m_resolveColor);    m_resolveColor = 0; }
+    if (m_resolveFbo)   { glDeleteFramebuffers(1, &m_resolveFbo);  m_resolveFbo = 0; }
+    m_presentTex = 0;
+}
+
+void OpenGLRenderer::buildTargets() {
+    destroyTargets();
+    const int rw = m_settings.renderWidth;
+    const int rh = m_settings.renderHeight;
+    m_multisampled = (m_settings.aa == AntiAliasing::MSAA && m_settings.msaaSamples > 1);
+    const int samples = m_multisampled ? m_settings.msaaSamples : 1;
+
+    glGenFramebuffers(1, &m_sceneFbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_sceneFbo);
+
+    if (m_multisampled) {
+        // Multisample color texture + matching multisample depth renderbuffer.
+        glGenTextures(1, &m_sceneColor);
+        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, m_sceneColor);
+        glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, samples, GL_RGB, rw, rh, GL_TRUE);
+        glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, m_sceneColor, 0);
+
+        glGenRenderbuffers(1, &m_sceneDepth);
+        glBindRenderbuffer(GL_RENDERBUFFER, m_sceneDepth);
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH_COMPONENT24, rw, rh);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_sceneDepth);
+
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            std::cerr << "OpenGLRenderer: MSAA framebuffer is incomplete\n";
+
+        // Single-sample resolve target that the present pass samples.
+        glGenFramebuffers(1, &m_resolveFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, m_resolveFbo);
+        glGenTextures(1, &m_resolveColor);
+        glBindTexture(GL_TEXTURE_2D, m_resolveColor);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rw, rh, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_resolveColor, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            std::cerr << "OpenGLRenderer: resolve framebuffer is incomplete\n";
+
+        m_presentTex = m_resolveColor;
+    } else {
+        // No MSAA: single-sample color texture sampled directly by the present pass.
+        glGenTextures(1, &m_sceneColor);
+        glBindTexture(GL_TEXTURE_2D, m_sceneColor);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rw, rh, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_sceneColor, 0);
+
+        glGenRenderbuffers(1, &m_sceneDepth);
+        glBindRenderbuffer(GL_RENDERBUFFER, m_sceneDepth);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, rw, rh);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_sceneDepth);
+
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            std::cerr << "OpenGLRenderer: scene framebuffer is incomplete\n";
+
+        m_presentTex = m_sceneColor;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void OpenGLRenderer::applySettings(const RenderSettings& s) {
+    const bool targetsChanged =
+        s.renderWidth  != m_settings.renderWidth  ||
+        s.renderHeight != m_settings.renderHeight ||
+        s.aa           != m_settings.aa           ||
+        s.msaaSamples  != m_settings.msaaSamples;
+    m_settings = s;
+    if (m_glLoaded && targetsChanged) buildTargets();
+}
+
+void OpenGLRenderer::onResize(int w, int h) {
+    m_fbWidth  = w;
+    m_fbHeight = (h == 0) ? 1 : h;   // present pass uses this for the letterbox rect
+}
+
+void OpenGLRenderer::beginScene(const CameraView& cam) {
+    m_camera = cam;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, m_sceneFbo);
+    glViewport(0, 0, m_settings.renderWidth, m_settings.renderHeight);
+    glEnable(GL_DEPTH_TEST);
+    glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    // Push camera matrices to both built-in shaders up front.
+    m_lit->use();
+    m_lit->setMat4("view", cam.view);
+    m_lit->setMat4("projection", cam.projection);
+    m_lit->setVec3("viewPos", cam.position.x, cam.position.y, cam.position.z);
+    m_lit->setFloat("shininess", 32.0f);
+
+    m_unlit->use();
+    m_unlit->setMat4("view", cam.view);
+    m_unlit->setMat4("projection", cam.projection);
+}
+
+void OpenGLRenderer::setLights(const LightSet& lights) {
+    m_lights = lights;
+    m_lit->use();
+
+    // Directional "sun".
+    m_lit->setVec3("dirLight.direction", lights.dir.direction.x, lights.dir.direction.y, lights.dir.direction.z);
+    m_lit->setVec3("dirLight.ambient",   lights.dir.ambient.x,   lights.dir.ambient.y,   lights.dir.ambient.z);
+    m_lit->setVec3("dirLight.diffuse",   lights.dir.diffuse.x,   lights.dir.diffuse.y,   lights.dir.diffuse.z);
+    m_lit->setVec3("dirLight.specular",  lights.dir.specular.x,  lights.dir.specular.y,  lights.dir.specular.z);
+
+    // Up to 4 point lights; unused/disabled slots contribute nothing (constant=1
+    // keeps attenuation finite so a zero color stays exactly zero, never NaN).
+    const int NR_POINT_LIGHTS = 4;
+    for (int i = 0; i < NR_POINT_LIGHTS; ++i) {
+        const std::string p = "pointLights[" + std::to_string(i) + "].";
+        const bool on = i < (int)lights.points.size() && lights.points[i].enabled;
+        const PointLight pl = on ? lights.points[i] : PointLight{};
+        m_lit->setVec3 (p + "position",  pl.position.x, pl.position.y, pl.position.z);
+        m_lit->setFloat(p + "constant",  pl.constant);
+        m_lit->setFloat(p + "linear",    on ? pl.linear    : 0.0f);
+        m_lit->setFloat(p + "quadratic", on ? pl.quadratic : 0.0f);
+        m_lit->setVec3 (p + "ambient",   pl.ambient.x,  pl.ambient.y,  pl.ambient.z);
+        m_lit->setVec3 (p + "diffuse",   pl.diffuse.x,  pl.diffuse.y,  pl.diffuse.z);
+        m_lit->setVec3 (p + "specular",  pl.specular.x, pl.specular.y, pl.specular.z);
+    }
+
+    // Spotlight (camera flashlight). Colors are pre-gated by the caller via enabled.
+    const SpotLight& s = lights.spot;
+    const glm::vec3 d = s.enabled ? s.diffuse  : glm::vec3(0.0f);
+    const glm::vec3 sp = s.enabled ? s.specular : glm::vec3(0.0f);
+    m_lit->setVec3 ("spotLight.position",    s.position.x,  s.position.y,  s.position.z);
+    m_lit->setVec3 ("spotLight.direction",   s.direction.x, s.direction.y, s.direction.z);
+    m_lit->setFloat("spotLight.cutOff",      s.cutOff);
+    m_lit->setFloat("spotLight.outerCutOff", s.outerCutOff);
+    m_lit->setFloat("spotLight.constant",    s.constant);
+    m_lit->setFloat("spotLight.linear",      s.linear);
+    m_lit->setFloat("spotLight.quadratic",   s.quadratic);
+    m_lit->setVec3 ("spotLight.ambient",     0.0f, 0.0f, 0.0f);
+    m_lit->setVec3 ("spotLight.diffuse",     d.x,  d.y,  d.z);
+    m_lit->setVec3 ("spotLight.specular",    sp.x, sp.y, sp.z);
+}
+
+void OpenGLRenderer::submit(const RenderItem& item) {
+    if (!item.model) return;
+
+    Shader* sh = (item.material == MaterialKind::Lit) ? m_lit.get() : m_unlit.get();
+    sh->use();
+    sh->setMat4("model", item.modelMatrix);
+    if (item.material == MaterialKind::Unlit)
+        sh->setVec3("lightColor", item.unlitColor.x, item.unlitColor.y, item.unlitColor.z);
+
+    if (item.wireframe) {
+        glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        item.model->Draw(*sh);
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    } else {
+        item.model->Draw(*sh);
+    }
+}
+
+void OpenGLRenderer::endScene() {
+    const int rw = m_settings.renderWidth;
+    const int rh = m_settings.renderHeight;
+
+    // Resolve MSAA into the single-sample resolve FBO (no-op when AA is off).
+    if (m_multisampled) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, m_sceneFbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_resolveFbo);
+        glBlitFramebuffer(0, 0, rw, rh, 0, 0, rw, rh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    }
+
+    // Present: draw the resolved texture into the letterbox/pillarbox region of the
+    // window (default framebuffer). The viewport handles the scaling.
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDisable(GL_DEPTH_TEST);
+    glViewport(0, 0, m_fbWidth, m_fbHeight);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    const float renderAspect = (float)rw / (float)rh;
+    const float windowAspect = (float)m_fbWidth / (float)m_fbHeight;
+    int dx, dy, dw, dh;
+    if (windowAspect > renderAspect) {
+        dh = m_fbHeight;
+        dw = (int)(m_fbHeight * renderAspect);
+        dx = (m_fbWidth - dw) / 2;
+        dy = 0;
+    } else {
+        dw = m_fbWidth;
+        dh = (int)(m_fbWidth / renderAspect);
+        dx = 0;
+        dy = (m_fbHeight - dh) / 2;
+    }
+    glViewport(dx, dy, dw, dh);
+
+    m_post->use();
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, m_presentTex);
+    glBindVertexArray(m_quadVao);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+}

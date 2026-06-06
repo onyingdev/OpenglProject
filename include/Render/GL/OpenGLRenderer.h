@@ -1,0 +1,56 @@
+#pragma once
+#include <glad/glad.h>
+#include <memory>
+#include "Render/API/IRenderer.h"
+#include "Render/shader_s.h"
+
+// OpenGL 3.3 implementation of IRenderer. Owns the offscreen scene framebuffer(s),
+// the built-in shaders, and the fullscreen present quad. Rebuilds its render targets
+// when the resolution or anti-aliasing mode changes at runtime (applySettings).
+class OpenGLRenderer : public IRenderer {
+public:
+    // loader is GLFW's glfwGetProcAddress, cast to GLADloadproc. It lives in the GL
+    // backend so the generic IRenderer never sees a platform/GL loader type.
+    explicit OpenGLRenderer(GLADloadproc loader);
+    ~OpenGLRenderer() override;
+
+    bool init(int framebufferWidth, int framebufferHeight) override;
+    void applySettings(const RenderSettings& settings) override;
+    const RenderSettings& settings() const override { return m_settings; }
+    void onResize(int framebufferWidth, int framebufferHeight) override;
+
+    void beginScene(const CameraView& camera) override;
+    void setLights(const LightSet& lights) override;
+    void submit(const RenderItem& item) override;
+    void endScene() override;
+
+private:
+    void buildTargets();    // (re)create scene/resolve FBOs for the current settings
+    void destroyTargets();
+    void buildQuad();       // fullscreen present quad (created once)
+
+    GLADloadproc   m_loader   = nullptr;
+    bool           m_glLoaded = false;
+    RenderSettings m_settings;
+
+    int m_fbWidth = 0, m_fbHeight = 0;   // default framebuffer (window) size
+
+    // Offscreen targets. When MSAA is on, the scene renders into the multisample
+    // FBO and is resolved into the single-sample resolve FBO; the present pass
+    // samples m_presentTex (resolve color for MSAA, scene color otherwise).
+    GLuint m_sceneFbo = 0, m_sceneColor = 0, m_sceneDepth = 0;
+    GLuint m_resolveFbo = 0, m_resolveColor = 0;
+    GLuint m_presentTex = 0;
+    bool   m_multisampled = false;
+
+    // Fullscreen present quad.
+    GLuint m_quadVao = 0, m_quadVbo = 0;
+
+    // Built-in shaders (owned by the GL backend).
+    std::unique_ptr<Shader> m_lit;    // advanced_lighting
+    std::unique_ptr<Shader> m_unlit;  // light_s
+    std::unique_ptr<Shader> m_post;   // msaa_post (fullscreen present)
+
+    CameraView m_camera;
+    LightSet   m_lights;
+};

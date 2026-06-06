@@ -51,6 +51,10 @@ A 3D graphics engine based on OpenGL written in C++, with a flexible component s
 make
 ```
 
+`make recompile` rebuilds only `main.o` (and relinks), skipping the vendored
+`glad`/`shader`/`asset_loader`/`input_manager` objects — use it when you only
+touched header-only code under `include/` or `assets/scripts/`.
+
 ### Run
 
 ```bash
@@ -63,67 +67,101 @@ make
 make clean
 ```
 
+### Include paths
+
+Sources reference headers by **logical path**, not relative `../..` chains:
+
+```cpp
+#include "Core/Components/GameObject.h"   // engine header   (-Iinclude)
+#include "Components/Rendering/MeshComponent.h"
+#include <glm/glm.hpp>                     // vendored library (-isystem vendor/glm)
+```
+
+These roots are declared once in the `Makefile` (`INCLUDES = -I. -Iinclude
+-isystem vendor/glad -isystem vendor/glm -isystem vendor/GLFW/include`) and
+mirrored for the editor in `.vscode/c_cpp_properties.json`. Moving a folder only
+updates those roots — never the include lines in every file.
+
 ## Project Structure
 
 ```
 .
-├── assets/                 # Game content
-│   ├── models/            # 3D models (OBJ, FBX, etc.)
-│   ├── shaders/           # Shader files (*.vs, *.fs)
-│   ├── textures/          # Textures and images
-│   └── scripts/           # Behavior scripts (C++)
-├── include/               # Public headers
-│   ├── Components/        # Reusable components
-│   ├── Core/              # Base system (GameObject, Component, Input)
-│   └── Render/            # Rendering (Shader, Model, Mesh)
-├── src/                   # Implementation
-│   ├── Core/              # Core implementation
-│   └── Render/            # Render implementation
-├── vendor/                # External dependencies
-│   ├── glad/              # OpenGL loader
-│   ├── GLFW/              # Window and input
-│   └── glm/               # Vector math
-├── main.cpp               # Entry point
-├── Makefile               # Build script
-└── README.md              # This file
+├── assets/                       # Game content
+│   ├── models/                   # 3D models (OBJ/FBX) with their textures + materials
+│   ├── shaders/                  # GLSL shaders (*.vs, *.fs)
+│   ├── textures/                 # Standalone textures
+│   └── scripts/                  # Behavior scripts (header-only C++)
+├── include/                      # Engine headers (mostly header-only)
+│   ├── Components/                # Attachable components, grouped by subsystem
+│   │   ├── Rendering/            #   MeshComponent, CameraComponent
+│   │   ├── Physics/              #   ColliderComponent3D, RigidBodyComponent3D
+│   │   ├── Input/                #   InputComponent
+│   │   ├── Gameplay/             #   CharacterComponent3D
+│   │   ├── Audio/                #   SoundComponent3D
+│   │   └── World/                #   TerrainComponent3D
+│   ├── Core/                     # Engine foundation
+│   │   ├── Components/           #   Base component types + scene graph
+│   │   │   ├── Component.h       #     base class every component inherits
+│   │   │   ├── GameObject.h      #     component container
+│   │   │   ├── SpatialComponent3D.h  # base for anything with a transform
+│   │   │   ├── TransformComponent3D.h # position/rotation/scale (+ plain Transform POD)
+│   │   │   ├── Scene.h           #     loadable/unloadable object package
+│   │   │   └── script.h         #     Script base class
+│   │   └── Engine/              #   Engine services
+│   │       ├── input_manager.h  #     action → key mapping
+│   │       ├── lib_asset_loader.h #   texture/asset loading
+│   │       ├── exceptions.h     #     engine exceptions / warnings
+│   │       └── stb_image.h      #     image decode (vendored)
+│   └── Render/                   # Rendering primitives (Shader, Model, Mesh)
+├── src/                          # .cpp implementations
+│   ├── Core/                     #   input_manager, lib_asset_loader
+│   └── Render/                   #   shader_s
+├── vendor/                       # Third-party deps (glad, GLFW, glm)
+├── main.cpp                      # Entry point (engine + app, being decoupled)
+├── Makefile                      # Build script (g++, OpenMP, -I include roots)
+└── README.md                     # This file
 ```
 
 ## GameObjects and Components
 
 The architecture is based on the Component Pattern (by Bob Nystrom). A GameObject is defined as a class that is composed primarily by components. Components are individual pieces that can define a characteristic, attribute or behaviour and they can be built from other components but always have unique piece of code that changes their attributes.
 
-### Core Components
+### Core / Foundation (`include/Core/Components`)
 
-The Core Components forms the basis for all components and are required by the software to work.
+The foundation types are required for the engine to work; concrete components inherit from them.
 
-- **Component** - The template for all components, they inherit from here.
-- **TransformComponent3D** - Position, rotation (Euler), and scale in 3D
-- **Script** - The components for scripting
-- **Scene** - This component contains objects like a package that can be loaded/unloaded. 
-- **InputComponent** - Keyboard and mouse input handling
+- **Component** - The template all components inherit from (`start()` / `update(dt)` lifecycle).
+- **GameObject** - Container that owns components and resolves them by type.
+- **SpatialComponent3D** - Base for any component that can be placed in the world. Holds a local `Transform` plus per-axis source pointers that select between the local copy and the owner's transform.
+- **TransformComponent3D** - Position, rotation (Euler degrees), and scale. Backed by a plain `Transform` POD (no vtable/owner overhead) so it can be embedded cheaply.
+- **Script** - Base class for behavior scripts.
+- **Scene** - A package of objects that can be loaded/unloaded.
 
-### Primary Components
+### Components by Subsystem (`include/Components`)
 
-The Primary Components are directly derived from the Core Components, these are used make programming easier
+Concrete, attachable components, grouped by the engine subsystem that drives them.
 
-- **SpatialComponent (requires refactor)** - The spatial component is the most important component of the primary, since they are inherited from this one. Basically any component that has the attribute to be able to be place anywhere is a Spatial Component.
-- **CameraComponent** - Camera with perspective projection
-- **MeshComponent** - 3D model rendering
-- **ColliderComponent3D** - 3D collisions
-- **RigidBodyComponent3D** - Physics (rigid body)
-- **SoundComponent3D** - 3D spatial audio
+- **Rendering/**
+  - **MeshComponent** - 3D model rendering.
+  - **CameraComponent** - Perspective camera (produces view/projection matrices).
+- **Physics/**
+  - **ColliderComponent3D** - Collision shapes (AABB box, sphere) with enter/stay/exit triggers.
+  - **RigidBodyComponent3D** - Physics body *(planned)*.
+- **Input/**
+  - **InputComponent** - Pipes the `InputManager` into per-action callbacks.
+- **Gameplay/**
+  - **CharacterComponent3D** - Marks a GameObject as a playable character (aggregates Mesh + Input).
+- **Audio/**
+  - **SoundComponent3D** - 3D spatial audio source *(planned)*.
+- **World/**
+  - **TerrainComponent3D** - Procedural terrain / LOD maps *(planned)*.
 
-### Additional Components
+### Scripts (`assets/scripts`)
 
-Additional Components derived from other components, makes programming much easier
-
-- **TerrainComponent3D** - Procedural terrain/LOD maps
-- **CharacterComponent3D** - Defines a GameObject as a playable character
-
-### System Scripts
-
-- **CameraController** - Camera movement with WASD and mouse look
-- **SpinModel** - Automatic rotation on the Y axis
+- **CameraController** - Free-camera movement and mouse look.
+- **CameraFollow** - Camera tracks a target with a positional/rotational offset.
+- **CharacterController** - Drives a character from input actions.
+- **SpinModel** - Automatic rotation on an axis.
 
 ## Basic Usage
 
@@ -192,17 +230,18 @@ void main() {
 
 ## Runtime Controls
 
-Currently this will change
+Default bindings (see `main.cpp` → `InputManager::BindAction`). These are a work in progress.
 
 | Key | Action |
 |-------|--------|
-| W | Move forward |
-| S | Move backward |
-| A | Move left |
-| D | Move right |
-| Q | Move up |
-| E | Move down |
-| Mouse | Rotate view |
+| ↑ | Move forward |
+| ↓ | Move backward |
+| ← | Move left |
+| → | Move right |
+| N | Rotate left |
+| M | Rotate right |
+| F | Toggle flashlight |
+| Mouse | Look around |
 | ESC | Exit |
 
 ## Resolution Configuration
@@ -250,6 +289,13 @@ auto* camera = gameObject->getComponent<CameraComponent>();
 auto* mesh = gameObject->addComponent<MeshComponent>("path/to/model.obj");
 ```
 
+### Collision Sweep
+
+`ColliderComponent3D::tickWorld()` runs once per frame over all live colliders,
+testing shapes via double dispatch (box/sphere) and firing OnEnter/OnStay/OnExit
+callbacks. The broadphase is currently O(N²) and parallelized with OpenMP
+(`-fopenmp`); a spatial broadphase is a planned improvement.
+
 ## Troubleshooting
 
 ### "Failed to initialize GLAD"
@@ -259,7 +305,7 @@ Make sure OpenGL 3.3 or higher is available on your GPU.
 Verify that texture paths are relative to the execution directory.
 
 ### Compilation errors with includes
-Run `make clean` and rebuild.
+Confirm the `-I` roots in the `Makefile` match your layout, then run `make clean` and rebuild.
 
 ## License
 
@@ -272,10 +318,4 @@ This project is available under the MIT license.
 - TransformComponent3D uses Euler angles (degrees) for rotation
 - All shaders must be in GLSL 3.30 format
 
-## Next Steps
-
-- [ ] Implement a more complete physics system
-- [ ] Add GUI/HUD
-- [ ] Optimize geometry culling
-- [ ] Particle system
-- [ ] Dynamic lighting
+</content>
