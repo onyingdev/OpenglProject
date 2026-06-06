@@ -1,5 +1,5 @@
 #pragma once
-#include "Core/exceptions.h"
+#include "Core/Engine/exceptions.h"
 
 class GameObject;
 

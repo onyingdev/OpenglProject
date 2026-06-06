@@ -1,8 +1,8 @@
 #include <glad/glad.h>
-#include "Core/lib_asset_loader.h"
+#include "Core/Engine/lib_asset_loader.h"
 
 #define STB_IMAGE_IMPLEMENTATION
-#include "Core/stb_image.h"
+#include "Core/Engine/stb_image.h"
 
 #include <iostream>
 #include <string>

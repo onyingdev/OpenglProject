@@ -1,5 +1,5 @@
 #pragma once
-#include "Core/Component.h"
+#include "Core/Components/Component.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -24,4 +24,4 @@ struct Transform {
 // from Transform; owner/start/update come from Component. Component is listed
 // first so upcasts to Component* need no pointer adjustment (GameObject's Lookup
 // stores Component* and static_casts back to TransformComponent*).
-struct TransformComponent : public Component, public Transform {};
+struct TransformComponent3D : public Component, public Transform {};

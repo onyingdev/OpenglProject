@@ -1,15 +1,15 @@
 #pragma once
-#include "Core/Component.h"
-#include "Core/GameObject.h"
+#include "Core/Components/Component.h"
+#include "Core/Components/GameObject.h"
 #include <glm/glm.hpp>
-#include "Components/TransformComponent3D.h"
+#include "Core/Components/TransformComponent3D.h"
 
 // Spatial: a component with a local transform that can resolve each axis from
 // either the owner's TransformComponent or its own local copy. Per-axis source
 // is stored as a pointer so reads at draw time are a single dereference, with
 // no branching. Writers (setLocal* / local*()) flip the source to local in
 // the same call, so scripts never have to manage the flag manually.
-class SpatialComponent : public Component {
+class SpatialComponent3D : public Component {
 public:
     // This component's own transform. Position/rotation/scale live here; the
     // ref pointers below select, per axis, whether reads come from this local
@@ -28,8 +28,8 @@ public:
     glm::vec3 up()      const { return glm::normalize(glm::cross(right(), forward())); }
 
     void start() override {
-        auto* tf = owner->getComponent<TransformComponent>();
-        if (!tf) throw MissingComponentException("SpatialComponent", "TransformComponent");
+        auto* tf = owner->getComponent<TransformComponent3D>();
+        if (!tf) throw MissingComponentException("SpatialComponent3D", "TransformComponent3D");
         localTransform = static_cast<const Transform&>(*tf); // snapshot owner's transform data at spawn
         positionRef = &localTransform.Position;
         rotationRef = &localTransform.RotationEuler;
@@ -62,13 +62,13 @@ private:
     const glm::vec3* rotationRef = nullptr;
     const glm::vec3* scaleRef    = nullptr;
 
-    TransformComponent* ownerTransform() {
-        auto* tf = owner->getComponent<TransformComponent>();
-        if (!tf) throw MissingComponentException("SpatialComponent", "TransformComponent");
+    TransformComponent3D* ownerTransform() {
+        auto* tf = owner->getComponent<TransformComponent3D>();
+        if (!tf) throw MissingComponentException("SpatialComponent3D", "TransformComponent3D");
         return tf;
     }
 };
 
-// Layout: one local TransformComponent + three per-axis source pointers. The
+// Layout: one local TransformComponent3D + three per-axis source pointers. The
 // pointers default to localTransform at start(), and useOwner*()/setLocal*()
 // retarget them so reads stay a single deref with no branching.

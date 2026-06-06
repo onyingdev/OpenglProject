@@ -3,7 +3,7 @@
 #include <vector>
 #include <typeindex>
 #include <unordered_map>
-#include "Core/Component.h"
+#include "Core/Components/Component.h"
 
 class GameObject {
     std::vector<std::unique_ptr<Component>> Components;

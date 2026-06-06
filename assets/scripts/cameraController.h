@@ -1,15 +1,15 @@
 #pragma once
-#include "Core/script.h"
-#include "Core/GameObject.h"
-#include "Components/TransformComponent3D.h"
-#include "Components/InputComponent.h"
-#include "Components/CameraComponent.h"
+#include "Core/Components/Script.h"
+#include "Core/Components/GameObject.h"
+#include "Core/Components/TransformComponent3D.h"
+#include "Components/Input/InputComponent.h"
+#include "Components/Rendering/CameraComponent.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
 //Camera Controller. Controlls the movement of the object by WASD and rotation by mouse
 class CameraController : public Script {
-    TransformComponent* tf = nullptr;
+    TransformComponent3D* tf = nullptr;
     InputComponent* in = nullptr;
     CameraComponent* cam = nullptr;
 public:
@@ -20,7 +20,7 @@ public:
     float PitchLimit = 89.0f;
 
     void start() override {
-        tf = owner->getComponent<TransformComponent>();
+        tf = owner->getComponent<TransformComponent3D>();
         in = owner->getComponent<InputComponent>();
         cam = owner->getComponent<CameraComponent>();
         if (!cam) throw MissingComponentException("CameraFollow", "CameraComponent");

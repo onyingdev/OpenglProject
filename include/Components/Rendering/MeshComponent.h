@@ -1,5 +1,5 @@
 #pragma once
-#include "Core/SpatialComponent.h"
+#include "Core/Components/SpatialComponent3D.h"
 #include "Render/model.h"
 #include "Render/shader_s.h"
 #include <memory>
@@ -7,7 +7,7 @@
 #include <utility>
 
 // Attach to a GameObject to give it a renderable mesh model.
-class MeshComponent : public SpatialComponent {
+class MeshComponent : public SpatialComponent3D {
 public:
     enum class RenderMode { Solid, Wireframe, Hidden };
 

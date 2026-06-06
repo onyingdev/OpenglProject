@@ -1,7 +1,7 @@
 #pragma once
-#include "Core/script.h"
-#include "Core/GameObject.h"
-#include "Components/MeshComponent.h"
+#include "Core/Components/Script.h"
+#include "Core/Components/GameObject.h"
+#include "Components/Rendering/MeshComponent.h"
 //DEMO SCRIPT.
 
 // Spins the attached GameObject around the Y axis at SpinSpeed degrees/second.

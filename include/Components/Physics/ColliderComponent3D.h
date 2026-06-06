@@ -1,5 +1,5 @@
 #pragma once
-#include "Core/SpatialComponent.h"
+#include "Core/Components/SpatialComponent3D.h"
 #include <glm/glm.hpp>
 #include <functional>
 #include <iostream>
@@ -142,7 +142,7 @@ inline bool BoxShape::intersectsSphere(const SphereShape& other,
 // ColliderComponent3D
 // -----------------------------------------------------------------------------
 
-class ColliderComponent3D : public SpatialComponent {
+class ColliderComponent3D : public SpatialComponent3D {
 public:
     using Callback = std::function<void(ColliderComponent3D* other)>;
 
@@ -160,7 +160,7 @@ public:
     explicit ColliderComponent3D(std::unique_ptr<ColliderShape> shape) : Shape(std::move(shape)) {}
 
     void start() override {
-        SpatialComponent::start();
+        SpatialComponent3D::start();
         if (!Shape) std::cerr << "Warning: ColliderComponent3D on " << owner->Name << " has no shape.\n";
         AllColliders().push_back(this);
     }

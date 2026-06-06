@@ -1,4 +1,4 @@
-#include "Core/input_manager.h"
+#include "Core/Engine/input_manager.h"
 
 InputManager::InputManager(GLFWwindow* window)
     : m_Window(window), firstMouse(true), mouseOffsetX(0.0f), mouseOffsetY(0.0f)

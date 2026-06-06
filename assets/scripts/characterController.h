@@ -1,16 +1,16 @@
 #pragma once
-#include "Core/script.h"
-#include "Core/GameObject.h"
-#include "Components/TransformComponent3D.h"
-#include "Components/InputComponent.h"
+#include "Core/Components/Script.h"
+#include "Core/Components/GameObject.h"
+#include "Core/Components/TransformComponent3D.h"
+#include "Components/Input/InputComponent.h"
 #include <glm/glm.hpp>
-#include "Components/ColliderComponent3D.h"
+#include "Components/Physics/ColliderComponent3D.h"
 
 // Character controller. Movement is integrated in tick() so we can model
 // acceleration and deceleration properly (input handlers only fire while held,
 // so they can't decelerate after release).
 class CharacterController : public Script {
-    TransformComponent* tf = nullptr;
+    TransformComponent3D* tf = nullptr;
     InputComponent* in = nullptr;
     InputManager* im = nullptr;
     glm::vec3 Velocity{0.0f};
@@ -25,11 +25,11 @@ public:
     float RotationSpeed = 180.0f; 
 
     void start() override {
-        tf = owner->getComponent<TransformComponent>();
+        tf = owner->getComponent<TransformComponent3D>();
         in = owner->getComponent<InputComponent>();
         mesh = owner->getComponent<MeshComponent>();
         collider = owner->getComponent<ColliderComponent3D>();
-        if (!tf) throw MissingComponentException("CharacterController", "TransformComponent");
+        if (!tf) throw MissingComponentException("CharacterController", "TransformComponent3D");
         if (!in) throw MissingComponentException("CharacterController", "InputComponent");
         if (!mesh) ComponentWarning::missing("CharacterController", "MeshComponent");
         else mesh->useOwnerPosition(); //mesh position inherits from player object

@@ -2,8 +2,8 @@
 #include <functional>
 #include <string>
 #include <vector>
-#include "Core/Component.h"
-#include "Core/input_manager.h"
+#include "Core/Components/Component.h"
+#include "Core/Engine/input_manager.h"
 
 // Generic input component: pipes the InputManager into per-action callbacks.
 // Behavior components (controllers, abilities, UI) register what to do when

@@ -10,15 +10,17 @@
 //#include "assets/textures/stb_image.h"
 //#include "Core/lib_asset_loader.h"
 #include "Render/model.h"
-#include "Core/input_manager.h"
-#include "Core/Component.h"
-#include "Core/GameObject.h"
-#include "Components/TransformComponent3D.h"
-#include "Components/InputComponent.h"
-#include "Components/CameraComponent.h"
-#include "Components/MeshComponent.h"
-#include "Components/CharacterComponent3D.h"
-#include "Components/ColliderComponent3D.h"
+#include "Core/Engine/input_manager.h"
+
+#include "Core/Components/Component.h"
+#include "Core/Components/GameObject.h"
+#include "Core/Components/TransformComponent3D.h"
+
+#include "Components/Input/InputComponent.h"
+#include "Components/Rendering/CameraComponent.h"
+#include "Components/Rendering/MeshComponent.h"
+#include "Components/Gameplay/CharacterComponent3D.h"
+#include "Components/Physics/ColliderComponent3D.h"
 
 #include "assets/scripts/cameraController.h"
 #include "assets/scripts/characterController.h"
@@ -188,15 +190,15 @@ int main()
 
     auto playground = std::make_unique<GameObject>();
     playground->Name = "playground";
-    playground->addComponent<TransformComponent>()->Position = {0, -1, 0};
+    playground->addComponent<TransformComponent3D>()->Position = {0, -1, 0};
     playground->addComponent<MeshComponent>("assets/models/test_playground/testPlayground.obj");
-    //playground->getComponent<TransformComponent>()->Scale = {0.2f, 0.2f, 0.2f}; 
+    //playground->getComponent<TransformComponent3D>()->Scale = {0.2f, 0.2f, 0.2f}; 
     playground->start();
 
 
     auto player = std::make_unique<GameObject>();
     player->Name = "Player";
-    player->addComponent<TransformComponent>()->Position = {0, -1, 0};
+    player->addComponent<TransformComponent3D>()->Position = {0, -1, 0};
     player->addComponent<MeshComponent>("assets/models/nier/2B.obj");
     //player->addComponent<MeshComponent>("assets/models/backpack/backpack.obj", /*flipUVs=*/true); 
     //flip UVs. Different models have different conventions, flip them if troubleshooting.
@@ -209,7 +211,7 @@ int main()
 
     auto fish = std::make_unique<GameObject>();
     fish->Name = "Fish";
-    fish->addComponent<TransformComponent>()->Position = {2, 0, 0};
+    fish->addComponent<TransformComponent3D>()->Position = {2, 0, 0};
     fish->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
     fish->addComponent<ColliderComponent3D>()->Shape = std::make_unique<SphereShape>(0.5f);
     fish->addComponent<SpinModel>();
@@ -218,7 +220,7 @@ int main()
 
     auto fish2 = std::make_unique<GameObject>();
     fish2->Name = "Fish2";
-    fish2->addComponent<TransformComponent>()->Position = {-2, 0, 0};
+    fish2->addComponent<TransformComponent3D>()->Position = {-2, 0, 0};
     fish2->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
     fish2->addComponent<ColliderComponent3D>()->Shape = std::make_unique<SphereShape>(0.5f);
     fish2->addComponent<SpinModel>();
@@ -227,8 +229,8 @@ int main()
 
     auto camera = std::make_unique<GameObject>();
     camera->Name = "MainCamera";
-    camera->addComponent<TransformComponent>()->Position = {-1, 1, 0};
-    //camera->addComponent<TransformComponent>()->owner = player.get(); 
+    camera->addComponent<TransformComponent3D>()->Position = {-1, 1, 0};
+    //camera->addComponent<TransformComponent3D>()->owner = player.get(); 
     camera->addComponent<InputComponent>(&input);
     camera->addComponent<CameraComponent>();
     // camera->addComponent<CameraController>();
@@ -284,7 +286,7 @@ int main()
         glm::mat4 view = cam->viewMatrix();
         // Aspect ratio is fixed by the internal resolution now, NOT the window.
         glm::mat4 proj = cam->projectionMatrix((float)RENDER_WIDTH / (float)RENDER_HEIGHT);
-        const glm::vec3 camPos = cam->owner->getComponent<TransformComponent>()->Position;
+        const glm::vec3 camPos = cam->owner->getComponent<TransformComponent3D>()->Position;
 
         // Update all transforms before drawing so the light source's position
         // (read off the fish below) is current for this frame.
@@ -295,8 +297,8 @@ int main()
 
         // Light source: the spinning cube. Drawn first with the unlit shader so
         // we can sample its transform for lightPos before lighting the player.
-        const glm::vec3 lightPos = fish->getComponent<TransformComponent>()->Position;
-        const glm::vec3 lightPos2 = fish2->getComponent<TransformComponent>()->Position;
+        const glm::vec3 lightPos = fish->getComponent<TransformComponent3D>()->Position;
+        const glm::vec3 lightPos2 = fish2->getComponent<TransformComponent3D>()->Position;
 
         shaderLight.use();
         shaderLight.setMat4("view", view);
