@@ -1,0 +1,27 @@
+#pragma once
+//
+// Registration manifest. Including this header pulls in every built-in component
+// and game script, which triggers their REGISTER_COMPONENT self-registration. Keep
+// this list in one linked translation unit (currently main.cpp) so the registry is
+// fully populated no matter what else does or doesn't include these headers.
+//
+// This is the single place that knows the full set of registerable types. It mixes
+// engine components and game scripts on purpose — it's the app's composition list;
+// the loader/registry stay decoupled and never need editing when a type is added.
+// When a new component/script gains a REGISTER_COMPONENT, add its header here.
+
+// when adding a new component, register it here important!
+
+// --- Engine components ---
+#include "Core/Components/TransformComponent3D.h"
+#include "Components/Rendering/MeshComponent.h"
+#include "Components/Rendering/CameraComponent.h"
+#include "Components/Input/InputComponent.h"
+#include "Components/Physics/ColliderComponent3D.h"
+#include "Components/Gameplay/CharacterComponent3D.h"
+
+// --- Game scripts ---
+#include "assets/scripts/characterController.h"
+#include "assets/scripts/spinModel.h"
+#include "assets/scripts/cameraFollow.h"
+#include "assets/scripts/cameraController.h"

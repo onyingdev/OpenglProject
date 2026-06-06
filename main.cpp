@@ -9,20 +9,8 @@
 #include "Core/Engine/input_manager.h"
 #include "Core/Engine/GameObjectLoader.h"  // data-driven GameObject loading from JSON
 
-#include "Core/Components/Component.h"
 #include "Core/Components/GameObject.h"
-#include "Core/Components/TransformComponent3D.h"
-
-#include "Components/Input/InputComponent.h"
-#include "Components/Rendering/CameraComponent.h"
-#include "Components/Rendering/MeshComponent.h"
-#include "Components/Gameplay/CharacterComponent3D.h"
-#include "Components/Physics/ColliderComponent3D.h"
-
-#include "assets/scripts/cameraController.h"
-#include "assets/scripts/characterController.h"
-#include "assets/scripts/spinModel.h"
-#include "assets/scripts/cameraFollow.h"
+#include "Core/Engine/BuiltinComponents.h"   // pulls in + self-registers every component & script
 
 // TODO: continue the decouple — extract Window (GLFW) and Engine (the loop) so main
 // collapses to ~6 lines. This pass moved all rendering behind IRenderer.
