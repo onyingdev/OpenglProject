@@ -1,5 +1,8 @@
 #pragma once
 #include "Core/Components/Component.h"
+#include "Core/Engine/ComponentRegistry.h"
+#include "Core/Engine/JsonHelpers.h"
+#include "Core/Engine/LoadContext.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -24,4 +27,13 @@ struct Transform {
 // from Transform; owner/start/update come from Component. Component is listed
 // first so upcasts to Component* need no pointer adjustment (GameObject's Lookup
 // stores Component* and static_casts back to TransformComponent*).
-struct TransformComponent3D : public Component, public Transform {};
+struct TransformComponent3D : public Component, public Transform {
+    // JSON: { "type": "Transform", "position": [x,y,z], "rotation": [...], "scale": [...] }
+    void deserialize(const nlohmann::json& j, LoadContext&) override {
+        Position      = jsonVec3(j.value("position", nlohmann::json{}), Position);
+        RotationEuler = jsonVec3(j.value("rotation", nlohmann::json{}), RotationEuler);
+        Scale         = jsonVec3(j.value("scale",    nlohmann::json{}), Scale);
+    }
+};
+
+REGISTER_COMPONENT(TransformComponent3D, "Transform")

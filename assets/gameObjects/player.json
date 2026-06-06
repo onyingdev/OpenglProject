@@ -1,0 +1,11 @@
+{
+  "name": "Player",
+  "components": [
+    { "type": "Transform",  "position": [0, -1, 0] },
+    { "type": "Mesh",       "model": "assets/models/nier/2B.obj", "flipUVs": false },
+    { "type": "Input" },
+    { "type": "Collider",   "shape": { "kind": "box", "halfExtents": [0.5, 1.0, 0.5] }, "layer": 1 },
+    { "type": "Character" },
+    { "type": "CharacterController", "moveSpeed": 3.0 }
+  ]
+}

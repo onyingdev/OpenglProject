@@ -7,6 +7,7 @@
 #include "Render/model.h"               // model loading (+ stb image: stbi_set_flip_vertically_on_load)
 #include "Render/GL/OpenGLRenderer.h"   // concrete backend; also brings IRenderer + render types
 #include "Core/Engine/input_manager.h"
+#include "Core/Engine/GameObjectLoader.h"  // data-driven GameObject loading from JSON
 
 #include "Core/Components/Component.h"
 #include "Core/Components/GameObject.h"
@@ -118,22 +119,17 @@ int main()
     playground->addComponent<MeshComponent>("assets/models/test_playground/testPlayground.obj");
     playground->start();
 
-    auto player = std::make_unique<GameObject>();
-    player->Name = "Player";
-    player->addComponent<TransformComponent3D>()->Position = {0, -1, 0};
-    player->addComponent<MeshComponent>("assets/models/nier/2B.obj");
-    player->addComponent<InputComponent>(&input);
-    player->addComponent<ColliderComponent3D>()->Shape = std::make_unique<BoxShape>(glm::vec3(0.5f, 1.0f, 0.5f));
-    player->addComponent<CharacterComponent>();
-    player->addComponent<CharacterController>(); //scripts always go last.
+    // Player is now data-driven: built from assets/gameObjects/player.json by the
+    // reusable GameObject loader (the same call a SceneLoader will use per object).
+    // start() is deferred to here so the whole object exists before its scripts run.
+    LoadContext loadCtx;
+    loadCtx.input = &input;
+    auto player = GameObjectLoader::fromFile("assets/gameObjects/player.json", loadCtx);
+    if (!player) { std::cerr << "Failed to load player.json\n"; glfwTerminate(); return -1; }
     player->start();
 
-    auto fish = std::make_unique<GameObject>();
-    fish->Name = "Fish";
-    fish->addComponent<TransformComponent3D>()->Position = {2, 0, 0};
-    fish->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
-    fish->addComponent<ColliderComponent3D>()->Shape = std::make_unique<SphereShape>(0.5f);
-    fish->addComponent<SpinModel>();
+    auto fish = GameObjectLoader::fromFile("assets/gameObjects/fish1.json", loadCtx);
+    if (!fish) { std::cerr << "Failed to load fish1.json\n"; glfwTerminate(); return -1; }
     fish->start();
     const glm::vec3 lightColor(1.0f, 0.0f, 0.0f);
 

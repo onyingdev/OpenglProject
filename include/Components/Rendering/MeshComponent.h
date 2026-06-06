@@ -1,9 +1,11 @@
 #pragma once
 #include "Core/Components/SpatialComponent3D.h"
+#include "Core/Engine/ComponentRegistry.h"
 #include "Render/API/IModel.h"
 #include "Render/API/RenderTypes.h"
 #include "Render/model.h"          // concrete GL Model, used only at construction
 #include <glm/gtc/matrix_transform.hpp>
+#include <nlohmann/json.hpp>
 #include <memory>
 #include <string>
 #include <utility>
@@ -25,6 +27,13 @@ public:
     // flipUVs: forward to Model — set true for models authored with the LearnOpenGL UV convention.
     explicit MeshComponent(const std::string& path, bool flipUVs = false)
         : ModelRef(std::make_shared<Model>(path, false, flipUVs)) {}
+
+    // JSON: { "type": "Mesh", "model": "assets/.../foo.obj", "flipUVs": false }
+    void deserialize(const nlohmann::json& j, LoadContext&) override {
+        const std::string model = j.value("model", std::string{});
+        const bool flip = j.value("flipUVs", false);
+        if (!model.empty()) ModelRef = std::make_shared<Model>(model, false, flip);
+    }
 
     // World transform for this mesh. Rotation order matches
     // TransformComponent::forward(): yaw(Y), pitch(X), roll(Z).
@@ -53,3 +62,5 @@ public:
         return item;
     }
 };
+
+REGISTER_COMPONENT(MeshComponent, "Mesh")

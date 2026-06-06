@@ -257,7 +257,10 @@ private:
 };
 
 
-unsigned int TextureFromFile(const char *path, const string &directory, bool gamma)
+// inline: this free function is defined in a header included by multiple TUs
+// (main.cpp, GameObjectLoader.cpp, ...). Without inline the linker sees one
+// definition per TU and fails with "multiple definition of TextureFromFile".
+inline unsigned int TextureFromFile(const char *path, const string &directory, bool gamma)
 {
     string filename = string(path);
     filename = directory + '/' + filename;

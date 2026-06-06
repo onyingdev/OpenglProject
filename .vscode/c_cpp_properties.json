@@ -1,0 +1,21 @@
+{
+    "configurations": [
+        {
+            "name": "Win32",
+            "//": "Keep these includePath roots in sync with INCLUDES in the Makefile.",
+            "includePath": [
+                "${workspaceFolder}",
+                "${workspaceFolder}/include",
+                "${workspaceFolder}/vendor/glad",
+                "${workspaceFolder}/vendor/glm",
+                "${workspaceFolder}/vendor/GLFW/include",
+                "${workspaceFolder}/vendor/json"
+            ],
+            "compilerPath": "g++",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "windows-gcc-x64"
+        }
+    ],
+    "version": 4
+}

@@ -1,5 +1,7 @@
 #pragma once
 #include "Core/Components/SpatialComponent3D.h"
+#include "Core/Engine/ComponentRegistry.h"
+#include <nlohmann/json.hpp>
 
 // Pure camera: knows how to produce view/projection matrices from whatever
 // position/rotation it resolves to. It does NOT decide where that data comes from.
@@ -19,4 +21,13 @@ public:
     glm::mat4 projectionMatrix(float aspect) const {
         return glm::perspective(glm::radians(Fov), aspect, NearPlane, FarPlane);
     }
+
+    // JSON: { "type": "Camera", "fov": 45, "near": 0.1, "far": 100 }
+    void deserialize(const nlohmann::json& j, LoadContext&) override {
+        Fov       = j.value("fov",  Fov);
+        NearPlane = j.value("near", NearPlane);
+        FarPlane  = j.value("far",  FarPlane);
+    }
 };
+
+REGISTER_COMPONENT(CameraComponent, "Camera")

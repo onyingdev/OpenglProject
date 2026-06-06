@@ -2,8 +2,10 @@
 #include "Core/Components/Script.h"
 #include "Core/Components/GameObject.h"
 #include "Core/Components/TransformComponent3D.h"
+#include "Core/Engine/ComponentRegistry.h"
 #include "Components/Input/InputComponent.h"
 #include <glm/glm.hpp>
+#include <nlohmann/json.hpp>
 #include "Components/Physics/ColliderComponent3D.h"
 
 // Character controller. Movement is integrated in tick() so we can model
@@ -22,7 +24,15 @@ public:
     float Acceleration = 15.0f; // units / second^2 while input is held
     float Deceleration = 10.0f; // units / second^2 while no input
     glm::vec3 dir{0.0f};        //facing direction
-    float RotationSpeed = 180.0f; 
+    float RotationSpeed = 180.0f;
+
+    // JSON: { "type": "CharacterController", "moveSpeed": 5.0, "acceleration": ..., ... }
+    void deserialize(const nlohmann::json& j, LoadContext&) override {
+        MoveSpeed     = j.value("moveSpeed",     MoveSpeed);
+        Acceleration  = j.value("acceleration",  Acceleration);
+        Deceleration  = j.value("deceleration",  Deceleration);
+        RotationSpeed = j.value("rotationSpeed", RotationSpeed);
+    }
 
     void start() override {
         tf = owner->getComponent<TransformComponent3D>();
@@ -76,3 +86,5 @@ public:
         tf->Position += Velocity * dt;
     }
 };
+
+REGISTER_COMPONENT(CharacterController, "CharacterController")

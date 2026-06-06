@@ -1,8 +1,11 @@
 #pragma once
 #include <functional>
+#include <iostream>
 #include <string>
 #include <vector>
 #include "Core/Components/Component.h"
+#include "Core/Engine/ComponentRegistry.h"
+#include "Core/Engine/LoadContext.h"
 #include "Core/Engine/input_manager.h"
 
 // Generic input component: pipes the InputManager into per-action callbacks.
@@ -13,7 +16,16 @@ public:
     using ActionHandler    = std::function<void(float dt)>;
     using MouseLookHandler = std::function<void(float xOffset, float yOffset)>;
 
+    InputComponent() = default;                               // for registry construction; manager set in deserialize
     InputComponent(InputManager* manager) : m_Input(manager) {}
+
+    // JSON: { "type": "Input" } — the InputManager is injected from LoadContext,
+    // not stored in the file (it's a live runtime service).
+    void deserialize(const nlohmann::json&, LoadContext& ctx) override {
+        m_Input = ctx.input;
+        if (!m_Input)
+            std::cerr << "[InputComponent] LoadContext.input is null; input will not work\n";
+    }
 
     // Fires every frame the action is held down.
     // These high order functions binds a function to a action string
@@ -53,3 +65,5 @@ private:
     std::vector<std::pair<std::string, ActionHandler>> m_ReleasedHandlers;
     MouseLookHandler m_MouseLookHandler;
 };
+
+REGISTER_COMPONENT(InputComponent, "Input")

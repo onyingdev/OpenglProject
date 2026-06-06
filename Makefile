@@ -13,7 +13,7 @@ OPENMP = -fopenmp
 #   -isystem vendor/glm     -> <glm/glm.hpp>, <glm/gtc/...>
 #   -isystem vendor/GLFW... -> <glfw3.h>
 # (-isystem also silences warnings originating in third-party headers.)
-INCLUDES = -I. -Iinclude -isystem vendor/glad -isystem vendor/glm -isystem vendor/GLFW/include
+INCLUDES = -I. -Iinclude -isystem vendor/glad -isystem vendor/glm -isystem vendor/GLFW/include -isystem vendor/json
 
 # === Source files ===
 GLAD          = vendor/glad/glad.c
@@ -21,6 +21,7 @@ SHADER        = src/Render/shader_s.cpp
 ASSET_LOADER  = src/Core/lib_asset_loader.cpp
 INPUT_MANAGER = src/Core/input_manager.cpp
 GL_RENDERER   = src/Render/OpenGLRenderer.cpp
+GO_LOADER     = src/Core/GameObjectLoader.cpp
 
 # === Platform-specific settings ===
 ifeq ($(OS),Windows_NT)
@@ -43,23 +44,26 @@ endif
 # === Build rules ===
 .PHONY: all clean scripts
 
-all: main.o glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o
-	g++ $(OPENMP) -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o $(LIBS)
+all: main.o glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o GameObjectLoader.o
+	g++ $(OPENMP) -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o GameObjectLoader.o $(LIBS)
 
 # Force-rebuild only main.o (which transitively includes all header-only scripts
 # and components) and relink. Use this when you've only edited files under
 # assets/scripts/ or include/ — skips recompiling glad/shader/asset_loader/input_manager.
 # Their .o files are listed as deps so a fresh checkout still works (they'll be
 # built once and then reused on subsequent `make scripts` runs).
-recompile: glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o
+recompile: glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o GameObjectLoader.o
 	g++ $(OPENMP) $(INCLUDES) -c main.cpp
-	g++ $(OPENMP) -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o $(LIBS)
+	g++ $(OPENMP) -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o GameObjectLoader.o $(LIBS)
 
 main.o: main.cpp
 	g++ $(OPENMP) $(INCLUDES) -c main.cpp
 
 OpenGLRenderer.o: $(GL_RENDERER)
 	g++ $(OPENMP) $(INCLUDES) -c $(GL_RENDERER)
+
+GameObjectLoader.o: $(GO_LOADER)
+	g++ $(OPENMP) $(INCLUDES) -c $(GO_LOADER)
 
 glad.o: $(GLAD)
 	gcc $(INCLUDES) -c $(GLAD)

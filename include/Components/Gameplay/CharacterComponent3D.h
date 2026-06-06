@@ -1,5 +1,6 @@
 #pragma once
 #include "Core/Components/SpatialComponent3D.h"
+#include "Core/Engine/ComponentRegistry.h"
 #include "Components/Rendering/MeshComponent.h"
 #include "Components/Input/InputComponent.h"
 
@@ -18,4 +19,7 @@ public:
         in = owner->getComponent<InputComponent>();
         if (!in) ComponentWarning::missing("CharacterComponent", "InputComponent");
     }
+    // No serialized fields yet; base deserialize() is a no-op. JSON: { "type": "Character" }
 };
+
+REGISTER_COMPONENT(CharacterComponent, "Character")

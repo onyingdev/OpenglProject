@@ -1,5 +1,7 @@
 #pragma once
 #include "Core/Components/SpatialComponent3D.h"
+#include "Core/Engine/ComponentRegistry.h"
+#include "Core/Engine/JsonHelpers.h"
 #include <glm/glm.hpp>
 #include <functional>
 #include <iostream>
@@ -159,6 +161,26 @@ public:
     ColliderComponent3D() = default;
     explicit ColliderComponent3D(std::unique_ptr<ColliderShape> shape) : Shape(std::move(shape)) {}
 
+    // JSON: { "type": "Collider", "layer": 1, "mask": 4294967295,
+    //         "shape": { "kind": "box", "halfExtents": [x,y,z] } }   // or "sphere" + "radius"
+    void deserialize(const nlohmann::json& j, LoadContext&) override {
+        if (j.contains("layer")) Layer = j["layer"].get<uint32_t>();
+        if (j.contains("mask"))  Mask  = j["mask"].get<uint32_t>();
+        if (!j.contains("shape")) return;
+
+        const nlohmann::json& s = j["shape"];
+        const std::string kind = s.value("kind", std::string{"box"});
+        if (kind == "box") {
+            glm::vec3 he = s.contains("halfExtents") ? jsonVec3(s["halfExtents"], glm::vec3(0.5f))
+                                                     : glm::vec3(0.5f);
+            Shape = std::make_unique<BoxShape>(he);
+        } else if (kind == "sphere") {
+            Shape = std::make_unique<SphereShape>(s.value("radius", 0.5f));
+        } else {
+            std::cerr << "[ColliderComponent3D] unknown shape kind: " << kind << "\n";
+        }
+    }
+
     void start() override {
         SpatialComponent3D::start();
         if (!Shape) std::cerr << "Warning: ColliderComponent3D on " << owner->Name << " has no shape.\n";
@@ -246,3 +268,5 @@ private:
         return (a->Layer & b->Mask) != 0 && (b->Layer & a->Mask) != 0;
     }
 };
+
+REGISTER_COMPONENT(ColliderComponent3D, "Collider")
