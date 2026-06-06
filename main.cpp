@@ -101,11 +101,6 @@ int main()
 
     //TODO: Create scene loader. Injects the objects from a JSON file.
     // ===== Scene =====
-    auto playground = std::make_unique<GameObject>();
-    playground->Name = "playground";
-    playground->addComponent<TransformComponent3D>()->Position = {0, -1, 0};
-    playground->addComponent<MeshComponent>("assets/models/test_playground/testPlayground.obj");
-    playground->start();
 
     // Player is now data-driven: built from assets/gameObjects/player.json by the
     // reusable GameObject loader (the same call a SceneLoader will use per object).
@@ -116,17 +111,25 @@ int main()
     if (!player) { std::cerr << "Failed to load player.json\n"; glfwTerminate(); return -1; }
     player->start();
 
+    auto playground = GameObjectLoader::fromFile("assets/gameObjects/playground.json", loadCtx);
+    if (!playground) { std::cerr << "Failed to load playground.json\n"; glfwTerminate(); return -1; }
+    playground->start();
+
     auto fish = GameObjectLoader::fromFile("assets/gameObjects/fish1.json", loadCtx);
     if (!fish) { std::cerr << "Failed to load fish1.json\n"; glfwTerminate(); return -1; }
     fish->start();
-    const glm::vec3 lightColor(1.0f, 0.0f, 0.0f);
+    const glm::vec3 lightColor(1.0f, 0.0f, 0.0f); //TODO: we still need to find a way to store this.
 
-    auto fish2 = std::make_unique<GameObject>();
-    fish2->Name = "Fish2";
-    fish2->addComponent<TransformComponent3D>()->Position = {-2, 0, 0};
-    fish2->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
-    fish2->addComponent<ColliderComponent3D>()->Shape = std::make_unique<SphereShape>(0.5f);
-    fish2->addComponent<SpinModel>();
+    // old example of manual object construction.
+    // auto fish2 = std::make_unique<GameObject>();
+    // fish2->Name = "Fish2";
+    // fish2->addComponent<TransformComponent3D>()->Position = {-2, 0, 0};
+    // fish2->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
+    // fish2->addComponent<ColliderComponent3D>()->Shape = std::make_unique<SphereShape>(0.5f);
+    // fish2->addComponent<SpinModel>();
+    // fish2->start();
+    auto fish2 = GameObjectLoader::fromFile("assets/gameObjects/fish2.json", loadCtx);
+    if (!fish2) { std::cerr << "Failed to load fish2.json\n"; glfwTerminate(); return -1; }
     fish2->start();
     const glm::vec3 lightColor2(0.0f, 0.0f, 0.5f);
 

@@ -1,0 +1,7 @@
+{
+  "name": "Playground",
+  "components": [
+    { "type": "Transform",  "position": [0, -1, 0] },
+    { "type": "Mesh",       "model": "assets/models/test_playground/testPlayground.obj", "flipUVs": false }
+  ]
+}
