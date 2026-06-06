@@ -3,7 +3,11 @@
 #include "../../vendor/glm/glm/glm.hpp"
 #include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
 
-struct TransformComponent : public Component {
+// Plain transform data: position/rotation/scale plus basis helpers. No Component
+// base, so it carries no vtable pointer and no owner — embed it directly wherever
+// only the data is needed (e.g. SpatialComponent::localTransform) to avoid paying
+// for a full Component you never tick.
+struct Transform {
     glm::vec3 Position{0.0f};
     glm::vec3 RotationEuler{0.0f};   // yaw, pitch, roll (degrees)
     glm::vec3 Scale{1.0f};
@@ -15,3 +19,9 @@ struct TransformComponent : public Component {
     glm::vec3 right()   const { return glm::normalize(glm::cross(forward(), {0,1,0})); }
     glm::vec3 up()      const { return glm::normalize(glm::cross(right(), forward())); }
 };
+
+// The transform as an attachable component. Data + basis helpers are inherited
+// from Transform; owner/start/update come from Component. Component is listed
+// first so upcasts to Component* need no pointer adjustment (GameObject's Lookup
+// stores Component* and static_casts back to TransformComponent*).
+struct TransformComponent : public Component, public Transform {};

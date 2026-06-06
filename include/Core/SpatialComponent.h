@@ -11,11 +11,12 @@
 // the same call, so scripts never have to manage the flag manually.
 class SpatialComponent : public Component {
 public:
-    TransformComponent localTransform = TransformComponent();
-
-    glm::vec3 Position{0.0f};
-    glm::vec3 RotationEuler{0.0f};   // yaw, pitch, roll (degrees)
-    glm::vec3 Scale{1.0f};
+    // This component's own transform. Position/rotation/scale live here; the
+    // ref pointers below select, per axis, whether reads come from this local
+    // copy or from the owner's TransformComponent (see useOwner* / setLocal*).
+    // Plain Transform (not TransformComponent): no vtable/owner overhead, since
+    // this is data we never register or tick as a component.
+    Transform localTransform;
 
     glm::vec3 forward() const {
         const glm::vec3& r = rotation(); 
@@ -29,7 +30,7 @@ public:
     void start() override {
         auto* tf = owner->getComponent<TransformComponent>();
         if (!tf) throw MissingComponentException("SpatialComponent", "TransformComponent");
-        localTransform = *tf; // snapshot owner at spawn
+        localTransform = static_cast<const Transform&>(*tf); // snapshot owner's transform data at spawn
         positionRef = &localTransform.Position;
         rotationRef = &localTransform.RotationEuler;
         scaleRef    = &localTransform.Scale;
@@ -68,5 +69,6 @@ private:
     }
 };
 
-//TODO: optimise spatial component to save memory, since it uses TransformComponent3D it
-//has some redundant data, we can make a spatial component that only has the local transform and the source.
+// Layout: one local TransformComponent + three per-axis source pointers. The
+// pointers default to localTransform at start(), and useOwner*()/setLocal*()
+// retarget them so reads stay a single deref with no branching.
