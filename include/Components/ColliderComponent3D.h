@@ -1,6 +1,6 @@
 #pragma once
-#include "../Core/SpatialComponent.h"
-#include "../../vendor/glm/glm/glm.hpp"
+#include "Core/SpatialComponent.h"
+#include <glm/glm.hpp>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -10,7 +10,7 @@
 #include <omp.h>
 #endif
 
-// This is vibecoded needs revision ASAP
+// This is kinda vibecoded needs revision, its implemented using the double dispatch pattern for two way collision check.
 // TODO: check code and optimize multithread.
 // BUG: well more than a BUG is an optimization. Optimize the code using OpenMP. Sometimes the collider stutter on enter or exit, but that its due to the std::cout.
 
@@ -171,6 +171,7 @@ public:
     }
 
     // Call once per frame (e.g. from main loop). Naive O(N^2). Broadphase later.
+    // TODO: optimize call, only check the active components on the same layer. No need to check all the colliders.
     static void tickWorld() {
         auto& list = AllColliders();
         //std::cout << list.size() << std::endl;
@@ -197,15 +198,9 @@ public:
         //     }
         // }
 
-        #pragma omp parallel for schedule(dynamic)
+        //triggers parallelization at over 256 colliders.
+        #pragma omp parallel for schedule(guided) if(list.size() > 256)
         for (size_t i = 0; i < list.size(); ++i) {
-#ifdef _OPENMP
-            // DEBUG only: shows which thread took collider i. The cout serializes
-            // the threads (critical) and flushes, so remove it for real timing.
-            #pragma omp critical
-            std::cout << "[collider " << i << "] thread "
-                      << omp_get_thread_num() << "/" << omp_get_num_threads() << "\n";
-#endif
             auto* a = list[i];
             a->thisFrame.clear();
             if (!a->Shape) continue;
@@ -224,16 +219,13 @@ public:
         for (auto* c : list) {
             for (auto* other : c->thisFrame) {
                 if (c->lastFrame.count(other)) {
-                    //std::cout << "Collision Enter " << std::endl;
                     if (c->OnStay) c->OnStay(other);
                 } else {
-                    // std::cout << "Collision Enter " << std::endl; // blocking flush -> frame stutter on enter
                     if (c->OnEnter) c->OnEnter(other);
                 }
             }
             for (auto* other : c->lastFrame) {
                 if (!c->thisFrame.count(other)) {
-                    // std::cout << "Collision Exit " << std::endl; // blocking flush -> frame stutter on exit
                     if (c->OnExit) c->OnExit(other);
                 }
             }
