@@ -13,8 +13,8 @@ folder structure:
  /documentation     #documentation stuff
 
  /include
-    /Core           #helpers, application, input manager, window
-    /Render       #opengl, vertex buffer, shader loader
+    /Core           #helpers, application, input manager, window. Using only the core functions the app should work
+    /Render       #opengl, vertex buffer, shader loader. Manages all the graphical API config and render functions.
     /UI             #UI stuff
     /Components     #basic components for building GameObjects
 

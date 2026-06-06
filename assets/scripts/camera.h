@@ -1,6 +1,6 @@
 #ifndef CAMERA_H
 #define CAMERA_H
-// DEPRECATED
+// DEPRECATED, example of how we can create an object through via script. 
 #include "../../vendor/glad/glad/glad.h"
 #include "../../vendor/glm/glm/glm.hpp"
 #include "../../vendor/glm/glm/gtc/matrix_transform.hpp"
