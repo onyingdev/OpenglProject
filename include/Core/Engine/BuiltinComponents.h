@@ -19,6 +19,7 @@
 #include "Components/Input/InputComponent.h"
 #include "Components/Physics/ColliderComponent3D.h"
 #include "Components/Gameplay/CharacterComponent3D.h"
+#include "Core/Components/Scene.h"
 
 // --- Game scripts ---
 #include "assets/scripts/characterController.h"
@@ -26,5 +27,6 @@
 #include "assets/scripts/cameraFollow.h"
 #include "assets/scripts/cameraController.h"
 
+//Add new scripts here and register them with the macro at the end of their header file.
 //TODO: We need to decouple scripts entirely, components having a manual integration is not a problem, since its rare that we will need to add one. But not scripts, so refactor it to treat
 // scripts differently.

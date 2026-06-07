@@ -1,0 +1,12 @@
+{
+  "actions": {
+    "Quit": "Escape",
+    "MoveForward": "W",
+    "MoveBackward": "S",
+    "MoveRight": "D",
+    "MoveLeft": "A",
+    "RotateRight": "M",
+    "RotateLeft": "N",
+    "ToggleFlashlight": "F"
+  }
+}

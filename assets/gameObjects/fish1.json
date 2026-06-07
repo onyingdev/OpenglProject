@@ -2,7 +2,7 @@
   "name": "Fish1",
   "components": [
     { "type": "Transform",  "position": [2, 0, 0] },
-    { "type": "Mesh",       "model": "assets/models/fish1/fish1.obj", "flipUVs": false },
+    { "type": "Mesh",       "model": "assets/models/fish1/fish1.obj", "flipUVs": false, "material": "unlit", "color": [1.0, 0.0, 0.0] },
     { "type": "Collider",   "shape": { "kind": "sphere", "radius": 0.5 }, "layer": 1 },
     { "type": "SpinModel" }
   ]

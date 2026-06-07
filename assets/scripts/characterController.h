@@ -7,6 +7,7 @@
 #include <glm/glm.hpp>
 #include <nlohmann/json.hpp>
 #include "Components/Physics/ColliderComponent3D.h"
+#include "Components/Rendering/MeshComponent.h"
 
 // Character controller. Movement is integrated in tick() so we can model
 // acceleration and deceleration properly (input handlers only fire while held,

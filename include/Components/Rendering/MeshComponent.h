@@ -1,6 +1,7 @@
 #pragma once
 #include "Core/Components/SpatialComponent3D.h"
 #include "Core/Engine/ComponentRegistry.h"
+#include "Core/Engine/JsonHelpers.h"
 #include "Render/API/IModel.h"
 #include "Render/API/RenderTypes.h"
 #include "Render/model.h"          // concrete GL Model, used only at construction
@@ -20,6 +21,12 @@ public:
     std::shared_ptr<IModel> ModelRef;
     RenderMode Mode = RenderMode::Solid;
 
+    // Shading is data, not a per-frame caller override: "lit" uses scene lighting,
+    // "unlit" draws in a flat UnlitColor (e.g. a lamp/marker). Defaults preserve the
+    // old behavior (everything Lit) so meshes without these keys render unchanged.
+    MaterialKind Material = MaterialKind::Lit;
+    glm::vec3    UnlitColor{1.0f};
+
     MeshComponent() = default;
     explicit MeshComponent(std::shared_ptr<IModel> model) : ModelRef(std::move(model)) {}
     // Convenience: load a model from disk. For multiple instances of the same model,
@@ -28,11 +35,16 @@ public:
     explicit MeshComponent(const std::string& path, bool flipUVs = false)
         : ModelRef(std::make_shared<Model>(path, false, flipUVs)) {}
 
-    // JSON: { "type": "Mesh", "model": "assets/.../foo.obj", "flipUVs": false }
+    // JSON: { "type": "Mesh", "model": "assets/.../foo.obj", "flipUVs": false,
+    //         "material": "lit"|"unlit", "color": [r,g,b] }
     void deserialize(const nlohmann::json& j, LoadContext&) override {
         const std::string model = j.value("model", std::string{});
         const bool flip = j.value("flipUVs", false);
         if (!model.empty()) ModelRef = std::make_shared<Model>(model, false, flip);
+
+        Material   = (j.value("material", std::string{"lit"}) == "unlit")
+                         ? MaterialKind::Unlit : MaterialKind::Lit;
+        UnlitColor = jsonVec3(j.value("color", nlohmann::json{}), UnlitColor);
     }
 
     // World transform for this mesh. Rotation order matches
@@ -59,6 +71,8 @@ public:
         item.model       = ModelRef.get();
         item.modelMatrix = worldMatrix();
         item.wireframe   = (Mode == RenderMode::Wireframe);
+        item.material    = Material;
+        item.unlitColor  = UnlitColor;
         return item;
     }
 };

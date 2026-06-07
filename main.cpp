@@ -8,6 +8,8 @@
 #include "Render/GL/OpenGLRenderer.h"   // concrete backend; also brings IRenderer + render types
 #include "Core/Engine/input_manager.h"
 #include "Core/Engine/GameObjectLoader.h"  // data-driven GameObject loading from JSON
+#include "Core/Engine/SceneLoader.h"       // data-driven Scene loading from JSON
+#include "Core/Engine/InputBindings.h"     // data-driven action -> key bindings from JSON
 
 #include "Core/Components/GameObject.h"
 #include "Core/Engine/BuiltinComponents.h"   // pulls in + self-registers every component & script
@@ -89,57 +91,39 @@ int main()
         glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
 
     InputManager input(window);
-    input.BindAction("Quit", GLFW_KEY_ESCAPE);
-    input.BindAction("MoveBackward", GLFW_KEY_DOWN);
-    input.BindAction("MoveForward", GLFW_KEY_UP);
-    input.BindAction("MoveRight", GLFW_KEY_RIGHT);
-    input.BindAction("MoveLeft", GLFW_KEY_LEFT);
-    input.BindAction("RotateRight", GLFW_KEY_M);
-    input.BindAction("RotateLeft", GLFW_KEY_N);
-    input.BindAction("ToggleFlashlight", GLFW_KEY_F);
+    InputBindings::loadInto(input, "assets/config/input.json");   // controls are data now
     //TODO: bind AA/resolution toggles here and call renderer->applySettings() at runtime.
 
-    //TODO: Create scene loader. Injects the objects from a JSON file.
     // ===== Scene =====
-
-    // Player is now data-driven: built from assets/gameObjects/player.json by the
-    // reusable GameObject loader (the same call a SceneLoader will use per object).
-    // start() is deferred to here so the whole object exists before its scripts run.
+    // The whole world is now data-driven: one scene file lists its objects, each of
+    // which is its own GameObject JSON. The Scene owns those objects and applies its
+    // transform to all of them. start() is deferred to here so every object exists
+    // before any script runs; starting the root starts the Scene and its children.
     LoadContext loadCtx;
     loadCtx.input = &input;
-    auto player = GameObjectLoader::fromFile("assets/gameObjects/player.json", loadCtx);
-    if (!player) { std::cerr << "Failed to load player.json\n"; glfwTerminate(); return -1; }
-    player->start();
+    auto sceneRoot = SceneLoader::fromFile("assets/scenes/level1.json", loadCtx);
+    if (!sceneRoot) { std::cerr << "Failed to load level1.json\n"; glfwTerminate(); return -1; }
+    sceneRoot->start();
 
-    auto playground = GameObjectLoader::fromFile("assets/gameObjects/playground.json", loadCtx);
-    if (!playground) { std::cerr << "Failed to load playground.json\n"; glfwTerminate(); return -1; }
-    playground->start();
+    Scene* scene = sceneRoot->getComponent<Scene>();
+    GameObject* player = scene->getObject("Player");   // borrowed; Scene owns it
+    GameObject* fish   = scene->getObject("Fish1");    // the two lamp fish, for point lights
+    GameObject* fish2  = scene->getObject("Fish2");
+    if (!player || !fish || !fish2) {
+        std::cerr << "Scene is missing a required object (Player/Fish1/Fish2)\n";
+        glfwTerminate(); return -1;
+    }
+    const glm::vec3 lightColor (1.0f, 0.0f, 0.0f);   // matches Fish1's unlit color
+    const glm::vec3 lightColor2(0.0f, 0.0f, 0.5f);   // matches Fish2's unlit color
 
-    auto fish = GameObjectLoader::fromFile("assets/gameObjects/fish1.json", loadCtx);
-    if (!fish) { std::cerr << "Failed to load fish1.json\n"; glfwTerminate(); return -1; }
-    fish->start();
-    const glm::vec3 lightColor(1.0f, 0.0f, 0.0f); //TODO: we still need to find a way to store this.
-
-    // old example of manual object construction.
-    // auto fish2 = std::make_unique<GameObject>();
-    // fish2->Name = "Fish2";
-    // fish2->addComponent<TransformComponent3D>()->Position = {-2, 0, 0};
-    // fish2->addComponent<MeshComponent>("assets/models/fish1/fish1.obj");
-    // fish2->addComponent<ColliderComponent3D>()->Shape = std::make_unique<SphereShape>(0.5f);
-    // fish2->addComponent<SpinModel>();
-    // fish2->start();
-    auto fish2 = GameObjectLoader::fromFile("assets/gameObjects/fish2.json", loadCtx);
-    if (!fish2) { std::cerr << "Failed to load fish2.json\n"; glfwTerminate(); return -1; }
-    fish2->start();
-    const glm::vec3 lightColor2(0.0f, 0.0f, 0.5f);
-
+    // Camera stays outside the scene: it references the player and drives the view.
     auto camera = std::make_unique<GameObject>();
     camera->Name = "MainCamera";
-    camera->addComponent<TransformComponent3D>()->Position = {-1, 1, 0};
+    camera->addComponent<TransformComponent3D>()->Position = {-1, 1, 0}; 
     camera->addComponent<InputComponent>(&input);
     camera->addComponent<CameraComponent>();
     camera->addComponent<CameraFollow>(); //script
-    camera->getComponent<CameraFollow>()->Target = player.get();
+    camera->getComponent<CameraFollow>()->Target = player;
     camera->start();
 
     bool flashlightOn = false;
@@ -168,10 +152,7 @@ int main()
 
         // --- update simulation ---
         camera->update(deltaTime);
-        player->update(deltaTime);
-        fish->update(deltaTime);
-        fish2->update(deltaTime);
-        playground->update(deltaTime);
+        sceneRoot->update(deltaTime);   // updates the Scene -> all its objects
         ColliderComponent3D::tickWorld();
 
         // --- gather camera for this frame ---
@@ -212,17 +193,9 @@ int main()
         renderer->beginScene(cv);
         renderer->setLights(lights);
 
-        // Fish are unlit lamps (drawn in their own color); player + playground are lit.
-        RenderItem fishItem = fish->getComponent<MeshComponent>()->renderItem();
-        fishItem.material = MaterialKind::Unlit;  fishItem.unlitColor = lightColor;
-        renderer->submit(fishItem);
-
-        RenderItem fish2Item = fish2->getComponent<MeshComponent>()->renderItem();
-        fish2Item.material = MaterialKind::Unlit;  fish2Item.unlitColor = lightColor2;
-        renderer->submit(fish2Item);
-
-        renderer->submit(player->getComponent<MeshComponent>()->renderItem());
-        renderer->submit(playground->getComponent<MeshComponent>()->renderItem());
+        // The Scene submits every object's mesh, each with its own material (the fish
+        // carry "unlit" + color in their JSON now) and offset by the scene transform.
+        scene->draw(*renderer);
 
         renderer->endScene();
 
@@ -235,11 +208,10 @@ int main()
 
     // cleanup: release GPU-owning objects while the GL context is still alive.
     // Mesh/Model dtors call glDelete*; the renderer deletes its FBOs/shaders/quad.
-    // All must run before glfwTerminate().
-    playground.reset();
-    player.reset();
-    fish.reset();
-    fish2.reset();
+    // All must run before glfwTerminate(). unload() frees every scene object; the
+    // scene root and camera then release their own components.
+    scene->unload();
+    sceneRoot.reset();
     camera.reset();
     renderer.reset();
 
