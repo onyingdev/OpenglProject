@@ -13,6 +13,11 @@ void InputManager::BindAction(const std::string& actionName, int glfwKey) {
     m_KeyBindings[actionName] = glfwKey;
 }
 
+void InputManager::ClearActions() {
+    m_KeyBindings.clear();
+    m_PreviousPressed.clear();
+}
+
 bool InputManager::IsActionPressed(const std::string& actionName) const {
     auto it = m_KeyBindings.find(actionName); //TODO: optimize search by using an ordered map or hash map
     if (it != m_KeyBindings.end()) {

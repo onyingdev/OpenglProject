@@ -91,7 +91,9 @@ int main()
         glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
 
     InputManager input(window);
-    InputBindings::loadInto(input, "assets/config/input.json");   // controls are data now
+    const std::string inputConfig = "assets/config/input.json";
+    InputBindings::loadInto(input, inputConfig);        // controls are data now
+    InputBindings::Watcher inputWatcher(inputConfig);   // re-applies the file when it changes on disk
     //TODO: bind AA/resolution toggles here and call renderer->applySettings() at runtime.
 
     // ===== Scene =====
@@ -107,14 +109,10 @@ int main()
 
     Scene* scene = sceneRoot->getComponent<Scene>();
     GameObject* player = scene->getObject("Player");   // borrowed; Scene owns it
-    GameObject* fish   = scene->getObject("Fish1");    // the two lamp fish, for point lights
-    GameObject* fish2  = scene->getObject("Fish2");
-    if (!player || !fish || !fish2) {
-        std::cerr << "Scene is missing a required object (Player/Fish1/Fish2)\n";
+    if (!player) {
+        std::cerr << "Scene is missing the Player object\n";
         glfwTerminate(); return -1;
     }
-    const glm::vec3 lightColor (1.0f, 0.0f, 0.0f);   // matches Fish1's unlit color
-    const glm::vec3 lightColor2(0.0f, 0.0f, 0.5f);   // matches Fish2's unlit color
 
     // Camera stays outside the scene: it references the player and drives the view.
     auto camera = std::make_unique<GameObject>();
@@ -128,24 +126,14 @@ int main()
 
     bool flashlightOn = false;
 
-    // Build a point light from a lamp's position + color (mirrors the old setPointLight).
-    auto makePoint = [](const glm::vec3& pos, const glm::vec3& color) {
-        PointLight pl;
-        pl.position  = pos;
-        pl.constant  = 1.0f; pl.linear = 0.09f; pl.quadratic = 0.032f;
-        pl.ambient   = 0.05f * color;
-        pl.diffuse   = color;
-        pl.specular  = color;
-        pl.enabled   = true;
-        return pl;
-    };
-
     //main loop — the more you can take out of the loop the better
     while (!glfwWindowShouldClose(window))
     {
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
+
+        inputWatcher.poll(input);   // live-reload controls if assets/config/input.json changed
 
         if (input.IsActionReleased("Quit"))             glfwSetWindowShouldClose(window, true);
         if (input.IsActionReleased("ToggleFlashlight")) flashlightOn = !flashlightOn;
@@ -165,28 +153,32 @@ int main()
         cv.projection = cam->projectionMatrix(aspect);
         cv.position   = cam->owner->getComponent<TransformComponent3D>()->Position;
 
-        // --- gather lights: two fish are point lamps, flashlight is a camera spot ---
-        const glm::vec3 lightPos  = fish->getComponent<TransformComponent3D>()->Position;
-        const glm::vec3 lightPos2 = fish2->getComponent<TransformComponent3D>()->Position;
-
+        // --- gather lights from the scene: the directional sun, point lamps, and
+        // cone lights are all data now (kDefaultLightColor unless the object assigns
+        // one). The flashlight below is a camera spot added on top. ---
         LightSet lights;
-        lights.dir.direction = {-0.2f, -1.0f, -0.3f};
-        lights.dir.ambient   = { 0.05f, 0.05f, 0.05f};
-        lights.dir.diffuse   = { 0.30f, 0.30f, 0.30f};
-        lights.dir.specular  = { 0.40f, 0.40f, 0.40f};
-        lights.points.push_back(makePoint(lightPos,  lightColor));
-        lights.points.push_back(makePoint(lightPos2, lightColor2));
+        for (auto& [name, obj] : scene->objects()) {
+            if (auto* dl = obj->getComponent<DirectionalLightComponent>())
+                lights.dir = dl->toDirLight();     // one sun; last wins if several
+            if (auto* pl = obj->getComponent<PointLightComponent>())
+                lights.points.push_back(pl->toPointLight());
+            if (auto* cl = obj->getComponent<ConeLightComponent>())
+                lights.spots.push_back(cl->toSpotLight());
+        }
 
-        lights.spot.position    = cv.position;
-        lights.spot.direction   = cam->forward();
-        lights.spot.cutOff      = glm::cos(glm::radians(12.5f));
-        lights.spot.outerCutOff = glm::cos(glm::radians(17.5f));
-        lights.spot.constant    = 1.0f;
-        lights.spot.linear      = 0.09f;
-        lights.spot.quadratic   = 0.032f;
-        lights.spot.diffuse     = glm::vec3(1.0f);
-        lights.spot.specular    = glm::vec3(1.0f);
-        lights.spot.enabled     = flashlightOn;
+        // Camera flashlight: a spot that tracks the eye. It's just another cone light.
+        SpotLight flashlight;
+        flashlight.position    = cv.position;
+        flashlight.direction   = cam->forward();
+        flashlight.cutOff      = glm::cos(glm::radians(12.5f));
+        flashlight.outerCutOff = glm::cos(glm::radians(17.5f));
+        flashlight.constant    = 1.0f;
+        flashlight.linear      = 0.09f;
+        flashlight.quadratic   = 0.032f;
+        flashlight.diffuse     = glm::vec3(1.0f);
+        flashlight.specular    = glm::vec3(1.0f);
+        flashlight.enabled     = flashlightOn;
+        lights.spots.push_back(flashlight);
 
         // --- render ---
         renderer->onResize(SCR_WIDTH, SCR_HEIGHT);

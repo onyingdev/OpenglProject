@@ -4,6 +4,7 @@
     { "type": "Transform",  "position": [-2, 0, 0] },
     { "type": "Mesh",       "model": "assets/models/fish1/fish1.obj", "flipUVs": false, "material": "unlit", "color": [0.0, 0.0, 0.5] },
     { "type": "Collider",   "shape": { "kind": "sphere", "radius": 0.5 }, "layer": 1 },
+    { "type": "PointLight", "color": [0.0, 0.0, 0.5], "attenuation": 1.0 },
     { "type": "SpinModel" }
   ]
 }

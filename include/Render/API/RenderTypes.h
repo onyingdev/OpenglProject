@@ -34,6 +34,7 @@ struct PointLight {
     glm::vec3 position{0.0f};
     glm::vec3 ambient{0.0f}, diffuse{0.0f}, specular{0.0f};
     float constant = 1.0f, linear = 0.09f, quadratic = 0.032f;
+    float attenuation = 1.0f;   // numerator multiplier: >1 makes the light reach farther
     bool  enabled = false;
 };
 
@@ -45,9 +46,10 @@ struct SpotLight {
     bool  enabled = false;
 };
 
-// All lighting for a frame. The built-in lit shader supports up to 4 point lights.
+// All lighting for a frame. The built-in lit shader supports up to 4 point lights
+// and up to 4 spot/cone lights (the camera flashlight is just one of the spots).
 struct LightSet {
     DirLight                dir;
     std::vector<PointLight> points;
-    SpotLight               spot;
+    std::vector<SpotLight>  spots;
 };

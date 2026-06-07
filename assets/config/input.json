@@ -7,6 +7,8 @@
     "MoveLeft": "A",
     "RotateRight": "M",
     "RotateLeft": "N",
-    "ToggleFlashlight": "F"
+    "ToggleFlashlight": "F",
+    "IncreaseAttenuation": "Up",
+    "DecreaseAttenuation": "Down"
   }
 }

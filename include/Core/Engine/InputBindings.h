@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <cctype>
+#include <filesystem>
 #include <nlohmann/json.hpp>
 #include "Core/Engine/input_manager.h"   // InputManager + GLFW key codes
 
@@ -47,8 +48,10 @@ namespace InputBindings {
         return it == table.end() ? GLFW_KEY_UNKNOWN : it->second;
     }
 
-    // Read the bindings file and apply every action onto `input`. Returns false on
-    // I/O / parse error (existing bindings, if any, are left untouched).
+    // Read the bindings file and apply every action onto `input`. Existing bindings
+    // are cleared first so removed/renamed actions don't linger — but only after a
+    // successful parse, so a transient read error (e.g. the file caught mid-save)
+    // leaves the current controls intact. Returns false on I/O / parse error.
     inline bool loadInto(InputManager& input, const std::string& path) {
         std::ifstream f(path);
         if (!f) {
@@ -70,6 +73,7 @@ namespace InputBindings {
             return false;
         }
 
+        input.ClearActions();   // parse succeeded — safe to replace the binding set
         for (auto it = actions.begin(); it != actions.end(); ++it) {
             if (!it.value().is_string()) {
                 std::cerr << "[InputBindings] action \"" << it.key() << "\" must map to a key name string\n";
@@ -86,4 +90,39 @@ namespace InputBindings {
         }
         return true;
     }
+
+    // Auto hot-reload helper. Construct with the bindings path, then call poll() once
+    // per frame: when the file's modification time changes, it re-applies the file so
+    // edits take effect live, without restarting. Cheap — a single stat() per frame.
+    class Watcher {
+        std::string m_path;
+        std::filesystem::file_time_type m_stamp{};
+        bool m_have = false;
+
+        bool stamp(std::filesystem::file_time_type& out) const {
+            std::error_code ec;
+            out = std::filesystem::last_write_time(m_path, ec);
+            return !ec;
+        }
+
+    public:
+        explicit Watcher(std::string path) : m_path(std::move(path)) {
+            m_have = stamp(m_stamp);   // seed with the current time so first poll() is a no-op
+        }
+
+        // Returns true if the file changed and was reloaded this call.
+        bool poll(InputManager& input) {
+            std::filesystem::file_time_type now;
+            if (!stamp(now)) return false;                 // file missing/unreadable right now
+            if (m_have && now == m_stamp) return false;    // unchanged
+
+            m_stamp = now;
+            m_have  = true;
+            if (loadInto(input, m_path)) {
+                std::cout << "[InputBindings] reloaded " << m_path << "\n";
+                return true;
+            }
+            return false;
+        }
+    };
 }

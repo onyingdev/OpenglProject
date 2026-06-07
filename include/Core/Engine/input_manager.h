@@ -14,6 +14,7 @@ public:
     //TODO: Separate input manager into logic and binding (KBM or controller binding) and event manager.
     // --- Keyboard Actions ---
     void BindAction(const std::string& actionName, int glfwKey); //this is input management
+    void ClearActions(); // drop all bindings (used before re-applying a config at runtime)
     bool IsActionPressed(const std::string& actionName) const; //this is event
     bool IsActionReleased(const std::string& actionName) const; //fires once on the frame the key is let go
 

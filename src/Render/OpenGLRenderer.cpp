@@ -176,36 +176,46 @@ void OpenGLRenderer::setLights(const LightSet& lights) {
     m_lit->setVec3("dirLight.diffuse",   lights.dir.diffuse.x,   lights.dir.diffuse.y,   lights.dir.diffuse.z);
     m_lit->setVec3("dirLight.specular",  lights.dir.specular.x,  lights.dir.specular.y,  lights.dir.specular.z);
 
-    // Up to 4 point lights; unused/disabled slots contribute nothing (constant=1
-    // keeps attenuation finite so a zero color stays exactly zero, never NaN).
-    const int NR_POINT_LIGHTS = 4;
-    for (int i = 0; i < NR_POINT_LIGHTS; ++i) {
-        const std::string p = "pointLights[" + std::to_string(i) + "].";
-        const bool on = i < (int)lights.points.size() && lights.points[i].enabled;
-        const PointLight pl = on ? lights.points[i] : PointLight{};
+    // Point lights: compact only the ENABLED ones to the front of the array and tell
+    // the shader how many there are (numPointLights), so its loop skips everything
+    // else. Capped at the shader's array size.
+    const int MAX_POINT_LIGHTS = 4;
+    int np = 0;
+    for (const PointLight& pl : lights.points) {
+        if (!pl.enabled || np >= MAX_POINT_LIGHTS) continue;
+        const std::string p = "pointLights[" + std::to_string(np) + "].";
         m_lit->setVec3 (p + "position",  pl.position.x, pl.position.y, pl.position.z);
         m_lit->setFloat(p + "constant",  pl.constant);
-        m_lit->setFloat(p + "linear",    on ? pl.linear    : 0.0f);
-        m_lit->setFloat(p + "quadratic", on ? pl.quadratic : 0.0f);
+        m_lit->setFloat(p + "linear",    pl.linear);
+        m_lit->setFloat(p + "quadratic", pl.quadratic);
+        m_lit->setFloat(p + "attenuation", pl.attenuation);
         m_lit->setVec3 (p + "ambient",   pl.ambient.x,  pl.ambient.y,  pl.ambient.z);
         m_lit->setVec3 (p + "diffuse",   pl.diffuse.x,  pl.diffuse.y,  pl.diffuse.z);
         m_lit->setVec3 (p + "specular",  pl.specular.x, pl.specular.y, pl.specular.z);
+        ++np;
     }
+    m_lit->setInt("numPointLights", np);
 
-    // Spotlight (camera flashlight). Colors are pre-gated by the caller via enabled.
-    const SpotLight& s = lights.spot;
-    const glm::vec3 d = s.enabled ? s.diffuse  : glm::vec3(0.0f);
-    const glm::vec3 sp = s.enabled ? s.specular : glm::vec3(0.0f);
-    m_lit->setVec3 ("spotLight.position",    s.position.x,  s.position.y,  s.position.z);
-    m_lit->setVec3 ("spotLight.direction",   s.direction.x, s.direction.y, s.direction.z);
-    m_lit->setFloat("spotLight.cutOff",      s.cutOff);
-    m_lit->setFloat("spotLight.outerCutOff", s.outerCutOff);
-    m_lit->setFloat("spotLight.constant",    s.constant);
-    m_lit->setFloat("spotLight.linear",      s.linear);
-    m_lit->setFloat("spotLight.quadratic",   s.quadratic);
-    m_lit->setVec3 ("spotLight.ambient",     0.0f, 0.0f, 0.0f);
-    m_lit->setVec3 ("spotLight.diffuse",     d.x,  d.y,  d.z);
-    m_lit->setVec3 ("spotLight.specular",    sp.x, sp.y, sp.z);
+    // Spot/cone lights (the camera flashlight is just one of them): same compaction.
+    // Only enabled lights are uploaded, so there are no zero slots to guard against.
+    const int MAX_SPOT_LIGHTS = 4;
+    int ns = 0;
+    for (const SpotLight& s : lights.spots) {
+        if (!s.enabled || ns >= MAX_SPOT_LIGHTS) continue;
+        const std::string sp = "spotLights[" + std::to_string(ns) + "].";
+        m_lit->setVec3 (sp + "position",    s.position.x,  s.position.y,  s.position.z);
+        m_lit->setVec3 (sp + "direction",   s.direction.x, s.direction.y, s.direction.z);
+        m_lit->setFloat(sp + "cutOff",      s.cutOff);
+        m_lit->setFloat(sp + "outerCutOff", s.outerCutOff);
+        m_lit->setFloat(sp + "constant",    s.constant);
+        m_lit->setFloat(sp + "linear",      s.linear);
+        m_lit->setFloat(sp + "quadratic",   s.quadratic);
+        m_lit->setVec3 (sp + "ambient",     0.0f, 0.0f, 0.0f);
+        m_lit->setVec3 (sp + "diffuse",     s.diffuse.x,  s.diffuse.y,  s.diffuse.z);
+        m_lit->setVec3 (sp + "specular",    s.specular.x, s.specular.y, s.specular.z);
+        ++ns;
+    }
+    m_lit->setInt("numSpotLights", ns);
 }
 
 void OpenGLRenderer::submit(const RenderItem& item) {
