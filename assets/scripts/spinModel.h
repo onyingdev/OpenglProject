@@ -1,5 +1,5 @@
 #pragma once
-#include "Core/Components/Script.h"
+#include "Core/Components/script.h"
 #include "Core/Components/GameObject.h"
 #include "Core/Engine/ComponentRegistry.h"
 #include "Components/Rendering/MeshComponent.h"
