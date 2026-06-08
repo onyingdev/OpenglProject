@@ -136,6 +136,17 @@ public:
         loadManifest(m_manifestPath, ctx);
     }
 
+    // Swap to a DIFFERENT manifest at runtime (open another world/project). Unlike
+    // reload() — which keeps loose objects so the camera persists — this frees EVERYTHING
+    // and reloads loose objects from the new manifest too. Callers that cached a loose
+    // object pointer (e.g. the camera) must re-fetch it after this.
+    void switchManifest(const std::string& path, LoadContext& ctx) {
+        std::cout << "[SceneManager] switching manifest -> " << path << "\n";
+        unloadAll();
+        m_looseLoaded = false;            // the new manifest's loose objects must load
+        loadManifest(path, ctx);
+    }
+
     // Automatic hot-reload: if the manifest or any scene file changed on disk, reload.
     // Returns true if a reload happened. Cheap — one stat per watched file per frame.
     bool poll(LoadContext& ctx) {
@@ -214,12 +225,10 @@ public:
     void collectLights(LightSet& lights) {
         for (auto& [name, e] : m_scenes) {
             if (!e.active) continue;
-            for (auto& [oname, obj] : e.scene->objects()) {
-                if (auto* dl = obj->getComponent<DirectionalLightComponent>()) lights.dir = dl->toDirLight();
-                if (auto* pl = obj->getComponent<PointLightComponent>())       lights.points.push_back(pl->toPointLight());
-                if (auto* cl = obj->getComponent<ConeLightComponent>())        lights.spots.push_back(cl->toSpotLight());
-            }
+            for (auto& [oname, obj] : e.scene->objects()) appendObjectLights(*obj, lights);
         }
+        // Loose/root objects can carry lights too (e.g. a flashlight on the camera).
+        for (auto& [name, obj] : m_loose) appendObjectLights(*obj, lights);
     }
 
 private:
@@ -237,6 +246,13 @@ private:
     void watch(const std::string& path) {
         std::error_code ec;
         m_watch[path] = std::filesystem::last_write_time(path, ec);  // epoch on error; first poll reloads
+    }
+
+    // Append any light components on `obj` to `lights` (shared by scenes + loose objects).
+    static void appendObjectLights(GameObject& obj, LightSet& lights) {
+        if (auto* dl = obj.getComponent<DirectionalLightComponent>()) lights.dir = dl->toDirLight();
+        if (auto* pl = obj.getComponent<PointLightComponent>())       lights.points.push_back(pl->toPointLight());
+        if (auto* cl = obj.getComponent<ConeLightComponent>())        lights.spots.push_back(cl->toSpotLight());
     }
 
     SceneManager() = default;

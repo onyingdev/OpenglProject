@@ -2,7 +2,6 @@
 #include <cmath>
 #include <memory>
 #include <glad/glad.h> //glad goes first (for the GLADloadproc type)
-#include <glfw3.h>
 
 #include "Render/model.h"               // model loading (+ stb image: stbi_set_flip_vertically_on_load)
 #include "Render/GL/OpenGLRenderer.h"   // concrete backend; also brings IRenderer + render types
@@ -10,123 +9,102 @@
 #include "Core/Engine/GameObjectLoader.h"  // data-driven GameObject loading from JSON
 #include "Core/Engine/SceneManager.h"      // singleton root manager: loads/owns/drives scenes
 #include "Core/Engine/InputBindings.h"     // data-driven action -> key bindings from JSON
+#include "Core/Engine/EngineSettings.h"    // window/render/backend defaults from app/Engine
+#include "Core/Engine/Window.h"            // backend-aware GLFW wrapper (all GLFW lives here)
+#include "Core/Engine/AppConfig.h"         // root-scene (manifest) path — app/app.json
+#include "Core/Engine/FileWatcher.h"       // watch app.json to repoint the root scene live
 
 #include "Core/Components/GameObject.h"
 #include "Core/Engine/BuiltinComponents.h"   // pulls in + self-registers every component & script
 
-// TODO: continue the decouple — extract Window (GLFW) and Engine (the loop) so main
-// collapses to ~6 lines. This pass moved all rendering behind IRenderer.
+// TODO: next decouple step — extract an Engine (the loop) so main collapses to ~3 lines.
+// This pass moved all GLFW behind Window and made window/render/backend data-driven.
 
 using namespace std;
-
-//global attributes
-unsigned int SCR_WIDTH = 1920;
-unsigned int SCR_HEIGHT = 1080;
-
-// Fixed internal render resolution. The scene renders at this size; the renderer
-// scales it to the window (letterbox/pillarbox). Now lives in RenderSettings and is
-// changeable at runtime via renderer->applySettings().
-const int RENDER_WIDTH  = 1920;
-const int RENDER_HEIGHT = 1080;
 
 //time
 float deltaTime = 0.0f;	// Time between current frame and last frame
 float lastFrame = 0.0f; // Time of last frame
 
-// resize: only tracks the window size. The renderer's present pass reads it each
-// frame via onResize(), so we don't touch any GL state here.
-void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
-    SCR_WIDTH = width;
-    SCR_HEIGHT = (height == 0) ? 1 : height;
+// Build the renderer for the configured backend. The ONLY place a concrete backend is
+// named; everything else talks to IRenderer. (Vulkan/other slot in here later.)
+static std::unique_ptr<IRenderer> createRenderer(RenderBackend backend) {
+    switch (backend) {
+        case RenderBackend::OpenGL:
+            return std::make_unique<OpenGLRenderer>(Window::glLoader());
+        case RenderBackend::Vulkan:
+        default:
+            std::cerr << "[Engine] requested backend not implemented yet; using OpenGL\n";
+            return std::make_unique<OpenGLRenderer>(Window::glLoader());
+    }
 }
 
 int main()
 {
-    //initialize glfw
-    glfwInit();
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-#ifdef __APPLE__
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-#endif
+    // Engine/graphics settings: defaults from app/Engine, optionally overlaid by a
+    // player settings file (swappable path) — window size, mode, backend, AA, etc.
+    EngineSettings settings = EngineSettings::load("app/Engine/render.json");
 
-    //create window
-    //TODO: add fullscreen option - glfwGetPrimaryMonitor() instead of NULL
-    GLFWwindow* window = glfwCreateWindow(SCR_WIDTH, SCR_HEIGHT, "OpenGL", NULL, NULL);
-    if (window == NULL)
-    {
-        std::cout << "Failed to create GLFW window" << std::endl;
-        glfwTerminate();
-        return -1;
-    }
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(0); //disable vsync
+    // Window: the only place GLFW lives now. Backend-aware (GL context vs Vulkan NO_API).
+    Window window(settings.window, settings.backend);
+    if (!window.valid()) { return -1; }   // Window already logged + cleaned up GLFW
+    window.captureCursor(true);
 
-    // Renderer: the ONLY place the concrete GL backend is named. Everything below
-    // talks to the IRenderer interface, so swapping backends is a one-line change.
-    std::unique_ptr<IRenderer> renderer =
-        std::make_unique<OpenGLRenderer>((GLADloadproc)glfwGetProcAddress);
-
-    // Resolution + anti-aliasing are runtime-tunable: change these fields and call
-    // renderer->applySettings(...) again at any time to rebuild the targets.
-    RenderSettings rs;
-    rs.renderWidth  = RENDER_WIDTH;
-    rs.renderHeight = RENDER_HEIGHT;
-    rs.aa           = AntiAliasing::MSAA;
-    rs.msaaSamples  = 2;
-    renderer->applySettings(rs);
-
-    if (!renderer->init(SCR_WIDTH, SCR_HEIGHT)) {   // loads GLAD, builds targets + shaders
-        glfwTerminate();
+    // Renderer for the configured backend; everything below talks to IRenderer.
+    std::unique_ptr<IRenderer> renderer = createRenderer(settings.backend);
+    renderer->applySettings(settings.render);                       // internal res + AA
+    if (!renderer->init(window.width(), window.height())) {         // loads GLAD, builds targets
         return -1;
     }
 
     stbi_set_flip_vertically_on_load(true);
 
-    //resize + mouse capture
-    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-    if (glfwRawMouseMotionSupported())
-        glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
-
-    InputManager input(window);
-    const std::string inputConfig = "assets/config/input.json";
+    InputManager input(window.handle());
+    const std::string inputConfig = "app/Config/input.json";
     InputBindings::loadInto(input, inputConfig);        // controls are data now
     InputBindings::Watcher inputWatcher(inputConfig);   // re-applies the file when it changes on disk
     //TODO: bind AA/resolution toggles here and call renderer->applySettings() at runtime.
 
     // ===== Scenes =====
-    // The whole world is data-driven. A manifest (scenes.json) lists which scene files
-    // to load; the SceneManager is the single root that loads/owns/drives them all and
-    // is the intermediary scenes use to reach each other. Both the manifest and every
-    // scene file are watched — edit one and it hot-reloads (or press the Reload key).
+    // The root scene (which manifest to boot) is data, not hardcoded: app/app.json names
+    // it, and the file is watched so editing rootScene swaps the whole world on the fly.
+    // The SceneManager loads/owns/drives the scenes + loose objects the manifest lists.
     LoadContext loadCtx;
     loadCtx.input = &input;
-    SceneManager& scenes = SceneManager::instance();
-    scenes.loadManifest("assets/scenes/scenes.json", loadCtx);
-   
-    // Camera is a loose/root object declared in the manifest's "objects" list (loaded by
-    // loadManifest above). It's not part of any scene, so it persists across scene
-    // hot-reloads and drives the view; CameraFollow resolves its "Player" target by name.
-    GameObject* camera = scenes.findObjectInRoot("MainCamera");
-    if (!camera) { std::cerr << "No 'MainCamera' root object in the manifest\n"; glfwTerminate(); return -1; }
+    const std::string appConfigPath = "app/app.json";
+    AppConfig   app = AppConfig::load(appConfigPath);
+    FileWatcher appWatcher(appConfigPath);
 
-    bool flashlightOn = false;
+    SceneManager& scenes = SceneManager::instance();
+    scenes.loadManifest(app.rootScene, loadCtx);
 
     //main loop — the more you can take out of the loop the better
-    while (!glfwWindowShouldClose(window))
+    while (!window.shouldClose())
     {
-        float currentFrame = static_cast<float>(glfwGetTime());
+        float currentFrame = static_cast<float>(Window::time());
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
 
-        inputWatcher.poll(input);   // live-reload controls if assets/config/input.json changed
+        inputWatcher.poll(input);   // live-reload controls if app/Config/input.json changed
         scenes.poll(loadCtx);       // auto hot-reload scenes if the manifest / a scene file changed
 
-        if (input.IsActionReleased("Quit"))             glfwSetWindowShouldClose(window, true);
-        if (input.IsActionReleased("ToggleFlashlight")) flashlightOn = !flashlightOn;
-        if (input.IsActionReleased("ReloadScenes"))     scenes.reload(loadCtx);   // manual reload button
+        // Root scene can change on the fly: if app.json's rootScene now points elsewhere,
+        // switch the whole world to the new manifest.
+        if (appWatcher.changed()) {
+            AppConfig fresh = AppConfig::load(appConfigPath);
+            if (fresh.rootScene != app.rootScene) {
+                app.rootScene = fresh.rootScene;
+                scenes.switchManifest(app.rootScene, loadCtx);
+            }
+        }
+
+        if (input.IsActionReleased("Quit"))             window.requestClose();    // manual quit button, debug.
+        if (input.IsActionReleased("ReloadScenes"))     scenes.reload(loadCtx);   // manual reload button, debug.
+
+        // Camera lives in the (re)loadable root objects, so fetch it each frame — robust
+        // to scene reloads and root-scene switches (no dangling cached pointer).
+        GameObject* camera = scenes.findObjectInRoot("MainCamera");
+        if (!camera) { window.pollEvents(); continue; }   // none yet (e.g. bad manifest)
 
         // --- update simulation ---
         scenes.update(deltaTime);   // updates every active scene + loose objects (the camera)
@@ -148,22 +126,8 @@ int main()
         LightSet lights;
         scenes.collectLights(lights);
 
-        // Camera flashlight: a spot that tracks the eye. It's just another cone light.
-        SpotLight flashlight;
-        flashlight.position    = cv.position;
-        flashlight.direction   = cam->forward();
-        flashlight.cutOff      = glm::cos(glm::radians(12.5f));
-        flashlight.outerCutOff = glm::cos(glm::radians(17.5f));
-        flashlight.constant    = 1.0f;
-        flashlight.linear      = 0.09f;
-        flashlight.quadratic   = 0.032f;
-        flashlight.diffuse     = glm::vec3(1.0f);
-        flashlight.specular    = glm::vec3(1.0f);
-        flashlight.enabled     = flashlightOn;
-        lights.spots.push_back(flashlight);
-
         // --- render ---
-        renderer->onResize(SCR_WIDTH, SCR_HEIGHT);
+        renderer->onResize(window.width(), window.height());
         renderer->beginScene(cv);
         renderer->setLights(lights);
 
@@ -174,18 +138,18 @@ int main()
 
         input.ResetFrame();
 
-        //check all events and swap buffers
-        glfwSwapBuffers(window);
-        glfwPollEvents();
+        // present the finished frame + pump OS events
+        window.present();
+        window.pollEvents();
     }
 
     // cleanup: release GPU-owning objects while the GL context is still alive.
     // Mesh/Model dtors call glDelete*; the renderer deletes its FBOs/shaders/quad.
     // unloadAll() MUST run here (not at static destruction of the singleton, which
     // happens after the GL context is gone) so those destructors see a live context.
+    // Order: scenes + renderer go first; `window` (declared earlier) is destroyed last
+    // at scope exit, terminating GLFW after the GL objects are already gone.
     scenes.unloadAll();   // frees scenes + loose objects (the camera) while GL is alive
     renderer.reset();
-
-    glfwTerminate();
     return 0;
 }

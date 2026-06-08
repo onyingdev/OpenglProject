@@ -28,6 +28,7 @@
 #include "assets/scripts/spinModel.h"
 #include "assets/scripts/cameraFollow.h"
 #include "assets/scripts/cameraController.h"
+#include "assets/scripts/flashLight.h"
 
 //Add new scripts here and register them with the macro at the end of their header file.
 //TODO: We need to decouple scripts entirely, components having a manual integration is not a problem, since its rare that we will need to add one. But not scripts, so refactor it to treat

@@ -45,7 +45,7 @@ public:
     vector<Vertex>       vertices;
     vector<unsigned int> indices;
     vector<Texture>      textures;
-    unsigned int VAO;
+    unsigned int VAO = 0;
 
     // constructor
     Mesh(vector<Vertex> vertices, vector<unsigned int> indices, vector<Texture> textures)
@@ -56,6 +56,38 @@ public:
 
         // now that we have all the required data, set the vertex buffers and its attribute pointers.
         setupMesh();
+    }
+
+    // Move-only: a Mesh owns its VAO/VBO/EBO. Copying would duplicate the handles and
+    // then double-delete them; instead we transfer ownership and zero the source so its
+    // destructor frees nothing. (Required for vector<Mesh> in Model to relocate safely.)
+    Mesh(const Mesh&) = delete;
+    Mesh& operator=(const Mesh&) = delete;
+
+    Mesh(Mesh&& o) noexcept
+        : vertices(std::move(o.vertices)), indices(std::move(o.indices)),
+          textures(std::move(o.textures)), VAO(o.VAO), VBO(o.VBO), EBO(o.EBO)
+    {
+        o.VAO = o.VBO = o.EBO = 0;
+    }
+    Mesh& operator=(Mesh&& o) noexcept
+    {
+        if (this != &o) {
+            release();
+            vertices = std::move(o.vertices);
+            indices  = std::move(o.indices);
+            textures = std::move(o.textures);
+            VAO = o.VAO; VBO = o.VBO; EBO = o.EBO;
+            o.VAO = o.VBO = o.EBO = 0;
+        }
+        return *this;
+    }
+
+    // Frees the GPU buffers. Must run while the GL context is alive (scene unload /
+    // shutdown both happen before the window is torn down).
+    ~Mesh()
+    {
+        release();
     }
 
     // render the mesh
@@ -98,8 +130,16 @@ public:
     }
 
 private:
-    // render data 
-    unsigned int VBO, EBO;
+    // render data
+    unsigned int VBO = 0, EBO = 0;
+
+    void release()
+    {
+        if (EBO) glDeleteBuffers(1, &EBO);
+        if (VBO) glDeleteBuffers(1, &VBO);
+        if (VAO) glDeleteVertexArrays(1, &VAO);
+        VAO = VBO = EBO = 0;
+    }
 
     // initializes all the buffer objects/arrays
     void setupMesh()
