@@ -8,7 +8,7 @@
 #include "Render/GL/OpenGLRenderer.h"   // concrete backend; also brings IRenderer + render types
 #include "Core/Engine/input_manager.h"
 #include "Core/Engine/GameObjectLoader.h"  // data-driven GameObject loading from JSON
-#include "Core/Engine/SceneLoader.h"       // data-driven Scene loading from JSON
+#include "Core/Engine/SceneManager.h"      // singleton root manager: loads/owns/drives scenes
 #include "Core/Engine/InputBindings.h"     // data-driven action -> key bindings from JSON
 
 #include "Core/Components/GameObject.h"
@@ -96,33 +96,21 @@ int main()
     InputBindings::Watcher inputWatcher(inputConfig);   // re-applies the file when it changes on disk
     //TODO: bind AA/resolution toggles here and call renderer->applySettings() at runtime.
 
-    // ===== Scene =====
-    // The whole world is now data-driven: one scene file lists its objects, each of
-    // which is its own GameObject JSON. The Scene owns those objects and applies its
-    // transform to all of them. start() is deferred to here so every object exists
-    // before any script runs; starting the root starts the Scene and its children.
+    // ===== Scenes =====
+    // The whole world is data-driven. A manifest (scenes.json) lists which scene files
+    // to load; the SceneManager is the single root that loads/owns/drives them all and
+    // is the intermediary scenes use to reach each other. Both the manifest and every
+    // scene file are watched — edit one and it hot-reloads (or press the Reload key).
     LoadContext loadCtx;
     loadCtx.input = &input;
-    auto sceneRoot = SceneLoader::fromFile("assets/scenes/level1.json", loadCtx);
-    if (!sceneRoot) { std::cerr << "Failed to load level1.json\n"; glfwTerminate(); return -1; }
-    sceneRoot->start();
-
-    Scene* scene = sceneRoot->getComponent<Scene>();
-    GameObject* player = scene->getObject("Player");   // borrowed; Scene owns it
-    if (!player) {
-        std::cerr << "Scene is missing the Player object\n";
-        glfwTerminate(); return -1;
-    }
-
-    // Camera stays outside the scene: it references the player and drives the view.
-    auto camera = std::make_unique<GameObject>();
-    camera->Name = "MainCamera";
-    camera->addComponent<TransformComponent3D>()->Position = {-1, 1, 0}; 
-    camera->addComponent<InputComponent>(&input);
-    camera->addComponent<CameraComponent>();
-    camera->addComponent<CameraFollow>(); //script
-    camera->getComponent<CameraFollow>()->Target = player;
-    camera->start();
+    SceneManager& scenes = SceneManager::instance();
+    scenes.loadManifest("assets/scenes/scenes.json", loadCtx);
+   
+    // Camera is a loose/root object declared in the manifest's "objects" list (loaded by
+    // loadManifest above). It's not part of any scene, so it persists across scene
+    // hot-reloads and drives the view; CameraFollow resolves its "Player" target by name.
+    GameObject* camera = scenes.findObjectInRoot("MainCamera");
+    if (!camera) { std::cerr << "No 'MainCamera' root object in the manifest\n"; glfwTerminate(); return -1; }
 
     bool flashlightOn = false;
 
@@ -134,13 +122,14 @@ int main()
         lastFrame = currentFrame;
 
         inputWatcher.poll(input);   // live-reload controls if assets/config/input.json changed
+        scenes.poll(loadCtx);       // auto hot-reload scenes if the manifest / a scene file changed
 
         if (input.IsActionReleased("Quit"))             glfwSetWindowShouldClose(window, true);
         if (input.IsActionReleased("ToggleFlashlight")) flashlightOn = !flashlightOn;
+        if (input.IsActionReleased("ReloadScenes"))     scenes.reload(loadCtx);   // manual reload button
 
         // --- update simulation ---
-        camera->update(deltaTime);
-        sceneRoot->update(deltaTime);   // updates the Scene -> all its objects
+        scenes.update(deltaTime);   // updates every active scene + loose objects (the camera)
         ColliderComponent3D::tickWorld();
 
         // --- gather camera for this frame ---
@@ -153,18 +142,11 @@ int main()
         cv.projection = cam->projectionMatrix(aspect);
         cv.position   = cam->owner->getComponent<TransformComponent3D>()->Position;
 
-        // --- gather lights from the scene: the directional sun, point lamps, and
-        // cone lights are all data now (kDefaultLightColor unless the object assigns
+        // --- gather lights from every active scene: the directional sun, point lamps,
+        // and cone lights are all data (kDefaultLightColor unless the object assigns
         // one). The flashlight below is a camera spot added on top. ---
         LightSet lights;
-        for (auto& [name, obj] : scene->objects()) {
-            if (auto* dl = obj->getComponent<DirectionalLightComponent>())
-                lights.dir = dl->toDirLight();     // one sun; last wins if several
-            if (auto* pl = obj->getComponent<PointLightComponent>())
-                lights.points.push_back(pl->toPointLight());
-            if (auto* cl = obj->getComponent<ConeLightComponent>())
-                lights.spots.push_back(cl->toSpotLight());
-        }
+        scenes.collectLights(lights);
 
         // Camera flashlight: a spot that tracks the eye. It's just another cone light.
         SpotLight flashlight;
@@ -185,9 +167,8 @@ int main()
         renderer->beginScene(cv);
         renderer->setLights(lights);
 
-        // The Scene submits every object's mesh, each with its own material (the fish
-        // carry "unlit" + color in their JSON now) and offset by the scene transform.
-        scene->draw(*renderer);
+        // Each active scene submits its objects' meshes (own material + scene offset).
+        scenes.draw(*renderer);
 
         renderer->endScene();
 
@@ -200,11 +181,9 @@ int main()
 
     // cleanup: release GPU-owning objects while the GL context is still alive.
     // Mesh/Model dtors call glDelete*; the renderer deletes its FBOs/shaders/quad.
-    // All must run before glfwTerminate(). unload() frees every scene object; the
-    // scene root and camera then release their own components.
-    scene->unload();
-    sceneRoot.reset();
-    camera.reset();
+    // unloadAll() MUST run here (not at static destruction of the singleton, which
+    // happens after the GL context is gone) so those destructors see a live context.
+    scenes.unloadAll();   // frees scenes + loose objects (the camera) while GL is alive
     renderer.reset();
 
     glfwTerminate();

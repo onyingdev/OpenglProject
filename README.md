@@ -6,8 +6,12 @@ A 3D graphics engine based on OpenGL written in C++, with a flexible component s
 
 - **Decoupled Rendering Layer (in development)** - Adapter layer allows to swap between OpenGL, Vulkan and Other rendering APIs
 - **Component System** - Component Pattern used for creating GameObjects
+- **Data-Driven Content** - GameObjects, scenes, lighting, and input bindings are all authored as JSON; adding content needs no engine recompile
+- **Scene Management** - A singleton `SceneManager` loads/owns/drives scenes from a manifest; objects in a scene can reach each other, and scenes can reach across to each other
+- **Hot Reload** - Edit a scene, the scene manifest, or the input config and it re-applies live (automatically on file change, or via a key)
+- **Lighting** - Directional (sun), point, and spot/cone lights, all data-driven components
 - **3D Model Loading** - Imports OBJ, FBX, and other model formats via ASSIMP (need expansion and refinement)
-- **Input System** - Keyboard and mouse handling with Actions
+- **Input System** - Keyboard and mouse handling with Actions, bound from JSON
 - **Custom Shaders** - System for loading and compiling shaders (vertex/fragment)
 - **Scripts System** - Extensible Script system for behavior logic.
 - **Internal Scaling** - Rendering at a fixed resolution with scaling to the window (letterbox/pillarbox)
@@ -90,33 +94,42 @@ updates those roots — never the include lines in every file.
 │   ├── models/                   # 3D models (OBJ/FBX) with their textures + materials
 │   ├── shaders/                  # GLSL shaders (*.vs, *.fs)
 │   ├── textures/                 # Standalone textures
-│   └── scripts/                  # Behavior scripts (header-only C++)
+│   ├── scripts/                  # Behavior scripts (header-only C++)
+│   ├── gameObjects/              # GameObject definitions (JSON)
+│   ├── scenes/                   # Scene files + scenes.json manifest (JSON)
+│   └── config/                   # Engine config — e.g. input.json (action → key)
 ├── include/                      # Engine headers (mostly header-only)
 │   ├── Components/                # Attachable components, grouped by subsystem
-│   │   ├── Rendering/            #   MeshComponent, CameraComponent
+│   │   ├── Rendering/            #   Mesh, Camera, Point/Cone/Directional lights
 │   │   ├── Physics/              #   ColliderComponent3D, RigidBodyComponent3D
 │   │   ├── Input/                #   InputComponent
 │   │   ├── Gameplay/             #   CharacterComponent3D
 │   │   ├── Audio/                #   SoundComponent3D
 │   │   └── World/                #   TerrainComponent3D
 │   ├── Core/                     # Engine foundation
-│   │   ├── Components/           #   Base component types + scene graph
+│   │   ├── Components/           #   Base component types
 │   │   │   ├── Component.h       #     base class every component inherits
-│   │   │   ├── GameObject.h      #     component container
+│   │   │   ├── GameObject.h      #     component container (+ back-pointer to its Scene)
 │   │   │   ├── SpatialComponent3D.h  # base for anything with a transform
 │   │   │   ├── TransformComponent3D.h # position/rotation/scale (+ plain Transform POD)
-│   │   │   ├── Scene.h           #     loadable/unloadable object package
 │   │   │   └── script.h         #     Script base class
 │   │   └── Engine/              #   Engine services
+│   │       ├── Scene.h          #     object container (owns GameObjects, draw/update)
+│   │       ├── SceneManager.h   #     singleton root: loads/owns/drives scenes + hot reload
+│   │       ├── SceneLoader.h    #     builds a Scene from JSON
+│   │       ├── GameObjectLoader.h #   builds a GameObject from JSON
+│   │       ├── ComponentRegistry.h # name → component factory (self-registration)
+│   │       ├── BuiltinComponents.h # the registration manifest (one include list)
+│   │       ├── InputBindings.h  #     loads/hot-reloads input.json
 │   │       ├── input_manager.h  #     action → key mapping
 │   │       ├── lib_asset_loader.h #   texture/asset loading
 │   │       ├── exceptions.h     #     engine exceptions / warnings
 │   │       └── stb_image.h      #     image decode (vendored)
-│   └── Render/                   # Rendering primitives (Shader, Model, Mesh)
+│   └── Render/                   # Rendering primitives + API (IRenderer, Shader, Model, Mesh)
 ├── src/                          # .cpp implementations
-│   ├── Core/                     #   input_manager, lib_asset_loader
-│   └── Render/                   #   shader_s
-├── vendor/                       # Third-party deps (glad, GLFW, glm)
+│   ├── Core/                     #   input_manager, lib_asset_loader, GameObjectLoader
+│   └── Render/                   #   shader_s, OpenGLRenderer
+├── vendor/                       # Third-party deps (glad, GLFW, glm, json)
 ├── main.cpp                      # Entry point (engine + app, being decoupled)
 ├── Makefile                      # Build script (g++, OpenMP, -I include roots)
 └── README.md                     # This file
@@ -135,15 +148,19 @@ The foundation types are required for the engine to work; concrete components in
 - **SpatialComponent3D** - Base for any component that can be placed in the world. Holds a local `Transform` plus per-axis source pointers that select between the local copy and the owner's transform.
 - **TransformComponent3D** - Position, rotation (Euler degrees), and scale. Backed by a plain `Transform` POD (no vtable/owner overhead) so it can be embedded cheaply.
 - **Script** - Base class for behavior scripts.
-- **Scene** - A package of objects that can be loaded/unloaded.
+
+> `Scene` and `SceneManager` live in `include/Core/Engine` (they own GameObjects rather than being components). See **Data-Driven Content** below.
 
 ### Components by Subsystem (`include/Components`)
 
 Concrete, attachable components, grouped by the engine subsystem that drives them.
 
 - **Rendering/**
-  - **MeshComponent** - 3D model rendering.
+  - **MeshComponent** - 3D model rendering (material is data: `lit` / `unlit` + color).
   - **CameraComponent** - Perspective camera (produces view/projection matrices).
+  - **PointLightComponent** - Omnidirectional lamp at the owner's position (color/attenuation).
+  - **ConeLightComponent** - Spot/cone light (direction + inner/outer angles).
+  - **DirectionalLightComponent** - The "sun": a parallel directional light.
 - **Physics/**
   - **ColliderComponent3D** - Collision shapes (AABB box, sphere) with enter/stay/exit triggers.
   - **RigidBodyComponent3D** - Physics body *(planned)*.
@@ -162,6 +179,76 @@ Concrete, attachable components, grouped by the engine subsystem that drives the
 - **CameraFollow** - Camera tracks a target with a positional/rotational offset.
 - **CharacterController** - Drives a character from input actions.
 - **SpinModel** - Automatic rotation on an axis.
+
+## Data-Driven Content
+
+Content is authored as JSON and loaded at runtime — adding objects, scenes, lights, or
+rebinding keys needs **no engine recompile**. (Recompiling is only needed when you write a
+new component/script type in C++.)
+
+### GameObjects (`assets/gameObjects/*.json`)
+
+An object is a name plus a list of components. Each component names its `type` (resolved
+through the `ComponentRegistry`) and carries its own fields:
+
+```json
+{
+  "name": "Fish1",
+  "components": [
+    { "type": "Transform",  "position": [2, 0, 0] },
+    { "type": "Mesh",       "model": "assets/models/fish1/fish1.obj", "material": "unlit", "color": [1, 0, 0] },
+    { "type": "Collider",   "shape": { "kind": "sphere", "radius": 0.5 } },
+    { "type": "PointLight", "color": [1, 0, 0], "attenuation": 1.0 },
+    { "type": "SpinModel" }
+  ]
+}
+```
+
+### Scenes (`assets/scenes/*.json`) and the manifest
+
+A **scene** has its own transform (offsets all its objects) and a list of objects (file
+paths or inline definitions):
+
+```json
+{ "name": "Level1", "transform": { "position": [0, 0, 0] },
+  "objects": [ "assets/gameObjects/sun.json", "assets/gameObjects/player.json" ] }
+```
+
+The **manifest** `assets/scenes/scenes.json` lists which scenes the engine loads and which
+are `active` (updated/drawn):
+
+```json
+{ "scenes": [ { "name": "Level1", "path": "assets/scenes/level1.json", "active": true } ] }
+```
+
+### SceneManager (the single root)
+
+`SceneManager::instance()` is the one root manager: it loads the manifest, owns every
+`Scene`, drives their `update`/`draw`, gathers their lights, and is the intermediary scenes
+go through to reach each other. (It is the seed of a future editor / node manager UI.)
+
+### Object interaction
+
+Every object knows its scene, so a component/script can reach others:
+
+```cpp
+// same scene, by name:
+if (auto* door = owner->scene()->getObject("Door")) door->getComponent<DoorScript>()->Open();
+// same scene, by type (singletons / "find the player"):
+auto* state = owner->scene()->findComponent<GameStateScript>();
+// across scenes, through the manager:
+owner->scene()->manager()->getScene("HUD")->getObject("Score")->getComponent<ScoreScript>()->Add(10);
+```
+
+Resolve references in `start()` (all objects exist by then) but make cross-object *calls* in
+`tick()` (everyone has started).
+
+### Hot reload
+
+The input config, the scenes manifest, and every scene file are watched: edit and save one
+and it re-applies live. Scenes also reload on the **Reload key** (`R` by default). The build
+of the world itself is data — only adding a brand-new C++ component/script type means editing
+`BuiltinComponents.h` and running `make recompile`.
 
 ## Basic Usage
 
@@ -230,17 +317,19 @@ void main() {
 
 ## Runtime Controls
 
-Default bindings (see `main.cpp` → `InputManager::BindAction`). These are a work in progress.
+Bindings live in `assets/config/input.json` (action → key) and hot-reload on save. The
+defaults:
 
 | Key | Action |
 |-------|--------|
-| ↑ | Move forward |
-| ↓ | Move backward |
-| ← | Move left |
-| → | Move right |
+| W | Move forward |
+| S | Move backward |
+| A | Move left |
+| D | Move right |
 | N | Rotate left |
 | M | Rotate right |
 | F | Toggle flashlight |
+| R | Reload scenes |
 | Mouse | Look around |
 | ESC | Exit |
 

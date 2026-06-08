@@ -9,6 +9,7 @@
     "RotateLeft": "N",
     "ToggleFlashlight": "F",
     "IncreaseAttenuation": "Up",
-    "DecreaseAttenuation": "Down"
+    "DecreaseAttenuation": "Down",
+    "ReloadScenes": "R"
   }
 }

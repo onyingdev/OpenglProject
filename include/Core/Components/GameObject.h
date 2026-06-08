@@ -5,6 +5,8 @@
 #include <unordered_map>
 #include "Core/Components/Component.h"
 
+class Scene;   // back-pointer only; full type pulled in by code that queries the scene
+
 class GameObject {
     std::vector<std::unique_ptr<Component>> Components;
     std::unordered_map<std::type_index, Component*> Lookup;
@@ -12,6 +14,12 @@ class GameObject {
 
 public:
     std::string Name = "Unnamed GameObject";
+
+    // The Scene that owns this object, set by Scene::addObject. Lets a component reach
+    // siblings in other objects: owner->scene()->getObject("X")->getComponent<Y>().
+    Scene* OwningScene = nullptr;
+    Scene* scene() const { return OwningScene; }
+
     template<typename T, typename... Args>
     T* addComponent(Args&&... args) {
         static_assert(std::is_base_of_v<Component, T>);

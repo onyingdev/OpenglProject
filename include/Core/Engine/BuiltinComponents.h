@@ -22,7 +22,6 @@
 #include "Components/Input/InputComponent.h"
 #include "Components/Physics/ColliderComponent3D.h"
 #include "Components/Gameplay/CharacterComponent3D.h"
-#include "Core/Components/Scene.h"
 
 // --- Game scripts ---
 #include "assets/scripts/characterController.h"

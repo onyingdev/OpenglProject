@@ -1,0 +1,8 @@
+{
+  "scenes": [
+    { "name": "Level1", "path": "assets/scenes/level1.json", "active": true }
+  ],
+  "objects": [
+    "assets/gameObjects/camera.json"
+  ]
+}

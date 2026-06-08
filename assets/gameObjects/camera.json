@@ -1,0 +1,9 @@
+{
+  "name": "MainCamera",
+  "components": [
+    { "type": "Transform", "position": [-1, 1, 0] },
+    { "type": "Input" },
+    { "type": "Camera", "fov": 45, "near": 0.1, "far": 100 },
+    { "type": "CameraFollow", "target": "Player", "offset": [-3, 6, 0], "rotationOffset": [0, -60, 0] }
+  ]
+}

@@ -1,43 +1,66 @@
 #pragma once
 #include <memory>
 #include <string>
+#include <fstream>
 #include <iostream>
-#include "Core/Components/GameObject.h"
-#include "Core/Components/Scene.h"
+#include <nlohmann/json.hpp>
+#include "Core/Engine/Scene.h"
 #include "Core/Engine/GameObjectLoader.h"
+#include "Core/Engine/JsonHelpers.h"
 #include "Core/Engine/LoadContext.h"
 
-// Loads a scene file and returns its root GameObject.
-//
-// A scene file IS a GameObject descriptor that carries a Scene component, e.g.:
+// Builds a Scene from a JSON scene file:
 //   {
 //     "name": "Level1",
-//     "components": [
-//       { "type": "Transform", "position": [0,0,0] },
-//       { "type": "Scene", "objects": [ "assets/gameObjects/player.json", ... ] }
-//     ]
+//     "transform": { "position": [0,0,0], "rotation": [...], "scale": [...] },
+//     "objects": [ "assets/gameObjects/player.json", { inline object }, ... ]
 //   }
-// So loading reuses GameObjectLoader; the Scene component builds the child objects
-// during its deserialize. This wrapper exists to name the intent and to validate
-// that the root actually has a Scene — and is the future home for multi-scene /
-// streaming / active-scene logic.
+// Each entry of "objects" is either a path string (loaded via GameObjectLoader::fromFile)
+// or an inline object definition. Objects are built but NOT started — the caller starts
+// the whole Scene once it exists, so cross-object references can resolve safely.
+// (Phase 2's SceneManager will wrap this and own the loaded scenes.)
 namespace SceneLoader {
+    using json = nlohmann::json;
 
-    // Build (but do NOT start) the scene root. Caller calls root->start(), which
-    // starts the Scene and, in turn, every object it contains. Returns nullptr on
-    // I/O / parse error or if the root has no Scene component.
-    inline std::unique_ptr<GameObject> fromFile(const std::string& path, LoadContext& ctx) {
-        auto root = GameObjectLoader::fromFile(path, ctx);
-        if (!root) return nullptr;
-        if (!root->getComponent<Scene>()) {
-            std::cerr << "[SceneLoader] " << path << " has no Scene component\n";
-            return nullptr;
+    inline std::unique_ptr<Scene> fromJson(const json& j, LoadContext& ctx) {
+        auto scene = std::make_unique<Scene>();
+        scene->Name = j.value("name", std::string{"Scene"});
+
+        if (j.contains("transform") && j["transform"].is_object()) {
+            const json& t = j["transform"];
+            scene->transform.Position      = jsonVec3(t.value("position", json{}), scene->transform.Position);
+            scene->transform.RotationEuler = jsonVec3(t.value("rotation", json{}), scene->transform.RotationEuler);
+            scene->transform.Scale         = jsonVec3(t.value("scale",    json{}), scene->transform.Scale);
         }
-        return root;
+
+        if (j.contains("objects") && j["objects"].is_array()) {
+            for (const auto& entry : j["objects"]) {
+                std::unique_ptr<GameObject> obj;
+                if (entry.is_string())      obj = GameObjectLoader::fromFile(entry.get<std::string>(), ctx);
+                else if (entry.is_object()) obj = GameObjectLoader::fromJson(entry, ctx);
+                else { std::cerr << "[SceneLoader] object entry must be a path string or object\n"; continue; }
+
+                if (obj) scene->addObject(std::move(obj));
+                else     std::cerr << "[SceneLoader] failed to load an object entry in scene '" << scene->Name << "'\n";
+            }
+        }
+        return scene;
     }
 
-    // Convenience: the Scene component of a loaded root (nullptr if root is null).
-    inline Scene* sceneOf(GameObject* root) {
-        return root ? root->getComponent<Scene>() : nullptr;
+    // Read + parse a .json scene file, then fromJson(). Returns nullptr on I/O or parse error.
+    inline std::unique_ptr<Scene> fromFile(const std::string& path, LoadContext& ctx) {
+        std::ifstream f(path);
+        if (!f) {
+            std::cerr << "[SceneLoader] cannot open " << path << "\n";
+            return nullptr;
+        }
+        json j;
+        try {
+            f >> j;
+        } catch (const std::exception& e) {
+            std::cerr << "[SceneLoader] JSON parse error in " << path << ": " << e.what() << "\n";
+            return nullptr;
+        }
+        return fromJson(j, ctx);
     }
 }

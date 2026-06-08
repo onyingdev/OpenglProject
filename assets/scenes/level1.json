@@ -1,13 +1,11 @@
 {
   "name": "Level1",
-  "components": [
-    { "type": "Transform", "position": [0, 0, 0] },
-    { "type": "Scene", "objects": [
-        "assets/gameObjects/player.json",
-        "assets/gameObjects/playground.json",
-        "assets/gameObjects/fish1.json",
-        "assets/gameObjects/fish2.json"
-      ]
-    }
+  "transform": { "position": [0, 0, 0] },
+  "objects": [
+    "assets/gameObjects/sun.json",
+    "assets/gameObjects/player.json",
+    "assets/gameObjects/playground.json",
+    "assets/gameObjects/fish1.json",
+    "assets/gameObjects/fish2.json"
   ]
 }
