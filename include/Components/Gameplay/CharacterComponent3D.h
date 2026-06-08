@@ -1,6 +1,6 @@
 #pragma once
 #include "Core/Components/SpatialComponent3D.h"
-#include "Core/Engine/ComponentRegistry.h"
+#include "Core/Engine/Services/ComponentRegistry.h"
 #include "Components/Rendering/MeshComponent.h"
 #include "Components/Input/InputComponent.h"
 

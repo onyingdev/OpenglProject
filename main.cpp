@@ -6,19 +6,20 @@
 #include "Render/model.h"               // model loading (+ stb image: stbi_set_flip_vertically_on_load)
 #include "Render/GL/OpenGLRenderer.h"   // concrete backend; also brings IRenderer + render types
 #include "Core/Engine/input_manager.h"
-#include "Core/Engine/GameObjectLoader.h"  // data-driven GameObject loading from JSON
+#include "Core/Engine/Services/GameObjectLoader.h"  // data-driven GameObject loading from JSON
 #include "Core/Engine/SceneManager.h"      // singleton root manager: loads/owns/drives scenes
-#include "Core/Engine/InputBindings.h"     // data-driven action -> key bindings from JSON
-#include "Core/Engine/EngineSettings.h"    // window/render/backend defaults from app/Engine
-#include "Core/Engine/Window.h"            // backend-aware GLFW wrapper (all GLFW lives here)
-#include "Core/Engine/AppConfig.h"         // root-scene (manifest) path — app/app.json
-#include "Core/Engine/FileWatcher.h"       // watch app.json to repoint the root scene live
+#include "Core/Engine/Services/InputBindings.h"     // data-driven action -> key bindings from JSON
+#include "Core/Engine/Config/EngineSettings.h"    // window/render/backend defaults from app/Engine
+#include "Core/Engine/Services/Window.h"            // backend-aware GLFW wrapper (all GLFW lives here)
+#include "Core/Engine/Config/AppConfig.h"         // root-scene (manifest) path — app/app.json
+#include "Core/Engine/Services/FileWatcher.h"       // watch app.json to repoint the root scene live
 
 #include "Core/Components/GameObject.h"
-#include "Core/Engine/BuiltinComponents.h"   // pulls in + self-registers every component & script
+#include "Core/Engine/Config/BuiltinComponents.h"   // pulls in + self-registers every component & script
 
 // TODO: next decouple step — extract an Engine (the loop) so main collapses to ~3 lines.
 // This pass moved all GLFW behind Window and made window/render/backend data-driven.
+// TODO: Add multicamera support.
 
 using namespace std;
 

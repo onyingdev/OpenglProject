@@ -2,7 +2,7 @@
 #include "Core/Components/script.h"
 #include "Core/Components/GameObject.h"
 #include "Core/Components/TransformComponent3D.h"
-#include "Core/Engine/ComponentRegistry.h"
+#include "Core/Engine/Services/ComponentRegistry.h"
 #include "Components/Input/InputComponent.h"
 #include <glm/glm.hpp>
 #include <nlohmann/json.hpp>

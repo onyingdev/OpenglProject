@@ -1,5 +1,5 @@
 #pragma once
-#include "Core/Engine/exceptions.h"
+#include "Core/Engine/Helpers/exceptions.h"
 #include <nlohmann/json_fwd.hpp>   // lightweight: declares nlohmann::json without the full library
 
 class GameObject;

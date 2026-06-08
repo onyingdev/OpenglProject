@@ -2,8 +2,8 @@
 #include "Core/Components/script.h"
 #include "Core/Components/GameObject.h"
 #include "Components/Rendering/CameraComponent.h"
-#include "Core/Engine/ComponentRegistry.h"
-#include "Core/Engine/JsonHelpers.h"
+#include "Core/Engine/Services/ComponentRegistry.h"
+#include "Core/Engine/Helpers/JsonHelpers.h"
 #include "Core/Engine/SceneManager.h"      // resolve the target by name through the root
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>

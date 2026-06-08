@@ -1,7 +1,7 @@
 #pragma once
 #include "Core/Components/script.h"
 #include "Core/Components/GameObject.h"
-#include "Core/Engine/ComponentRegistry.h"
+#include "Core/Engine/Services/ComponentRegistry.h"
 #include "Components/Input/InputComponent.h"
 #include "Components/Rendering/CameraComponent.h"
 #include "Components/Rendering/ConeLightComponent.h"

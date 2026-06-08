@@ -1,7 +1,7 @@
 #pragma once
 #include "Core/Components/SpatialComponent3D.h"
-#include "Core/Engine/ComponentRegistry.h"
-#include "Core/Engine/JsonHelpers.h"
+#include "Core/Engine/Services/ComponentRegistry.h"
+#include "Core/Engine/Helpers/JsonHelpers.h"
 #include <glm/glm.hpp>
 #include <functional>
 #include <iostream>

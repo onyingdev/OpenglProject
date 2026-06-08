@@ -1,5 +1,5 @@
-#include "Core/Engine/GameObjectLoader.h"
-#include "Core/Engine/ComponentRegistry.h"
+#include "Core/Engine/Services/GameObjectLoader.h"
+#include "Core/Engine/Services/ComponentRegistry.h"
 #include "Core/Components/Component.h"
 
 #include <nlohmann/json.hpp>

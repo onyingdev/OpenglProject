@@ -4,8 +4,8 @@
 #include <string>
 #include <vector>
 #include "Core/Components/Component.h"
-#include "Core/Engine/ComponentRegistry.h"
-#include "Core/Engine/LoadContext.h"
+#include "Core/Engine/Services/ComponentRegistry.h"
+#include "Core/Engine/Services/LoadContext.h"
 #include "Core/Engine/input_manager.h"
 
 // Generic input component: pipes the InputManager into per-action callbacks.

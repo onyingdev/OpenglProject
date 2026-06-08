@@ -1,6 +1,6 @@
 #pragma once
 #include "Core/Components/SpatialComponent3D.h"
-#include "Core/Engine/ComponentRegistry.h"
+#include "Core/Engine/Services/ComponentRegistry.h"
 #include <nlohmann/json.hpp>
 
 // Pure camera: knows how to produce view/projection matrices from whatever

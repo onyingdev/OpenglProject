@@ -1,7 +1,7 @@
 #pragma once
 #include "Core/Components/SpatialComponent3D.h"
-#include "Core/Engine/ComponentRegistry.h"
-#include "Core/Engine/JsonHelpers.h"
+#include "Core/Engine/Services/ComponentRegistry.h"
+#include "Core/Engine/Helpers/JsonHelpers.h"
 #include "Render/API/IModel.h"
 #include "Render/API/RenderTypes.h"
 #include "Render/model.h"          // concrete GL Model, used only at construction

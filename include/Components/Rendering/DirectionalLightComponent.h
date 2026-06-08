@@ -2,8 +2,8 @@
 #include "Core/Components/Component.h"
 #include "Core/Components/GameObject.h"
 #include "Core/Components/TransformComponent3D.h"
-#include "Core/Engine/ComponentRegistry.h"
-#include "Core/Engine/JsonHelpers.h"
+#include "Core/Engine/Services/ComponentRegistry.h"
+#include "Core/Engine/Helpers/JsonHelpers.h"
 #include "Components/Rendering/PointLightComponent.h"   // kDefaultLightColor
 #include "Render/API/RenderTypes.h"
 #include <glm/glm.hpp>

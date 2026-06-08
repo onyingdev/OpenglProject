@@ -8,9 +8,9 @@
 #include <nlohmann/json.hpp>
 
 #include "Core/Engine/Scene.h"
-#include "Core/Engine/SceneLoader.h"
-#include "Core/Engine/GameObjectLoader.h"   // loose/root objects from "objects" in the manifest
-#include "Core/Engine/LoadContext.h"
+#include "Core/Engine/Services/SceneLoader.h"
+#include "Core/Engine/Services/GameObjectLoader.h"   // loose/root objects from "objects" in the manifest
+#include "Core/Engine/Services/LoadContext.h"
 #include "Render/API/IRenderer.h"
 #include "Render/API/RenderTypes.h"
 #include "Components/Rendering/PointLightComponent.h"

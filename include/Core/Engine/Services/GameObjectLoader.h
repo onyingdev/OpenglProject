@@ -3,7 +3,7 @@
 #include <string>
 #include <nlohmann/json.hpp>
 #include "Core/Components/GameObject.h"
-#include "Core/Engine/LoadContext.h"
+#include "Core/Engine/Services/LoadContext.h"
 
 // Builds GameObjects from JSON of the form:
 //   { "name": "Player", "components": [ { "type": "Transform", ... }, ... ] }

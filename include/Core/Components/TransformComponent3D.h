@@ -1,8 +1,8 @@
 #pragma once
 #include "Core/Components/Component.h"
-#include "Core/Engine/ComponentRegistry.h"
-#include "Core/Engine/JsonHelpers.h"
-#include "Core/Engine/LoadContext.h"
+#include "Core/Engine/Services/ComponentRegistry.h"
+#include "Core/Engine/Helpers/JsonHelpers.h"
+#include "Core/Engine/Services/LoadContext.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 

@@ -5,9 +5,9 @@
 #include <iostream>
 #include <nlohmann/json.hpp>
 #include "Core/Engine/Scene.h"
-#include "Core/Engine/GameObjectLoader.h"
-#include "Core/Engine/JsonHelpers.h"
-#include "Core/Engine/LoadContext.h"
+#include "Core/Engine/Services/GameObjectLoader.h"
+#include "Core/Engine/Helpers/JsonHelpers.h"
+#include "Core/Engine/Services/LoadContext.h"
 
 // Builds a Scene from a JSON scene file:
 //   {

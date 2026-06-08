@@ -3,7 +3,7 @@
 #include <glfw3.h>
 #include <string>
 #include <iostream>
-#include "Core/Engine/EngineSettings.h"
+#include "Core/Engine/Config/EngineSettings.h"
 
 // GLFW window + platform wrapper. Keeps ALL GLFW out of the rest of the engine and is
 // backend-aware so the same class serves OpenGL today and Vulkan/other later:
