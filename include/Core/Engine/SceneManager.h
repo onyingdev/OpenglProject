@@ -194,6 +194,9 @@ public:
 
     // --- per-frame drive (active scenes only) ---
 
+    //TODO: update loose objects only, update scenes only, update specific scenes and loose object.
+    //unload specific scene or object.
+
     void update(float dt) {
         for (auto& [name, e] : m_scenes)
             if (e.active) e.scene->update(dt);

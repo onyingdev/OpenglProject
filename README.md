@@ -1,3 +1,6 @@
+TODO LIST: DontDestroyOnLoad, for persistent objects
+game start flow: Initial Scene (main menu) -> script read save file -> load according scenes and objects -> start game -> SceneManager doesnt destroy stuff like GameManager or Camera -> Game Manager has acces and control over scene manager so it can render or load certain levels if it wants to (future functions yet to be implemented)
+
 # OpenGL Project - Game Engine
 
 A 3D graphics engine based on OpenGL written in C++, with a flexible component system for building graphical and interactive applications similar to Unity and Godot.
