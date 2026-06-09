@@ -103,6 +103,21 @@ public:
     virtual Contact collideOBB(const OBBShape& other,
                                const glm::vec3& selfPos,  const glm::vec3& selfScale,
                                const glm::vec3& otherPos, const glm::vec3& otherScale) const = 0;
+
+    // Contact MANIFOLD: write up to maxOut contact points into out[], return the count. The
+    // default is the single collide() contact (fine for spheres / point-ish contacts); box &
+    // OBB override it for the resting-on-a-plane case, emitting one contact per penetrating
+    // corner so a flat box is held by a balanced set of points (no single-point rocking/jitter).
+    virtual int manifold(const ColliderShape& other,
+                         const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                         const glm::vec3& otherPos, const glm::vec3& otherScale,
+                         Contact* out, int maxOut) const {
+        if (maxOut < 1) return 0;
+        const Contact c = collide(other, selfPos, selfScale, otherPos, otherScale);
+        if (!c.hit) return 0;
+        out[0] = c;
+        return 1;
+    }
 };
 
 class BoxShape : public ColliderShape {
@@ -202,6 +217,12 @@ public:
     Contact collideOBB(const OBBShape& other,
                        const glm::vec3& selfPos,  const glm::vec3& selfScale,
                        const glm::vec3& otherPos, const glm::vec3& otherScale) const override;
+
+    // Manifold (out-of-line: needs PlaneShape). AABB-vs-plane emits a corner manifold.
+    int manifold(const ColliderShape& other,
+                 const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                 const glm::vec3& otherPos, const glm::vec3& otherScale,
+                 Contact* out, int maxOut) const override;
 };
 
 //checks exclusively spheres, doesnt allow ellipsoids.
@@ -540,6 +561,49 @@ inline Contact satBoxes(const glm::vec3& ca, const glm::vec3 ax[3], const glm::v
     return c;
 }
 
+// Box-vs-plane contact MANIFOLD: one contact per box corner penetrating the plane (normal
+// box -> plane = -N). Shared by AABB (identity axes) and OBB (oriented axes). A flat box rests
+// on 4 balanced corners → the per-corner normal impulses cancel any rocking torque, killing the
+// single-point jitter. C = box center, a[3] = unit world axes, h = world half-extents.
+inline int boxPlaneManifold(const glm::vec3& C, const glm::vec3 a[3], const glm::vec3& h,
+                            const PlaneShape& plane, const glm::vec3& P, Contact* out, int maxOut) {
+    const glm::vec3 N = glm::normalize(plane.Normal);
+    int count = 0;
+    for (int sx = -1; sx <= 1; sx += 2)
+    for (int sy = -1; sy <= 1; sy += 2)
+    for (int sz = -1; sz <= 1; sz += 2) {
+        const glm::vec3 corner = C + (float)sx * h.x * a[0]
+                                   + (float)sy * h.y * a[1]
+                                   + (float)sz * h.z * a[2];
+        const float d = glm::dot(corner - P, N);                 // signed distance to plane
+        if (d < 0.0f && plane.withinBounds(corner, P)) {         // corner is below/in the plane
+            if (count >= maxOut) return count;
+            out[count].hit         = true;
+            out[count].normal      = -N;
+            out[count].penetration = -d;
+            out[count].point       = corner;
+            ++count;
+        }
+    }
+    return count;
+}
+
+inline int BoxShape::manifold(const ColliderShape& other,
+                              const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                              const glm::vec3& otherPos, const glm::vec3& otherScale,
+                              Contact* out, int maxOut) const {
+    if (other.kind() == ShapeKind::Plane) {
+        const glm::vec3 a[3] = { glm::vec3(1,0,0), glm::vec3(0,1,0), glm::vec3(0,0,1) };
+        return boxPlaneManifold(selfPos, a, HalfExtents * selfScale,
+                                static_cast<const PlaneShape&>(other), otherPos, out, maxOut);
+    }
+    if (maxOut < 1) return 0;
+    const Contact c = collide(other, selfPos, selfScale, otherPos, otherScale);
+    if (!c.hit) return 0;
+    out[0] = c;
+    return 1;
+}
+
 // Oriented box. Unlike BoxShape (AABB), it carries a WORLD orientation refreshed from the
 // owner Transform by ColliderComponent3D::syncShape() each frame. SAT-resolved (~20-50x an
 // AABB test), so it's opt-in for rotational accuracy; BoxShape stays the cheap default.
@@ -558,6 +622,23 @@ public:
     void axes(glm::vec3 out[3]) const {
         const glm::mat3 R = glm::mat3_cast(Orientation);
         out[0] = R[0]; out[1] = R[1]; out[2] = R[2];
+    }
+
+    // Oriented box vs plane emits a corner manifold (balanced contacts → no resting jitter).
+    int manifold(const ColliderShape& other,
+                 const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                 const glm::vec3& otherPos, const glm::vec3& otherScale,
+                 Contact* out, int maxOut) const override {
+        if (other.kind() == ShapeKind::Plane) {
+            glm::vec3 a[3]; axes(a);
+            return boxPlaneManifold(selfPos, a, HalfExtents * selfScale,
+                                    static_cast<const PlaneShape&>(other), otherPos, out, maxOut);
+        }
+        if (maxOut < 1) return 0;
+        const Contact c = collide(other, selfPos, selfScale, otherPos, otherScale);
+        if (!c.hit) return 0;
+        out[0] = c;
+        return 1;
     }
 
     // --- boolean dispatch (each is the boolean form of the matching contact test) ---
