@@ -32,6 +32,10 @@ bool OpenGLRenderer::init(int fbW, int fbH) {
     m_post->use();
     m_post->setInt("screenTexture", 0);
 
+    m_fxaa  = std::make_unique<Shader>("assets/shaders/fxaa_s.vs",            "assets/shaders/fxaa_s.fs");
+    m_fxaa->use();
+    m_fxaa->setInt("screenTexture", 0);
+
     buildQuad();
     buildTargets();
     return true;
@@ -271,7 +275,15 @@ void OpenGLRenderer::endScene() {
     }
     glViewport(dx, dy, dw, dh);
 
-    m_post->use();
+    // FXAA is a post-process AA: it samples the single-sample scene target in the
+    // present pass and resolves edges. Any other mode (None / already-resolved MSAA)
+    // just blits the texture through unchanged.
+    if (m_settings.aa == AntiAliasing::FXAA) {
+        m_fxaa->use();
+        m_fxaa->setVec2("iResolution", (float)rw, (float)rh);
+    } else {
+        m_post->use();
+    }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_presentTex);
     glBindVertexArray(m_quadVao);

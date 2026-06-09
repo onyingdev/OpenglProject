@@ -49,7 +49,8 @@ private:
     // Built-in shaders (owned by the GL backend).
     std::unique_ptr<Shader> m_lit;    // advanced_lighting
     std::unique_ptr<Shader> m_unlit;  // light_s
-    std::unique_ptr<Shader> m_post;   // msaa_post (fullscreen present)
+    std::unique_ptr<Shader> m_post;   // msaa_post (fullscreen present, no post-AA)
+    std::unique_ptr<Shader> m_fxaa;   // fxaa_s (present pass with FXAA edge filter)
 
     CameraView m_camera;
     LightSet   m_lights;
