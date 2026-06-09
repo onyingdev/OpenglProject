@@ -1,0 +1,8 @@
+{
+  "scenes": [
+    { "name": "Level1", "path": "assets/scenes/physics_level.json", "active": true }
+  ],
+  "objects": [
+    "assets/gameObjects/pov_camera.json"
+  ]
+}

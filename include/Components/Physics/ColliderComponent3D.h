@@ -8,6 +8,8 @@
 #include <memory>
 #include <unordered_set>
 #include <vector>
+#include <algorithm>
+#include <cmath>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -36,6 +38,20 @@ class ColliderComponent3D;
 
 class BoxShape;
 class SphereShape;
+class PlaneShape;
+
+// Result of a narrowphase test. Unlike intersects() (bool), this carries the data a
+// rigid-body solver needs to respond: the separating axis and how deep the overlap is.
+// CONVENTION: for `a.collide(b, ...)`, `normal` is a unit vector pointing FROM a TOWARD b
+// (so a separates by moving along -normal, b along +normal). `penetration` is the overlap
+// depth (the minimum translation distance). `point` is an approximate world contact point,
+// unused by the linear solver but kept for the future angular phase.
+struct Contact {
+    bool      hit         = false;
+    glm::vec3 normal{0.0f};
+    float     penetration = 0.0f;
+    glm::vec3 point{0.0f};
+};
 
 class ColliderShape {
 public:
@@ -50,10 +66,35 @@ public:
     virtual bool intersectsBox(const BoxShape& other,
                                const glm::vec3& selfPos,  const glm::vec3& selfScale,
                                const glm::vec3& otherPos, const glm::vec3& otherScale) const = 0;
-    
+
     virtual bool intersectsSphere(const SphereShape& other,
                                   const glm::vec3& selfPos,  const glm::vec3& selfScale,
                                   const glm::vec3& otherPos, const glm::vec3& otherScale) const = 0;
+
+    virtual bool intersectsPlane(const PlaneShape& other,
+                                 const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                                 const glm::vec3& otherPos, const glm::vec3& otherScale) const = 0;
+
+    // Contact-producing variant of the dispatch above. Runs PARALLEL to intersects()
+    // (the trigger path still uses the bool version) so the physics solver can ask for a
+    // normal + penetration. Same forwarding shape; each level that re-dispatches to
+    // `other.collideX(...)` negates the returned normal to undo the A/B swap (a Contact
+    // is directional, unlike a symmetric bool). See implementations below.
+    virtual Contact collide(const ColliderShape& other,
+                            const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                            const glm::vec3& otherPos, const glm::vec3& otherScale) const = 0;
+
+    virtual Contact collideBox(const BoxShape& other,
+                               const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                               const glm::vec3& otherPos, const glm::vec3& otherScale) const = 0;
+
+    virtual Contact collideSphere(const SphereShape& other,
+                                  const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                                  const glm::vec3& otherPos, const glm::vec3& otherScale) const = 0;
+
+    virtual Contact collidePlane(const PlaneShape& other,
+                                 const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                                 const glm::vec3& otherPos, const glm::vec3& otherScale) const = 0;
 };
 
 class BoxShape : public ColliderShape {
@@ -88,6 +129,59 @@ public:
     bool intersectsSphere(const SphereShape& other,
                           const glm::vec3& selfPos,  const glm::vec3& selfScale,
                           const glm::vec3& otherPos, const glm::vec3& otherScale) const override;
+
+    // Box vs plane (out-of-line: needs PlaneShape complete to read its Normal).
+    bool intersectsPlane(const PlaneShape& other,
+                         const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                         const glm::vec3& otherPos, const glm::vec3& otherScale) const override;
+
+    // --- contact-producing dispatch ---
+
+    Contact collide(const ColliderShape& other,
+                    const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                    const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+        Contact c = other.collideBox(*this, otherPos, otherScale, selfPos, selfScale);
+        c.normal = -c.normal;   // undo the A/B swap so normal points self -> other
+        return c;
+    }
+
+    // AABB vs AABB: minimum-overlap axis is the minimum translation vector (MTV).
+    Contact collideBox(const BoxShape& other,
+                       const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                       const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+        const glm::vec3 aMin = selfPos  - HalfExtents       * selfScale;
+        const glm::vec3 aMax = selfPos  + HalfExtents       * selfScale;
+        const glm::vec3 bMin = otherPos - other.HalfExtents * otherScale;
+        const glm::vec3 bMax = otherPos + other.HalfExtents * otherScale;
+
+        const glm::vec3 overlap{
+            std::min(aMax.x, bMax.x) - std::max(aMin.x, bMin.x),
+            std::min(aMax.y, bMax.y) - std::max(aMin.y, bMin.y),
+            std::min(aMax.z, bMax.z) - std::max(aMin.z, bMin.z)
+        };
+        if (overlap.x <= 0.0f || overlap.y <= 0.0f || overlap.z <= 0.0f) return {};
+
+        const int axis = (overlap.x < overlap.y) ? (overlap.x < overlap.z ? 0 : 2)
+                                                 : (overlap.y < overlap.z ? 1 : 2);
+        Contact c;
+        c.hit         = true;
+        c.penetration = overlap[axis];
+        glm::vec3 n(0.0f);
+        n[axis] = (otherPos[axis] >= selfPos[axis]) ? 1.0f : -1.0f;   // self -> other
+        c.normal = n;
+        c.point  = 0.5f * (glm::max(aMin, bMin) + glm::min(aMax, bMax));
+        return c;
+    }
+
+    // Forwarder: defined out-of-line once SphereShape is complete.
+    Contact collideSphere(const SphereShape& other,
+                          const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                          const glm::vec3& otherPos, const glm::vec3& otherScale) const override;
+
+    // Box vs plane contact (out-of-line: needs PlaneShape complete).
+    Contact collidePlane(const PlaneShape& other,
+                         const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                         const glm::vec3& otherPos, const glm::vec3& otherScale) const override;
 };
 
 //checks exclusively spheres, doesnt allow ellipsoids. 
@@ -129,6 +223,78 @@ public:
         const float sumRadii = Radius * selfScale.x + other.Radius * otherScale.x;
         return distance < sumRadii;
     }
+
+    // Sphere vs plane (out-of-line: needs PlaneShape complete).
+    bool intersectsPlane(const PlaneShape& other,
+                         const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                         const glm::vec3& otherPos, const glm::vec3& otherScale) const override;
+
+    // --- contact-producing dispatch ---
+
+    Contact collide(const ColliderShape& other,
+                    const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                    const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+        Contact c = other.collideSphere(*this, otherPos, otherScale, selfPos, selfScale);
+        c.normal = -c.normal;   // undo the A/B swap so normal points self -> other
+        return c;
+    }
+
+    // Sphere(self) vs Box(other): closest-point test. Normal points sphere -> box.
+    Contact collideBox(const BoxShape& other,
+                       const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                       const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+        const glm::vec3 boxHalf   = other.HalfExtents * otherScale;
+        const glm::vec3 boxCenter = otherPos;
+        const glm::vec3 sphereC   = selfPos;
+        const float     r         = Radius * selfScale.x;   // uniform scale only for now
+
+        const glm::vec3 closest = glm::clamp(sphereC, boxCenter - boxHalf, boxCenter + boxHalf);
+        glm::vec3 d = closest - sphereC;                    // sphere center -> box surface
+        const float dist = glm::length(d);
+
+        Contact c;
+        if (dist > 1e-6f) {
+            if (dist >= r) return {};                       // separated
+            c.hit         = true;
+            c.normal      = d / dist;                       // sphere -> box
+            c.penetration = r - dist;
+            c.point       = closest;
+            return c;
+        }
+        // Sphere center is inside the box: push out along the least-penetrating face.
+        const glm::vec3 pen = boxHalf - glm::abs(sphereC - boxCenter);
+        const int axis = (pen.x < pen.y) ? (pen.x < pen.z ? 0 : 2)
+                                         : (pen.y < pen.z ? 1 : 2);
+        glm::vec3 n(0.0f);
+        n[axis] = (sphereC[axis] < boxCenter[axis]) ? -1.0f : 1.0f;  // sphere -> box face
+        c.hit         = true;
+        c.normal      = n;
+        c.penetration = pen[axis] + r;
+        c.point       = sphereC;
+        return c;
+    }
+
+    //sphere-sphere contact. Normal points self -> other.
+    Contact collideSphere(const SphereShape& other,
+                          const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                          const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+        const glm::vec3 d = otherPos - selfPos;
+        const float dist  = glm::length(d);
+        const float sumR  = Radius * selfScale.x + other.Radius * otherScale.x;
+        if (dist >= sumR) return {};
+
+        Contact c;
+        c.hit         = true;
+        c.normal      = (dist > 1e-6f) ? d / dist : glm::vec3(0.0f, 1.0f, 0.0f);
+        c.penetration = sumR - dist;
+        c.point       = selfPos + c.normal * (Radius * selfScale.x - c.penetration * 0.5f);
+        return c;
+    }
+
+    // Sphere vs plane contact (out-of-line: needs PlaneShape complete).
+    Contact collidePlane(const PlaneShape& other,
+                         const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                         const glm::vec3& otherPos, const glm::vec3& otherScale) const override;
 };
 
 // Out-of-line: SphereShape is now complete, so calling its members is legal.
@@ -139,10 +305,147 @@ inline bool BoxShape::intersectsSphere(const SphereShape& other,
     return other.intersectsBox(*this, otherPos, otherScale, selfPos, selfScale);
 }
 
+// Box(self) vs Sphere(other): forward to the sphere's box-handler, then negate the
+// normal to undo the A/B swap so it points box -> sphere (self -> other).
+inline Contact BoxShape::collideSphere(const SphereShape& other,
+                                       const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                                       const glm::vec3& otherPos, const glm::vec3& otherScale) const {
+    Contact c = other.collideBox(*this, otherPos, otherScale, selfPos, selfScale);
+    c.normal = -c.normal;
+    return c;
+}
+
+// Infinite half-space: solid on the -Normal side, passing through the collider's
+// position. Ideal for a ground/wall without authoring a huge box. Like the other
+// shapes, the collider's rotation is ignored — Normal is in world space. Plane-vs-plane
+// never reports a contact (two infinite planes aren't a solvable pair here).
+class PlaneShape : public ColliderShape {
+public:
+    glm::vec3 Normal{0.0f, 1.0f, 0.0f}; // world up by default; normalized at test time
+    bool      Infinite = true;          // true: unbounded half-space (fastest path, no lateral test)
+    glm::vec2 HalfExtents{5.0f, 5.0f};  // half-size along the plane's tangent axes (used only when !Infinite)
+
+    explicit PlaneShape(glm::vec3 normal = glm::vec3(0.0f, 1.0f, 0.0f),
+                        bool infinite = true,
+                        glm::vec2 halfExtents = glm::vec2(5.0f))
+        : Normal(normal), Infinite(infinite), HalfExtents(halfExtents) {}
+
+    // Is `worldPoint` over the (finite) plane patch? Infinite planes always pass. Builds a
+    // tangent basis from Normal and clamps the in-plane projection to HalfExtents. The test
+    // uses the body's CENTER (not its footprint), so a body whose center passes the edge
+    // falls off — fine for a first pass; widen HalfExtents or add a wall to constrain.
+    bool withinBounds(const glm::vec3& worldPoint, const glm::vec3& planePos) const {
+        if (Infinite) return true;
+        const glm::vec3 N   = glm::normalize(Normal);
+        const glm::vec3 ref = (std::abs(N.y) < 0.99f) ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
+        const glm::vec3 T   = glm::normalize(glm::cross(ref, N));
+        const glm::vec3 Bt  = glm::cross(N, T);
+        const glm::vec3 d   = worldPoint - planePos;
+        return std::abs(glm::dot(d, T))  <= HalfExtents.x
+            && std::abs(glm::dot(d, Bt)) <= HalfExtents.y;
+    }
+
+    bool intersects(const ColliderShape& other,
+                    const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                    const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+        return other.intersectsPlane(*this, otherPos, otherScale, selfPos, selfScale);
+    }
+    bool intersectsBox(const BoxShape& other,
+                       const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                       const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+        return other.intersectsPlane(*this, otherPos, otherScale, selfPos, selfScale);
+    }
+    bool intersectsSphere(const SphereShape& other,
+                          const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                          const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+        return other.intersectsPlane(*this, otherPos, otherScale, selfPos, selfScale);
+    }
+    bool intersectsPlane(const PlaneShape&,
+                         const glm::vec3&, const glm::vec3&,
+                         const glm::vec3&, const glm::vec3&) const override { return false; }
+
+    Contact collide(const ColliderShape& other,
+                    const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                    const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+        Contact c = other.collidePlane(*this, otherPos, otherScale, selfPos, selfScale);
+        c.normal = -c.normal;
+        return c;
+    }
+    Contact collideBox(const BoxShape& other,
+                       const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                       const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+        Contact c = other.collidePlane(*this, otherPos, otherScale, selfPos, selfScale);
+        c.normal = -c.normal;
+        return c;
+    }
+    Contact collideSphere(const SphereShape& other,
+                          const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                          const glm::vec3& otherPos, const glm::vec3& otherScale) const override {
+        Contact c = other.collidePlane(*this, otherPos, otherScale, selfPos, selfScale);
+        c.normal = -c.normal;
+        return c;
+    }
+    Contact collidePlane(const PlaneShape&,
+                         const glm::vec3&, const glm::vec3&,
+                         const glm::vec3&, const glm::vec3&) const override { return {}; }
+};
+
+// Box(self) vs Plane(other): an AABB's support distance along the plane normal is the
+// sum of |extent_i * N_i|. The box penetrates when its center is within that distance of
+// the plane. Normal points box -> plane (into the surface, i.e. -N).
+inline bool BoxShape::intersectsPlane(const PlaneShape& other,
+                                      const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                                      const glm::vec3& otherPos, const glm::vec3& /*otherScale*/) const {
+    const glm::vec3 N = glm::normalize(other.Normal);
+    const glm::vec3 h = HalfExtents * selfScale;
+    const float R = h.x * std::abs(N.x) + h.y * std::abs(N.y) + h.z * std::abs(N.z);
+    return glm::dot(selfPos - otherPos, N) < R && other.withinBounds(selfPos, otherPos);
+}
+inline Contact BoxShape::collidePlane(const PlaneShape& other,
+                                      const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                                      const glm::vec3& otherPos, const glm::vec3& /*otherScale*/) const {
+    const glm::vec3 N = glm::normalize(other.Normal);
+    const glm::vec3 h = HalfExtents * selfScale;
+    const float R = h.x * std::abs(N.x) + h.y * std::abs(N.y) + h.z * std::abs(N.z);
+    const float s = glm::dot(selfPos - otherPos, N);
+    if (s >= R || !other.withinBounds(selfPos, otherPos)) return {};
+    Contact c;
+    c.hit         = true;
+    c.normal      = -N;          // box -> plane
+    c.penetration = R - s;
+    c.point       = selfPos - N * R;
+    return c;
+}
+
+// Sphere(self) vs Plane(other): signed distance of the center to the plane vs radius.
+// Normal points sphere -> plane (-N), so the solver pushes the sphere along +N.
+inline bool SphereShape::intersectsPlane(const PlaneShape& other,
+                                         const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                                         const glm::vec3& otherPos, const glm::vec3& /*otherScale*/) const {
+    const glm::vec3 N = glm::normalize(other.Normal);
+    const float r = Radius * selfScale.x;
+    return glm::dot(selfPos - otherPos, N) < r && other.withinBounds(selfPos, otherPos);
+}
+inline Contact SphereShape::collidePlane(const PlaneShape& other,
+                                         const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                                         const glm::vec3& otherPos, const glm::vec3& /*otherScale*/) const {
+    const glm::vec3 N = glm::normalize(other.Normal);
+    const float r = Radius * selfScale.x;
+    const float s = glm::dot(selfPos - otherPos, N);
+    if (s >= r || !other.withinBounds(selfPos, otherPos)) return {};
+    Contact c;
+    c.hit         = true;
+    c.normal      = -N;          // sphere -> plane
+    c.penetration = r - s;
+    c.point       = selfPos - N * r;
+    return c;
+}
+
 
 // -----------------------------------------------------------------------------
 // ColliderComponent3D
 // -----------------------------------------------------------------------------
+
 
 class ColliderComponent3D : public SpatialComponent3D {
 public:
@@ -176,6 +479,14 @@ public:
             Shape = std::make_unique<BoxShape>(he);
         } else if (kind == "sphere") {
             Shape = std::make_unique<SphereShape>(s.value("radius", 0.5f));
+        } else if (kind == "plane") {
+            glm::vec3 n = s.contains("normal") ? jsonVec3(s["normal"], glm::vec3(0.0f, 1.0f, 0.0f))
+                                               : glm::vec3(0.0f, 1.0f, 0.0f);
+            const bool infinite = s.value("infinite", true);
+            glm::vec2 he{5.0f, 5.0f};
+            if (s.contains("halfExtents") && s["halfExtents"].is_array() && s["halfExtents"].size() >= 2)
+                he = { s["halfExtents"][0].get<float>(), s["halfExtents"][1].get<float>() };
+            Shape = std::make_unique<PlaneShape>(n, infinite, he);
         } else {
             std::cerr << "[ColliderComponent3D] unknown shape kind: " << kind << "\n";
         }
@@ -190,6 +501,16 @@ public:
     ~ColliderComponent3D() override {
         auto& list = AllColliders();
         list.erase(std::remove(list.begin(), list.end(), this), list.end());
+    }
+
+    // Read-only access to the live-collider registry for the physics solver
+    // (RigidBodyComponent3D::stepWorld), which sweeps colliders for contacts without
+    // maintaining a parallel list. The trigger path keeps using the private one.
+    static const std::vector<ColliderComponent3D*>& colliders() { return AllColliders(); }
+
+    // Public wrapper over the layer/mask filter so the solver can reuse the same rule.
+    static bool masksOverlap(const ColliderComponent3D* a, const ColliderComponent3D* b) {
+        return passesMask(a, b);
     }
 
     // Call once per frame (e.g. from main loop). Naive O(N^2). Broadphase later.

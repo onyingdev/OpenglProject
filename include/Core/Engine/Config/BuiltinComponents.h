@@ -21,6 +21,7 @@
 #include "Components/Rendering/DirectionalLightComponent.h"
 #include "Components/Input/InputComponent.h"
 #include "Components/Physics/ColliderComponent3D.h"
+#include "Components/Physics/RigidBodyComponent3D.h"
 #include "Components/Gameplay/CharacterComponent3D.h"
 
 // --- Game scripts ---

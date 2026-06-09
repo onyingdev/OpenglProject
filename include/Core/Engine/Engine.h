@@ -23,6 +23,7 @@
 // GameManager calling Engine::instance().requestQuit() on an "Exit" action. NOTE: it is
 // intentionally NOT a Meyers singleton — that would destroy the window/renderer at static
 // exit, AFTER the GL context is gone (the same trap SceneManager has to work around).
+// Engine manages the creation/destruction order, also manages the creation of the frame loop.
 class Engine {
 public:
     Engine() : m_scenes(SceneManager::instance()) { s_instance = this; }
@@ -117,8 +118,21 @@ private:
         if (!camera) { m_window->pollEvents(); return; }
 
         // --- update ---
-        m_scenes.update(m_deltaTime);
-        ColliderComponent3D::tickWorld();
+        m_scenes.update(m_deltaTime);          // scripts (variable dt) gather forces via AddForce/AddImpulse
+
+        // Physics on a fixed timestep: accumulate real dt and step in constant slices so
+        // integration/resolution stay stable regardless of framerate. Leftover carries to
+        // the next frame; kMaxSubSteps caps catch-up to avoid a spiral of death.
+        m_physicsAccumulator += m_deltaTime;
+        int steps = 0;
+        while (m_physicsAccumulator >= kFixedDt && steps < kMaxSubSteps) {
+            RigidBodyComponent3D::stepWorld(kFixedDt);
+            m_physicsAccumulator -= kFixedDt;
+            ++steps;
+        }
+        if (steps == kMaxSubSteps) m_physicsAccumulator = 0.0f;   // drop backlog if we fell behind
+
+        ColliderComponent3D::tickWorld();      // triggers once/frame on post-physics positions
 
         // --- camera for this frame ---
         auto* cam = camera->getComponent<CameraComponent>();
@@ -174,4 +188,9 @@ private:
     float m_deltaTime = 0.0f;
     float m_lastFrame = 0.0f;
     bool  m_running   = true;
+
+    // Fixed-timestep physics: step in 1/60s slices, capped at kMaxSubSteps catch-up steps.
+    float                m_physicsAccumulator = 0.0f;
+    static constexpr float kFixedDt      = 1.0f / 60.0f;
+    static constexpr int   kMaxSubSteps  = 5;
 };
