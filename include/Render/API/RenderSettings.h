@@ -6,7 +6,8 @@
 enum class AntiAliasing {
     None,   // render straight to a single-sample target, no AA
     MSAA,   // hardware multisample + resolve, using msaaSamples
-    // Future post-process modes: FXAA, SMAA, TAA, ...
+    FXAA,   // single-sample render + post-process edge filter in the present pass
+    // Future post-process modes: SMAA, TAA, ...
 };
 
 struct RenderSettings {

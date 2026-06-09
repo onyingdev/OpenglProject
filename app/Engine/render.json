@@ -5,14 +5,14 @@
     "height": 1080,
     "title": "OpenGL",
     "mode": "windowed",
-    "vsync": false,
+    "vsync": true,
     "glMajor": 3,
     "glMinor": 3
   },
   "render": {
     "internalWidth": 1920,
     "internalHeight": 1080,
-    "antialiasing": "msaa",
+    "antialiasing": "FXAA",
     "msaaSamples": 2
   }
 }

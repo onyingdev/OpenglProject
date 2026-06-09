@@ -99,6 +99,7 @@ private:
         for (char& c : v) c = (char)std::tolower((unsigned char)c);
         if (v == "none") return AntiAliasing::None;
         if (v == "msaa") return AntiAliasing::MSAA;
+        if (v == "fxaa") return AntiAliasing::FXAA;
         return fallback;
     }
 };
