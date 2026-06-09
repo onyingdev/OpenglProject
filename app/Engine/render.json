@@ -5,6 +5,7 @@
     "height": 1080,
     "title": "OpenGL",
     "mode": "windowed",
+    "resize": "locked",
     "vsync": true,
     "glMajor": 3,
     "glMinor": 3

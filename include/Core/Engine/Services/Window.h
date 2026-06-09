@@ -30,11 +30,19 @@ public:
             glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);   // Vulkan/other: no GL context
         }
         if (s.mode == WindowMode::Borderless) glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+        // Locked windows can't be dragged-resized at all; Free/KeepAspect stay resizable.
+        glfwWindowHint(GLFW_RESIZABLE, (s.resize == ResizeMode::Locked) ? GLFW_FALSE : GLFW_TRUE);
 
         GLFWmonitor* monitor = (s.mode == WindowMode::Fullscreen) ? glfwGetPrimaryMonitor() : nullptr;
         m_window = glfwCreateWindow(s.width, s.height, s.title.c_str(), monitor, nullptr);
         if (!m_window) { std::cerr << "[Window] failed to create GLFW window\n"; glfwTerminate(); return; }
         m_width = s.width; m_height = s.height;
+
+        // KeepAspect: GLFW forces the window's width:height to stay at the configured ratio
+        // during manual resizing, so the present pass never stretches the image (which is
+        // what causes the camera to look misaligned on an odd-shaped window).
+        if (s.resize == ResizeMode::KeepAspect)
+            glfwSetWindowAspectRatio(m_window, s.width, s.height);
 
         glfwSetWindowUserPointer(m_window, this);
         glfwSetFramebufferSizeCallback(m_window, framebufferSizeCallback);
