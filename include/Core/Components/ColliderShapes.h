@@ -1,6 +1,7 @@
 #pragma once
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include "Core/Components/RotationUtil.h"   // shared eulerToQuat
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -28,17 +29,9 @@ inline bool layerMaskOverlap(uint32_t layerA, uint32_t maskA, uint32_t layerB, u
     return (layerA & maskB) != 0 && (layerB & maskA) != 0;
 }
 
-// Euler degrees -> quaternion in the engine's yaw(Y)/pitch(X)/roll(Z) order, matching
-// MeshComponent::worldMatrix so a rotated collider lines up with its mesh. Used to feed
-// an OBB's world orientation from the owner Transform's rotation.
-inline glm::quat eulerToQuat(const glm::vec3& deg) {
-    return glm::angleAxis(glm::radians(deg.x), glm::vec3(0.0f, 1.0f, 0.0f))
-         * glm::angleAxis(glm::radians(deg.y), glm::vec3(1.0f, 0.0f, 0.0f))
-         * glm::angleAxis(glm::radians(deg.z), glm::vec3(0.0f, 0.0f, 1.0f));
-}
-
 // Tag for type-switching without RTTI (debug-draw, future shape-specific paths).
-enum class ShapeKind { Box, Sphere, Plane, OBB };
+// (eulerToQuat lives in Core/Components/RotationUtil.h, shared with the Transform layer.)
+enum class ShapeKind { Box, Sphere, Plane, OBB, Ball };
 
 // Result of a narrowphase test. Unlike intersects() (bool), this carries the data a
 // rigid-body solver needs to respond: the separating axis and how deep the overlap is.
@@ -476,7 +469,9 @@ inline Contact BoxShape::collidePlane(const PlaneShape& other,
     c.hit         = true;
     c.normal      = -N;          // box -> plane
     c.penetration = R - s;
-    c.point       = selfPos - N * R;
+    // Deepest corner (support vertex in -N), not the center — gives a real torque arm so a
+    // tilted box tumbles instead of receiving a centered (torque-free) impulse.
+    c.point       = selfPos - glm::sign(N) * h;
     return c;
 }
 
@@ -665,7 +660,10 @@ public:
         c.hit         = true;
         c.normal      = -N;          // OBB -> plane
         c.penetration = R - s;
-        c.point       = selfPos - N * R;
+        // Deepest oriented corner (support vertex in -N) for a real torque arm → tumbling.
+        glm::vec3 vertex = selfPos;
+        for (int i = 0; i < 3; ++i) vertex -= glm::sign(glm::dot(a[i], N)) * h[i] * a[i];
+        c.point = vertex;
         return c;
     }
 };
@@ -708,3 +706,17 @@ inline Contact PlaneShape::collideOBB(const OBBShape& other,
     c.normal = -c.normal;
     return c;
 }
+
+// Oriented sphere ("ball"). Collision is IDENTICAL to a plain sphere (a sphere is
+// rotation-invariant), so it reuses every SphereShape dispatch method unchanged. It only
+// adds a world Orientation — refreshed from the Transform by syncShape — so a rolling ball
+// can show its spin (mesh + debug spin-axis) and read its orientation for gameplay.
+class OrientedSphereShape : public SphereShape {
+public:
+    glm::quat Orientation{1.0f, 0.0f, 0.0f, 0.0f};
+
+    using SphereShape::SphereShape;   // inherit the radius constructor
+
+    ShapeKind kind() const override { return ShapeKind::Ball; }
+    void setOrientation(const glm::quat& q) override { Orientation = q; }
+};

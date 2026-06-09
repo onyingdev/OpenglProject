@@ -36,6 +36,13 @@ inline void debugDrawShape(IRenderer& r, const ColliderShape& shape,
             r.drawWireBox(m, color);
             break;
         }
+        case ShapeKind::Ball: {
+            const auto& b = static_cast<const OrientedSphereShape&>(shape);
+            const float rad = b.Radius * scale.x;
+            r.drawWireSphere(pos, rad, color);
+            r.drawLine(pos, pos + b.Orientation * glm::vec3(0, rad, 0), color);  // spin axis (shows rotation)
+            break;
+        }
         case ShapeKind::Plane: {
             const auto& p = static_cast<const PlaneShape&>(shape);
             glm::vec3 T, B;

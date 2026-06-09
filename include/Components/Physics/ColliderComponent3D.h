@@ -53,16 +53,19 @@ public:
             glm::vec3 he = s.contains("halfExtents") ? jsonVec3(s["halfExtents"], glm::vec3(0.5f))
                                                      : glm::vec3(0.5f);
             Shape = std::make_unique<OBBShape>(he);   // orientation comes from the Transform (syncShape)
+        } else if (kind == "ball") {
+            Shape = std::make_unique<OrientedSphereShape>(s.value("radius", 0.5f));  // oriented sphere
         } else {
             std::cerr << "[ColliderComponent3D] unknown shape kind: " << kind << "\n";
         }
     }
 
-    // Orient the shape from the owner Transform's rotation (OBB orientation / plane normal;
-    // no-op for box/sphere). Called once per collider before each narrowphase sweep so it
-    // tracks authored/scripted (and later physics-driven) rotation.
+    // Orient the shape from the owner Transform (OBB orientation / plane normal / ball spin;
+    // no-op for box/plain-sphere). orientation() is the quaternion authority: derived from
+    // Euler for authored objects, the integrated quat for physics bodies. Called once per
+    // collider before each narrowphase sweep.
     void syncShape() {
-        if (Shape) Shape->setOrientation(eulerToQuat(rotation()));
+        if (Shape) Shape->setOrientation(orientation());
     }
 
     void start() override {
