@@ -107,8 +107,8 @@ private:
             }
         }
 
-        if (m_input->IsActionReleased("Quit"))         requestQuit();
-        if (m_input->IsActionReleased("ReloadScenes")) m_scenes.reload(m_loadCtx);
+        if (m_input->IsActionReleased("Quit"))         requestQuit(); //debug
+        if (m_input->IsActionReleased("ReloadScenes")) m_scenes.reload(m_loadCtx); //debug
 
         // Camera lives in the (re)loadable root objects — fetch each frame (no dangling).
         // TODO: multi-camera support — the active camera is hardcoded as "MainCamera";
