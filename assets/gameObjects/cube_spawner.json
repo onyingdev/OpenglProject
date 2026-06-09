@@ -1,0 +1,6 @@
+{
+  "name": "CubeSpawner",
+  "components": [
+    { "type": "Input" }
+  ]
+}

@@ -75,9 +75,10 @@ private:
 
         if (j.contains("render") && j["render"].is_object()) {
             const auto& r = j["render"];
-            s.render.renderWidth  = r.value("internalWidth",  s.render.renderWidth);
-            s.render.renderHeight = r.value("internalHeight", s.render.renderHeight);
-            s.render.msaaSamples  = r.value("msaaSamples",    s.render.msaaSamples);
+            s.render.renderWidth    = r.value("internalWidth",   s.render.renderWidth);
+            s.render.renderHeight   = r.value("internalHeight",  s.render.renderHeight);
+            s.render.msaaSamples    = r.value("msaaSamples",     s.render.msaaSamples);
+            s.render.debugColliders = r.value("debugColliders",  s.render.debugColliders);
             if (r.contains("antialiasing")) s.render.aa = parseAA(r["antialiasing"].get<std::string>(), s.render.aa);
         }
     }

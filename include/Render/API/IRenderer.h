@@ -30,4 +30,12 @@ public:
     virtual void setLights(const LightSet& lights) = 0;
     virtual void submit(const RenderItem& item) = 0;
     virtual void endScene() = 0;
+
+    // --- debug primitives (gizmos) ---
+    // Flat-colored line geometry for visualizing colliders, normals, etc. Call between
+    // beginScene() and endScene() (the camera matrices are live then). Default no-op so
+    // a backend can opt out; the OpenGL backend implements them with the unlit shader.
+    virtual void drawWireBox(const glm::mat4& /*transform*/, const glm::vec3& /*color*/) {}
+    virtual void drawWireSphere(const glm::vec3& /*center*/, float /*radius*/, const glm::vec3& /*color*/) {}
+    virtual void drawLine(const glm::vec3& /*a*/, const glm::vec3& /*b*/, const glm::vec3& /*color*/) {}
 };

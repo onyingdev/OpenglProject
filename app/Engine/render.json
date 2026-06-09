@@ -13,6 +13,7 @@
     "internalWidth": 1920,
     "internalHeight": 1080,
     "antialiasing": "msaa",
-    "msaaSamples": 2
+    "msaaSamples": 2,
+    "debugColliders": true
   }
 }

@@ -14,6 +14,7 @@
 #include "Core/Engine/Config/EngineSettings.h"  // window/render/backend defaults
 #include "Core/Engine/Config/AppConfig.h"       // which root scene boots
 #include "Core/Engine/Config/BuiltinComponents.h" // self-registers every component & script
+#include "Components/Physics/ColliderDebugDraw.h"  // debugDrawColliders() wireframe pass
 
 // The application root. Owns the window, renderer, input and the frame loop, and drives
 // the SceneManager. main() shrinks to: construct -> init() -> run().
@@ -37,6 +38,7 @@ public:
     // Build window/renderer/input from config and load the root scene. false on failure.
     bool init() {
         m_settings = EngineSettings::load(m_engineConfigPath);
+        m_debugColliders = m_settings.render.debugColliders;   // initial state (key toggles at runtime)
 
         // Window first (it owns the GL context the renderer needs).
         m_window = std::make_unique<Window>(m_settings.window, m_settings.backend);
@@ -108,8 +110,9 @@ private:
             }
         }
 
-        if (m_input->IsActionReleased("Quit"))         requestQuit(); //debug
-        if (m_input->IsActionReleased("ReloadScenes")) m_scenes.reload(m_loadCtx); //debug
+        if (m_input->IsActionReleased("Quit"))            requestQuit(); //debug
+        if (m_input->IsActionReleased("ReloadScenes"))    m_scenes.reload(m_loadCtx); //debug
+        if (m_input->IsActionReleased("ToggleColliders")) m_debugColliders = !m_debugColliders; //debug
 
         // Camera lives in the (re)loadable root objects — fetch each frame (no dangling).
         // TODO: multi-camera support — the active camera is hardcoded as "MainCamera";
@@ -132,7 +135,7 @@ private:
         }
         if (steps == kMaxSubSteps) m_physicsAccumulator = 0.0f;   // drop backlog if we fell behind
 
-        ColliderComponent3D::tickWorld();      // triggers once/frame on post-physics positions
+        HurtBoxComponent3D::tickWorld();       // gameplay triggers once/frame on post-physics positions
 
         // --- camera for this frame ---
         auto* cam = camera->getComponent<CameraComponent>();
@@ -153,6 +156,7 @@ private:
         m_renderer->beginScene(cv);
         m_renderer->setLights(lights);
         m_scenes.draw(*m_renderer);
+        if (m_debugColliders) debugDrawColliders(*m_renderer);   // collider/hurtbox wireframes
         m_renderer->endScene();
 
         m_input->ResetFrame();
@@ -188,6 +192,7 @@ private:
     float m_deltaTime = 0.0f;
     float m_lastFrame = 0.0f;
     bool  m_running   = true;
+    bool  m_debugColliders = false;   // wireframe gizmos; initial state from render.json, toggled by key
 
     // Fixed-timestep physics: step in 1/60s slices, capped at kMaxSubSteps catch-up steps.
     float                m_physicsAccumulator = 0.0f;

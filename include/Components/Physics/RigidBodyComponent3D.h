@@ -101,6 +101,7 @@ public:
         //    and bare colliders (no RigidBody) are encountered as the "other" side and
         //    act as infinite mass. Dynamic-dynamic pairs are resolved once (lower pointer).
         const auto& colliders = ColliderComponent3D::colliders();
+        for (auto* c : colliders) c->syncShape();   // refresh OBB orientations (no-op otherwise)
         for (auto* a : bodies) {
             if (a->m_invMass == 0.0f || !a->collider || !a->collider->Shape) continue;
             for (auto* other : colliders) {

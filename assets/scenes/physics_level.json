@@ -4,7 +4,7 @@
   "objects": [
     "assets/gameObjects/sun.json",
     "assets/gameObjects/playground.json",
-    "assets/gameObjects/rigid_box.json",
+    "assets/gameObjects/rigid_icosphere.json",
     "assets/gameObjects/rigid_box.json"
   ]
 }

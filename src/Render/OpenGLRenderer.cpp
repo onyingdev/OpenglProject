@@ -1,5 +1,8 @@
 #include "Render/GL/OpenGLRenderer.h"
 #include "Render/API/IModel.h"   // complete type needed to call IModel::Draw
+#include <glm/gtc/matrix_transform.hpp>
+#include <cmath>
+#include <vector>
 #include <iostream>
 #include <string>
 
@@ -9,6 +12,12 @@ OpenGLRenderer::~OpenGLRenderer() {
     destroyTargets();
     if (m_quadVbo) glDeleteBuffers(1, &m_quadVbo);
     if (m_quadVao) glDeleteVertexArrays(1, &m_quadVao);
+    if (m_wireCubeVbo)   glDeleteBuffers(1, &m_wireCubeVbo);
+    if (m_wireCubeVao)   glDeleteVertexArrays(1, &m_wireCubeVao);
+    if (m_wireSphereVbo) glDeleteBuffers(1, &m_wireSphereVbo);
+    if (m_wireSphereVao) glDeleteVertexArrays(1, &m_wireSphereVao);
+    if (m_lineVbo)       glDeleteBuffers(1, &m_lineVbo);
+    if (m_lineVao)       glDeleteVertexArrays(1, &m_lineVao);
 }
 
 bool OpenGLRenderer::init(int fbW, int fbH) {
@@ -33,6 +42,7 @@ bool OpenGLRenderer::init(int fbW, int fbH) {
     m_post->setInt("screenTexture", 0);
 
     buildQuad();
+    buildDebugGeometry();
     buildTargets();
     return true;
 }
@@ -57,6 +67,66 @@ void OpenGLRenderer::buildQuad() {
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+    glBindVertexArray(0);
+}
+
+void OpenGLRenderer::buildDebugGeometry() {
+    // Unit wire cube spanning [-0.5, 0.5]^3 as 12 edges (24 verts, GL_LINES). A per-draw
+    // model matrix scales it to a collider's world AABB.
+    const float h = 0.5f;
+    const float cube[] = {
+        // bottom square (y = -h)
+        -h,-h,-h,  h,-h,-h,   h,-h,-h,  h,-h, h,   h,-h, h, -h,-h, h,  -h,-h, h, -h,-h,-h,
+        // top square (y = +h)
+        -h, h,-h,  h, h,-h,   h, h,-h,  h, h, h,   h, h, h, -h, h, h,  -h, h, h, -h, h,-h,
+        // vertical edges
+        -h,-h,-h, -h, h,-h,   h,-h,-h,  h, h,-h,   h,-h, h,  h, h, h,  -h,-h, h, -h, h, h,
+    };
+    glGenVertexArrays(1, &m_wireCubeVao);
+    glGenBuffers(1, &m_wireCubeVbo);
+    glBindVertexArray(m_wireCubeVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_wireCubeVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(cube), cube, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+
+    // Unit wire sphere (radius 1): three great-circle rings (XY, XZ, YZ), each N segments
+    // emitted as line pairs. Per-draw model scales by the radius.
+    const int N = 24;
+    std::vector<float> sphere;
+    sphere.reserve(3 * N * 2 * 3);
+    auto ring = [&](int axis) {
+        for (int i = 0; i < N; ++i) {
+            const float a0 = (float)i       / N * 6.2831853f;
+            const float a1 = (float)(i + 1) / N * 6.2831853f;
+            const float c0 = std::cos(a0), s0 = std::sin(a0);
+            const float c1 = std::cos(a1), s1 = std::sin(a1);
+            glm::vec3 p0, p1;
+            if (axis == 0) { p0 = {0, c0, s0}; p1 = {0, c1, s1}; }       // YZ plane
+            else if (axis == 1) { p0 = {c0, 0, s0}; p1 = {c1, 0, s1}; }  // XZ plane
+            else { p0 = {c0, s0, 0}; p1 = {c1, s1, 0}; }                 // XY plane
+            sphere.insert(sphere.end(), {p0.x, p0.y, p0.z, p1.x, p1.y, p1.z});
+        }
+    };
+    ring(0); ring(1); ring(2);
+    m_wireSphereVerts = (int)sphere.size() / 3;
+    glGenVertexArrays(1, &m_wireSphereVao);
+    glGenBuffers(1, &m_wireSphereVbo);
+    glBindVertexArray(m_wireSphereVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_wireSphereVbo);
+    glBufferData(GL_ARRAY_BUFFER, sphere.size() * sizeof(float), sphere.data(), GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+
+    // Dynamic two-vertex buffer; drawLine re-uploads the endpoints each call.
+    glGenVertexArrays(1, &m_lineVao);
+    glGenBuffers(1, &m_lineVbo);
+    glBindVertexArray(m_lineVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_lineVbo);
+    glBufferData(GL_ARRAY_BUFFER, 6 * sizeof(float), nullptr, GL_DYNAMIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+
     glBindVertexArray(0);
 }
 
@@ -234,6 +304,42 @@ void OpenGLRenderer::submit(const RenderItem& item) {
     } else {
         item.model->Draw(*sh);
     }
+}
+
+// --- debug primitives ---------------------------------------------------------
+// All three draw flat-colored GL_LINES with the unlit shader. view/projection were
+// uploaded to m_unlit in beginScene(); we only set model + lightColor here.
+
+void OpenGLRenderer::drawWireBox(const glm::mat4& transform, const glm::vec3& color) {
+    m_unlit->use();
+    m_unlit->setMat4("model", transform);
+    m_unlit->setVec3("lightColor", color.x, color.y, color.z);
+    glBindVertexArray(m_wireCubeVao);
+    glDrawArrays(GL_LINES, 0, 24);
+    glBindVertexArray(0);
+}
+
+void OpenGLRenderer::drawWireSphere(const glm::vec3& center, float radius, const glm::vec3& color) {
+    const glm::mat4 model = glm::translate(glm::mat4(1.0f), center)
+                          * glm::scale(glm::mat4(1.0f), glm::vec3(radius));
+    m_unlit->use();
+    m_unlit->setMat4("model", model);
+    m_unlit->setVec3("lightColor", color.x, color.y, color.z);
+    glBindVertexArray(m_wireSphereVao);
+    glDrawArrays(GL_LINES, 0, m_wireSphereVerts);
+    glBindVertexArray(0);
+}
+
+void OpenGLRenderer::drawLine(const glm::vec3& a, const glm::vec3& b, const glm::vec3& color) {
+    const float verts[6] = { a.x, a.y, a.z, b.x, b.y, b.z };
+    m_unlit->use();
+    m_unlit->setMat4("model", glm::mat4(1.0f));   // endpoints are already world-space
+    m_unlit->setVec3("lightColor", color.x, color.y, color.z);
+    glBindVertexArray(m_lineVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_lineVbo);
+    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
+    glDrawArrays(GL_LINES, 0, 2);
+    glBindVertexArray(0);
 }
 
 void OpenGLRenderer::endScene() {

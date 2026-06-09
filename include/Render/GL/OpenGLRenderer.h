@@ -24,10 +24,15 @@ public:
     void submit(const RenderItem& item) override;
     void endScene() override;
 
+    void drawWireBox(const glm::mat4& transform, const glm::vec3& color) override;
+    void drawWireSphere(const glm::vec3& center, float radius, const glm::vec3& color) override;
+    void drawLine(const glm::vec3& a, const glm::vec3& b, const glm::vec3& color) override;
+
 private:
     void buildTargets();    // (re)create scene/resolve FBOs for the current settings
     void destroyTargets();
     void buildQuad();       // fullscreen present quad (created once)
+    void buildDebugGeometry();  // wire-cube + wire-sphere + dynamic line buffers (created once)
 
     GLADloadproc   m_loader   = nullptr;
     bool           m_glLoaded = false;
@@ -45,6 +50,12 @@ private:
 
     // Fullscreen present quad.
     GLuint m_quadVao = 0, m_quadVbo = 0;
+
+    // Debug gizmo geometry (drawn with m_unlit as GL_LINES). Unit shapes scaled per call.
+    GLuint m_wireCubeVao = 0,   m_wireCubeVbo = 0;
+    GLuint m_wireSphereVao = 0, m_wireSphereVbo = 0;
+    int    m_wireSphereVerts = 0;
+    GLuint m_lineVao = 0,       m_lineVbo = 0;   // dynamic: two verts re-uploaded per drawLine
 
     // Built-in shaders (owned by the GL backend).
     std::unique_ptr<Shader> m_lit;    // advanced_lighting

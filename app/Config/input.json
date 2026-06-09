@@ -10,6 +10,7 @@
     "ToggleFlashlight": "F",
     "IncreaseAttenuation": "Up",
     "DecreaseAttenuation": "Down",
-    "ReloadScenes": "R"
+    "ReloadScenes": "R",
+    "ToggleColliders": "F1"
   }
 }

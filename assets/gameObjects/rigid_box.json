@@ -1,6 +1,6 @@
 { "name": "FallingBox", "components": [
-  { "type": "Transform", "position": [5, 5, 0] },
+  { "type": "Transform", "position": [5, 5, 0], "rotation": [0, 0, 45] },
   { "type": "Mesh", "model": "assets/models/1meterCube/cube1m.obj" },
-  { "type": "Collider", "shape": { "kind": "box", "halfExtents": [0.5, 0.5, 0.5] } },
+  { "type": "Collider", "shape": { "kind": "obb", "halfExtents": [0.5, 0.5, 0.5] } },
   { "type": "RigidBody3D", "mass": 1.0, "restitution": 0.3, "friction": 0.5, "drag": 0.05 }
 ]}
