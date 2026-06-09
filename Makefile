@@ -1,19 +1,26 @@
 # === Flags ===
 # OpenMP: enables the #pragma omp parallel collision sweep in
-# include/Components/ColliderComponent3D.h. Needed on both the compile of
+# include/Components/Physics/ColliderComponent3D.h. Needed on both the compile of
 # main.o and the final link (to pull in the libgomp runtime).
 OPENMP = -fopenmp
 
 # Include search roots. With these, sources include headers by stable logical
-# path (e.g. "Core/Component.h", <glm/glm.hpp>) instead of brittle ../../ chains,
-# so moving a file only changes a -I root here, not every relative include.
-#   -I.                     -> project root (resolves "assets/scripts/..." in main.cpp)
+# path (e.g. "Core/...", <glm/glm.hpp>) instead of brittle ../../ chains, so moving
+# a file only changes a -I root here, not every relative include.
+#   -I.                     -> project root (resolves "assets/scripts/..." )
 #   -Iinclude               -> engine headers: "Core/...", "Render/...", "Components/..."
 #   -isystem vendor/glad    -> <glad/glad.h>, <KHR/khrplatform.h>
 #   -isystem vendor/glm     -> <glm/glm.hpp>, <glm/gtc/...>
 #   -isystem vendor/GLFW... -> <glfw3.h>
 # (-isystem also silences warnings originating in third-party headers.)
 INCLUDES = -I. -Iinclude -isystem vendor/glad -isystem vendor/glm -isystem vendor/GLFW/include -isystem vendor/json
+
+# === Output layout ===
+# Objects build into build/lib, the executable into build/. Change NAME to rename the
+# binary (the .exe suffix is added automatically on Windows).
+NAME   = game
+BUILD  = build
+OBJDIR = $(BUILD)/lib
 
 # === Source files ===
 GLAD          = vendor/glad/glad.c
@@ -25,57 +32,65 @@ GO_LOADER     = src/Core/GameObjectLoader.cpp
 
 # === Platform-specific settings ===
 ifeq ($(OS),Windows_NT)
-    # Windows (MinGW / MSYS2 UCRT64)
-    # Install dependencies via:
+    # Windows (MinGW / MSYS2 UCRT64, invoked from cmd via mingw32-make)
     #   pacman -S mingw-w64-ucrt-x86_64-glfw mingw-w64-ucrt-x86_64-assimp
-    # GLFW on Windows is named libglfw3 (note the "3" suffix).
-    LIBS = -lglfw3 -lassimp -lgdi32 -lopengl32
-    RM   = del /q /f
-    EXEC = main.exe
+    LIBS  = -lglfw3 -lassimp -lgdi32 -lopengl32
+    EXEC  = $(BUILD)/$(NAME).exe
+    MKDIR = if not exist "$(subst /,\,$(OBJDIR))" mkdir "$(subst /,\,$(OBJDIR))"
+    CLEAN = if exist "$(subst /,\,$(BUILD))" rmdir /s /q "$(subst /,\,$(BUILD))"
 else
     # Linux
-    # Install dependencies via:
     #   apt install libglfw3-dev libassimp-dev
-    LIBS = -lglfw -lassimp -lGL -ldl -lpthread
-    RM   = rm -f
-    EXEC = main
+    LIBS  = -lglfw -lassimp -lGL -ldl -lpthread
+    EXEC  = $(BUILD)/$(NAME)
+    MKDIR = mkdir -p $(OBJDIR)
+    CLEAN = rm -rf $(BUILD)
 endif
 
+# === Objects (all under $(OBJDIR)) ===
+OBJS = $(OBJDIR)/main.o $(OBJDIR)/glad.o $(OBJDIR)/shader_s.o $(OBJDIR)/lib_asset_loader.o \
+       $(OBJDIR)/input_manager.o $(OBJDIR)/OpenGLRenderer.o $(OBJDIR)/GameObjectLoader.o
+
 # === Build rules ===
-.PHONY: all clean scripts
+.PHONY: all recompile clean
 
-all: main.o glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o GameObjectLoader.o
-	g++ $(OPENMP) -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o GameObjectLoader.o $(LIBS)
+all: $(EXEC)
 
-# Force-rebuild only main.o (which transitively includes all header-only scripts
-# and components) and relink. Use this when you've only edited files under
-# assets/scripts/ or include/ — skips recompiling glad/shader/asset_loader/input_manager.
-# Their .o files are listed as deps so a fresh checkout still works (they'll be
-# built once and then reused on subsequent `make scripts` runs).
-recompile: glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o GameObjectLoader.o
-	g++ $(OPENMP) $(INCLUDES) -c main.cpp
-	g++ $(OPENMP) -o $(EXEC) main.o glad.o shader_s.o lib_asset_loader.o input_manager.o OpenGLRenderer.o GameObjectLoader.o $(LIBS)
+$(EXEC): $(OBJS)
+	g++ $(OPENMP) -o $(EXEC) $(OBJS) $(LIBS)
 
-main.o: main.cpp
-	g++ $(OPENMP) $(INCLUDES) -c main.cpp
+# Force-rebuild only main.o (it transitively includes all header-only scripts and
+# components) and relink. Use this when you've only edited files under assets/scripts/
+# or include/ — the other objects are reused.
+recompile: $(filter-out $(OBJDIR)/main.o,$(OBJS)) | $(OBJDIR)
+	g++ $(OPENMP) $(INCLUDES) -c main.cpp -o $(OBJDIR)/main.o
+	g++ $(OPENMP) -o $(EXEC) $(OBJS) $(LIBS)
 
-OpenGLRenderer.o: $(GL_RENDERER)
-	g++ $(OPENMP) $(INCLUDES) -c $(GL_RENDERER)
+$(OBJDIR)/main.o: main.cpp | $(OBJDIR)
+	g++ $(OPENMP) $(INCLUDES) -c $< -o $@
 
-GameObjectLoader.o: $(GO_LOADER)
-	g++ $(OPENMP) $(INCLUDES) -c $(GO_LOADER)
+$(OBJDIR)/OpenGLRenderer.o: $(GL_RENDERER) | $(OBJDIR)
+	g++ $(OPENMP) $(INCLUDES) -c $< -o $@
 
-glad.o: $(GLAD)
-	gcc $(INCLUDES) -c $(GLAD)
+$(OBJDIR)/GameObjectLoader.o: $(GO_LOADER) | $(OBJDIR)
+	g++ $(OPENMP) $(INCLUDES) -c $< -o $@
 
-shader_s.o: $(SHADER)
-	g++ $(INCLUDES) -c $(SHADER)
+$(OBJDIR)/glad.o: $(GLAD) | $(OBJDIR)
+	gcc $(INCLUDES) -c $< -o $@
 
-lib_asset_loader.o: $(ASSET_LOADER)
-	g++ $(INCLUDES) -c $(ASSET_LOADER)
+$(OBJDIR)/shader_s.o: $(SHADER) | $(OBJDIR)
+	g++ $(INCLUDES) -c $< -o $@
 
-input_manager.o: $(INPUT_MANAGER)
-	g++ $(INCLUDES) -c $(INPUT_MANAGER)
+$(OBJDIR)/lib_asset_loader.o: $(ASSET_LOADER) | $(OBJDIR)
+	g++ $(INCLUDES) -c $< -o $@
+
+$(OBJDIR)/input_manager.o: $(INPUT_MANAGER) | $(OBJDIR)
+	g++ $(INCLUDES) -c $< -o $@
+
+# Order-only prerequisite: create the output dir once, without forcing relinks when
+# its timestamp changes.
+$(OBJDIR):
+	$(MKDIR)
 
 clean:
-	$(RM) *.o $(EXEC)
+	$(CLEAN)
