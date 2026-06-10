@@ -14,6 +14,6 @@
     "internalHeight": 1080,
     "antialiasing": "fxaa",
     "msaaSamples": 2,
-    "debugColliders": true
+    "debugColliders": false
   }
 }

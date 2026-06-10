@@ -1,8 +1,8 @@
 { "name": "SpawnCube", "components": [
   { "type": "Transform", "position": [0, 0, 0], "rotation": [0, 0, 0] },
   { "type": "Mesh", "model": "assets/models/1meterCube/cube1m.obj" },
-  { "type": "Collider", "shape": { "kind": "obb", "halfExtents": [0.5, 0.5, 0.5] } },
-  { "type": "OldRigidBody3D", "mass": 2.0, "restitution": 0.1, "friction": 1.5, "drag": 0.05, "simulation": "complex",
+  { "type": "RigidBody3D", "mass": 2.0, "restitution": 0.1, "friction": 1.5, "drag": 0.05, "simulation": "complex",
+    "shape": { "kind": "obb", "halfExtents": [0.5, 0.5, 0.5] },
     "freezeAfter": 5.0, "freezeStart": "contact",
     "ttl": -1, "ttlStart": "spawn" }
 ]}

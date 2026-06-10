@@ -130,6 +130,7 @@ private:
         int steps = 0;
         while (m_physicsAccumulator >= kFixedDt && steps < kMaxSubSteps) {
             OldRigidBodyComponent3D::stepWorld(kFixedDt);
+            RigidBodyComponent3D::stepWorld(kFixedDt);
             m_physicsAccumulator -= kFixedDt;
             ++steps;
         }

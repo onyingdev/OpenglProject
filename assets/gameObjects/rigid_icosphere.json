@@ -1,6 +1,6 @@
 { "name": "rigid_icosphere", "components": [
   { "type": "Transform", "position": [5, 3, 0] },
   { "type": "Mesh", "model": "assets/models/icosphere/icosphere.obj" },
-  { "type": "Collider", "shape": { "kind": "sphere", "radius": 0.5 } },
-  { "type": "OldRigidBody3D", "mass": 1.0, "restitution": 0.3, "friction": 0.5, "rollingFriction": 0.1, "drag": 0.05, "simulation": "complex" }
+  { "type": "RigidBody3D", "mass": 1.0, "restitution": 0.3, "friction": 500.5, "drag": 0.05, "simulation": "complex",
+    "shape": { "kind": "sphere", "radius": 0.5 } }
 ]}

@@ -49,8 +49,8 @@ public:
         in->BindPressed("MoveBackward", [this](float dt) { if (Enabled) tf->Position -= tf->forward() * MoveSpeed * dt; });
         in->BindPressed("MoveLeft",     [this](float dt) { if (Enabled) tf->Position -= tf->right()   * MoveSpeed * dt; });
         in->BindPressed("MoveRight",    [this](float dt) { if (Enabled) tf->Position += tf->right()   * MoveSpeed * dt; });
-        in->BindPressed("MoveUp",       [this](float dt) { if (Enabled) tf->Position += tf->up()   * MoveSpeed * dt; });
-        in->BindPressed("MoveDown",     [this](float dt) { if (Enabled) tf->Position -= tf->up()   * MoveSpeed * dt; });
+        in->BindPressed("MoveUp",       [this](float dt) { if (Enabled) tf->Position.y +=  MoveSpeed * dt; });
+        in->BindPressed("MoveDown",     [this](float dt) { if (Enabled) tf->Position.y -=  MoveSpeed * dt; });
         // Mouse look — yaw on x, pitch on y, clamped to avoid gimbal flip.
         in->BindMouseLook([this](float xOff, float yOff) {
             if (!Enabled) return;
