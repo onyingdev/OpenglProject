@@ -7,6 +7,6 @@
     { "type": "ConeLight" },
     { "type": "CameraController", "moveSpeed": 5.0, "mouseSensitivity": 0.1, "pitchLimit": 89.0 },
     { "type": "FlashLight", "color": [1, 1, 1], "intensity": 1.0 },
-    { "type": "CubeSpawner", "prefab": "assets/gameObjects/rigid_box.json", "scene": "physics_level", "spawnDistance": 2.0, "launchSpeed": 0.0 }
+    { "type": "CubeSpawner", "prefab": "assets/gameObjects/rigid_box_ttl.json", "scene": "physics_level", "spawnDistance": 2.0, "launchSpeed": 20.0 }
   ]
 }

@@ -11,7 +11,7 @@
 
 // Physics collider: a body's collision SURFACE. Owns a shape and a layer/mask, and
 // registers into a static list the rigid-body solver sweeps for contacts
-// (RigidBodyComponent3D::stepWorld -> colliders() + Shape->collide()). This is the
+// (OldRigidBodyComponent3D::stepWorld -> colliders() + Shape->collide()). This is the
 // PHYSICS half only; gameplay overlap triggers (enter/stay/exit) live in the separate,
 // lighter HurtBoxComponent3D. The two sweep independent registries on purpose.
 //
@@ -80,7 +80,7 @@ public:
     }
 
     // Read-only access to the live-collider registry for the physics solver
-    // (RigidBodyComponent3D::stepWorld) and the debug-draw pass.
+    // (OldRigidBodyComponent3D::stepWorld) and the debug-draw pass.
     static const std::vector<ColliderComponent3D*>& colliders() { return AllColliders(); }
 
     // Public layer/mask filter so the solver reuses the same rule.

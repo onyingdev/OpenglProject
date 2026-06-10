@@ -5,6 +5,8 @@
     "MoveBackward": "S",
     "MoveRight": "D",
     "MoveLeft": "A",
+    "MoveUp": "Q",
+    "MoveDown": "E",
     "RotateRight": "M",
     "RotateLeft": "N",
     "ToggleFlashlight": "F",

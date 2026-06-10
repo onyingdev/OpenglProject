@@ -2,6 +2,7 @@
 #include "Core/Components/SpatialComponent3D.h"
 #include "Core/Engine/Services/ComponentRegistry.h"
 #include "Core/Engine/Helpers/JsonHelpers.h"
+#include "Core/Engine/Scene.h"                 // TTL despawn: Scene::removeObject
 #include "Components/Rendering/MeshComponent.h"
 #include "Components/Physics/ColliderComponent3D.h"
 #include <glm/glm.hpp>
@@ -28,20 +29,23 @@
 // useOwnerPosition()/useOwnerOrientation(); the integrator writes Position and Orientation
 // (quaternion) there, so collider detection and the rendered mesh track the physics pose.
 //
-// JSON: { "type": "RigidBody3D", "mass": 1.0, "friction": 0.5, "drag": 0.05,
+// JSON: { "type": "OldRigidBody3D", "mass": 1.0, "friction": 0.5, "drag": 0.05,
 //         "restitution": 0.3, "static": false, "useGravity": true, "gravity": [0,-9.81,0],
 //         "simulation": "simple"|"complex", "angularDrag": 0.05,
-//         "centerOfMass": [0,0,0], "initialVelocity": [0,0,0], "initialAngularVelocity": [0,0,0] }
-class RigidBodyComponent3D : public SpatialComponent3D {
+//         "centerOfMass": [0,0,0], "initialVelocity": [0,0,0], "initialAngularVelocity": [0,0,0],
+//         "ttl": 8.0, "ttlStart": "spawn"|"contact",          // despawn after ttl s (<=0 = permanent)
+//         "freezeAfter": 3.0, "freezeStart": "spawn"|"contact" } // freeze static after N s (<=0 = never)
+class OldRigidBodyComponent3D : public SpatialComponent3D {
     MeshComponent*       mesh     = nullptr;
     ColliderComponent3D* collider = nullptr; // the body's surface; required
 
 public:
     enum class Simulation { Simple, Complex };
+    enum class TimerStart { Spawn, Contact };   // when a lifecycle timer begins counting
 
     // Per-frame state dump of awake bodies in stepWorld(). When false the print block is skipped
     // entirely — zero overhead, no output. Flip to false to silence; set in code or via a toggle.
-    inline static bool DebugPrint = true;
+    inline static bool DebugPrint = false;
 
     float      Mass            = 1.0f;        // <= 0 or Static => infinite mass (immovable)
     float      Friction        = 0.5f;        // Coulomb (sliding) coefficient — combined geo mean
@@ -57,6 +61,12 @@ public:
     glm::vec3  CenterOfMass{0.0f};            // local offset from position (force application point)
     glm::vec3  Velocity{0.0f};                // linear velocity
     glm::vec3  AngularVelocity{0.0f};         // world angular velocity (Complex only)
+
+    // --- lifecycle timers (both optional, independent) ---------------------------
+    float      TTL         = -1.0f;           // seconds to live, then despawn; <=0 = permanent
+    float      FreezeAfter = -1.0f;           // seconds of free sim, then freeze static; <=0 = never
+    TimerStart TtlStart    = TimerStart::Spawn;    // start the TTL clock on spawn or first contact
+    TimerStart FreezeStart = TimerStart::Spawn;    // start the freeze clock on spawn or first contact
 
     // --- force / impulse API -----------------------------------------------------
     // Any external energy wakes the body so it resumes simulating.
@@ -78,8 +88,10 @@ public:
     }
 
     // Sleep control. A sleeping body skips integration and resolution until something disturbs it.
-    void  wake()            { m_asleep = false; m_sleepTimer = 0.0f; }
+    // A FROZEN body (freeze-window expired) ignores wake() entirely — it's permanently static.
+    void  wake()            { if (m_frozen) return; m_asleep = false; m_sleepTimer = 0.0f; }
     bool  isAsleep() const  { return m_asleep; }
+    bool  isFrozen() const  { return m_frozen; }
 
     float inverseMass() const { return m_invMass; }
 
@@ -100,14 +112,24 @@ public:
         CenterOfMass    = jsonVec3(j.value("centerOfMass",           nlohmann::json{}), CenterOfMass);
         Velocity        = jsonVec3(j.value("initialVelocity",        nlohmann::json{}), Velocity);
         AngularVelocity = jsonVec3(j.value("initialAngularVelocity", nlohmann::json{}), AngularVelocity);
+
+        TTL         = j.value("ttl",         TTL);
+        FreezeAfter = j.value("freezeAfter", FreezeAfter);
+        TtlStart    = parseStart(j.value("ttlStart",    std::string{"spawn"}));
+        FreezeStart = parseStart(j.value("freezeStart", std::string{"spawn"}));
+    }
+
+    // "contact" → start the clock on first contact; anything else (incl. "spawn") → on spawn.
+    static TimerStart parseStart(const std::string& s) {
+        return s == "contact" ? TimerStart::Contact : TimerStart::Spawn;
     }
 
     void start() override {
         SpatialComponent3D::start();
         mesh = owner->getComponent<MeshComponent>();
-        if (!mesh) ComponentWarning::missing("RigidBodyComponent3D", "MeshComponent");
+        if (!mesh) ComponentWarning::missing("OldRigidBodyComponent3D", "MeshComponent");
         collider = owner->getComponent<ColliderComponent3D>();
-        if (!collider) throw MissingComponentException("RigidBodyComponent3D", "ColliderComponent3D");
+        if (!collider) throw MissingComponentException("OldRigidBodyComponent3D", "ColliderComponent3D");
 
         // One authoritative transform: position + quaternion orientation on the GameObject.
         this->useOwnerPosition();      this->useOwnerOrientation();
@@ -121,7 +143,7 @@ public:
         (Static ? staticBodies() : dynamicBodies()).push_back(this);
     }
 
-    ~RigidBodyComponent3D() override {
+    ~OldRigidBodyComponent3D() override {
         auto& list = (Static ? staticBodies() : dynamicBodies());
         list.erase(std::remove(list.begin(), list.end(), this), list.end());
     }
@@ -158,7 +180,7 @@ public:
                 if (other == a->collider || !other->Shape) continue;
                 if (!ColliderComponent3D::masksOverlap(a->collider, other)) continue;
 
-                RigidBodyComponent3D* otherBody = other->owner->getComponent<RigidBodyComponent3D>();
+                OldRigidBodyComponent3D* otherBody = other->owner->getComponent<OldRigidBodyComponent3D>();
                 const bool otherDynamic = otherBody && otherBody->m_invMass != 0.0f;
                 // Resolve each AWAKE dynamic pair once (lower pointer drives). Don't defer to a
                 // SLEEPING otherBody — it's skipped as a driver, so the awake `a` must handle the
@@ -239,8 +261,37 @@ public:
                 b->Velocity = glm::vec3(0.0f);
                 b->AngularVelocity = glm::vec3(0.0f);
             }
+            if (b->m_hadContact) b->m_everContacted = true;   // latches the "contact" timer trigger
             b->m_hadContact = false;   // reset; resolve() re-sets it this/next step
         }
+
+        // 5. Lifecycle timers — SERIAL (appends to the shared despawn list). Each timer advances only
+        //    once armed (spawn = immediately, contact = after the body's first contact). TTL marks the
+        //    body for despawn; FreezeAfter freezes it in place (safe: freeze() touches only its own
+        //    state). Frozen bodies stay in dyn (cheaply skipped) so their TTL can still elapse.
+        for (auto* b : dyn) {
+            if (b->TTL > 0.0f) {
+                const bool armed = (b->TtlStart == TimerStart::Spawn) || b->m_everContacted;
+                if (armed && (b->m_ttlElapsed += dt) >= b->TTL) pendingDespawn().push_back(b);
+            }
+            if (!b->m_frozen && b->FreezeAfter > 0.0f) {
+                const bool armed = (b->FreezeStart == TimerStart::Spawn) || b->m_everContacted;
+                if (armed && (b->m_freezeElapsed += dt) >= b->FreezeAfter) b->freeze();
+            }
+        }
+
+        // Deferred despawn drain — at the very end of the step (no active body-loop, and scenes have
+        // already updated this frame) so removing the GameObject is safe. removeObject frees it;
+        // ~OldRigidBodyComponent3D / ~ColliderComponent3D unregister from their registries.
+        auto& dead = pendingDespawn();
+        for (auto* b : dead) {
+            GameObject* o = b->owner;
+            Scene* sc = o->scene();
+            if (!sc) { std::cerr << "[RigidBody] TTL despawn: \"" << o->Name << "\" has no scene — left in place\n"; continue; }
+            const std::string name = o->Name;   // copy: removeObject frees o, and o->Name lives inside it
+            sc->removeObject(name);
+        }
+        dead.clear();
     }
 
 private:
@@ -253,11 +304,17 @@ private:
     bool      m_asleep     = false;      // skips integration + resolution until woken
     float     m_sleepTimer = 0.0f;       // seconds spent supported + below the sleep thresholds
 
+    // Lifecycle-timer state.
+    bool      m_everContacted = false;   // has touched something at least once (arms "contact" timers)
+    bool      m_frozen        = false;   // freeze window elapsed => permanently static
+    float     m_ttlElapsed    = 0.0f;    // seconds the TTL clock has run (once armed)
+    float     m_freezeElapsed = 0.0f;    // seconds the freeze clock has run (once armed)
+
     // Per-body contact scratch: filled in the PARALLEL detection phase (each body writes only
     // its own row, so no locking), drained in the SERIAL resolution phase. cleared() — not freed —
     // each step so the capacity is reused. Contact[8] matches the manifold cap (box/OBB corners).
     struct ContactBatch {
-        RigidBodyComponent3D* other;     // the other body; null for a bare/static collider
+        OldRigidBodyComponent3D* other;     // the other body; null for a bare/static collider
         int     nc;                      // contact count in this manifold
         Contact contacts[8];
     };
@@ -328,6 +385,20 @@ private:
         // velocity is ~0), not here — gravity has just been added, so it's never ~0 at this point.
     }
 
+    // Freeze the body into permanent static geometry: stop it dead and give it infinite mass so the
+    // integrator and detection skip it (m_invMass == 0 / m_asleep) while the collider stays
+    // registered — other bodies still land and rest on it. wake() is guarded so it never revives.
+    // Only mutates this body's own state, so it's safe to call mid-pass.
+    void freeze() {
+        Velocity           = glm::vec3(0.0f);
+        AngularVelocity    = glm::vec3(0.0f);
+        m_invMass          = 0.0f;
+        m_invInertiaLocal  = glm::mat3(0.0f);
+        m_invInertiaWorld  = glm::mat3(0.0f);
+        m_frozen           = true;
+        m_asleep           = true;
+    }
+
     // Apply an impulse P at world arm r (relative to the center of mass): linear + angular.
     void applyImpulseAtArm(const glm::vec3& P, const glm::vec3& r) {
         Velocity += P * m_invMass;
@@ -350,14 +421,14 @@ private:
     }
 
     // Velocity of a body's material point at world arm r (linear + rotational).
-    static glm::vec3 pointVelocity(RigidBodyComponent3D* body, const glm::vec3& r) {
+    static glm::vec3 pointVelocity(OldRigidBodyComponent3D* body, const glm::vec3& r) {
         return body ? body->Velocity + glm::cross(body->AngularVelocity, r) : glm::vec3(0.0f);
     }
 
     // Resolve one contact. `c.normal` points A -> B; `c.point` is the world contact point.
     // Uses contact-point impulses (linear + angular); for Simple bodies the angular terms
     // vanish (inverse-inertia 0) and this reduces exactly to the old linear resolution.
-    static void resolve(RigidBodyComponent3D* A, RigidBodyComponent3D* B, const Contact& c,
+    static void resolve(OldRigidBodyComponent3D* A, OldRigidBodyComponent3D* B, const Contact& c,
                         float posScale = 1.0f, bool applyPosition = true) {
         const float invA   = A->m_invMass;
         const float invB   = B ? B->m_invMass : 0.0f;
@@ -433,14 +504,21 @@ private:
 
     // The two physics worlds. Dynamic bodies integrate + drive resolution; static bodies are
     // immovable world geometry (collided against via the collider registry, never integrated).
-    static std::vector<RigidBodyComponent3D*>& dynamicBodies() {
-        static std::vector<RigidBodyComponent3D*> v;
+    static std::vector<OldRigidBodyComponent3D*>& dynamicBodies() {
+        static std::vector<OldRigidBodyComponent3D*> v;
         return v;
     }
-    static std::vector<RigidBodyComponent3D*>& staticBodies() {
-        static std::vector<RigidBodyComponent3D*> v;
+    static std::vector<OldRigidBodyComponent3D*>& staticBodies() {
+        static std::vector<OldRigidBodyComponent3D*> v;
+        return v;
+    }
+
+    // Bodies whose TTL elapsed this step; drained (their GameObjects removed) at the end of
+    // stepWorld, where it's safe — no body-loop is active and scenes have already updated.
+    static std::vector<OldRigidBodyComponent3D*>& pendingDespawn() {
+        static std::vector<OldRigidBodyComponent3D*> v;
         return v;
     }
 };
 
-REGISTER_COMPONENT(RigidBodyComponent3D, "RigidBody3D")
+REGISTER_COMPONENT(OldRigidBodyComponent3D, "OldRigidBody3D")

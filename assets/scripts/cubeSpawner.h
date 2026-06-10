@@ -8,7 +8,7 @@
 #include "Core/Engine/SceneManager.h"                // where the spawned object is parented
 #include "Components/Input/InputComponent.h"
 #include "Components/Rendering/CameraComponent.h"
-#include "Components/Physics/RigidBodyComponent3D.h" // optional launch velocity
+#include "Components/Physics/OldRigidBodyComponent3D.h" // optional launch velocity
 #include <glm/glm.hpp>
 #include <nlohmann/json.hpp>
 #include <vector>
@@ -108,7 +108,7 @@ private:
         // Optional throw: give the body a forward velocity through the physics API
         // (wakes it and respects the sleep system).
         if (launchSpeed > 0.0f) {
-            if (auto* rb = raw->getComponent<RigidBodyComponent3D>())
+            if (auto* rb = raw->getComponent<OldRigidBodyComponent3D>())
                 rb->SetVelocity(camTf->forward() * launchSpeed);
         }
 
