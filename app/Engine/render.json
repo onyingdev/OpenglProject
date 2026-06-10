@@ -13,7 +13,8 @@
   "render": {
     "internalWidth": 1920,
     "internalHeight": 1080,
-    "antialiasing": "FXAA",
-    "msaaSamples": 2
+    "antialiasing": "msaa",
+    "msaaSamples": 2,
+    "debugColliders": true
   }
 }

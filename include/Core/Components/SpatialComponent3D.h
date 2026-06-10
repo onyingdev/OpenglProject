@@ -41,6 +41,13 @@ public:
     const glm::vec3& rotation() const { return *rotationRef; }
     const glm::vec3& scale()    const { return *scaleRef; }
 
+    // Quaternion rotation for rendering/colliders. By default it's DERIVED from the live Euler
+    // source (so Euler-animated scripts keep working); after useOwnerOrientation() it reads the
+    // owner Transform's quaternion authority directly (what a physics body integrates).
+    glm::quat orientation() const {
+        return orientationRef ? *orientationRef : eulerToQuat(rotation());
+    }
+
     // Mutable accessors for in-place edits (e.g. `localRotation().x += dt*speed`).
     // Each call ensures the axis is sourced from local.
     glm::vec3& localPosition() { positionRef = &localTransform.Position;      return localTransform.Position; }
@@ -56,11 +63,14 @@ public:
     void useOwnerPosition() { positionRef = &ownerTransform()->Position; }
     void useOwnerRotation() { rotationRef = &ownerTransform()->RotationEuler; }
     void useOwnerScale()    { scaleRef    = &ownerTransform()->Scale; }
+    // Read the owner's quaternion authority directly (physics-driven rotation).
+    void useOwnerOrientation() { orientationRef = &ownerTransform()->Orientation; }
 
 private:
     const glm::vec3* positionRef = nullptr;
     const glm::vec3* rotationRef = nullptr;
     const glm::vec3* scaleRef    = nullptr;
+    const glm::quat* orientationRef = nullptr;   // null => derive from Euler in orientation()
 
     TransformComponent3D* ownerTransform() {
         auto* tf = owner->getComponent<TransformComponent3D>();

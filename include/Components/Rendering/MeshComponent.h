@@ -47,18 +47,15 @@ public:
         UnlitColor = jsonVec3(j.value("color", nlohmann::json{}), UnlitColor);
     }
 
-    // World transform for this mesh. Rotation order matches
-    // TransformComponent::forward(): yaw(Y), pitch(X), roll(Z).
+    // World transform for this mesh. Rotation comes from the quaternion authority
+    // (orientation()): for Euler-authored/animated objects it's derived from RotationEuler in
+    // the same yaw(Y)/pitch(X)/roll(Z) order (bit-identical to the old three rotates); for a
+    // physics body it's the integrated quaternion the body wrote to the Transform.
     glm::mat4 worldMatrix() const {
-        const glm::vec3& pos = position();
-        const glm::vec3& rot = rotation();
-        const glm::vec3& scl = scale();
         glm::mat4 m(1.0f);
-        m = glm::translate(m, pos);
-        m = glm::rotate(m, glm::radians(rot.x), glm::vec3(0, 1, 0));
-        m = glm::rotate(m, glm::radians(rot.y), glm::vec3(1, 0, 0));
-        m = glm::rotate(m, glm::radians(rot.z), glm::vec3(0, 0, 1));
-        m = glm::scale(m, scl);
+        m = glm::translate(m, position());
+        m = m * glm::mat4_cast(orientation());
+        m = glm::scale(m, scale());
         return m;
     }
 

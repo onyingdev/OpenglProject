@@ -28,3 +28,10 @@ folder structure:
     /glad
     /GLFW
     /glm
+
+
+    One caveat I documented in the code: the bounds test uses the body's center, not its full footprint — 
+    so a box whose center slides past the edge will drop off (its overhanging half won't keep it up). 
+    That's the cheap first-pass behavior; if you need bodies to balance on edges, widen halfExtents or 
+    add a wall collider. Say the word if you'd rather I expand the test to account for the body's lateral
+     radius so it clamps at the true edge.

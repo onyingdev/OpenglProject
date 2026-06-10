@@ -1,0 +1,12 @@
+{
+  "name": "MainCamera",
+  "components": [
+    { "type": "Transform", "position": [-1, 1, 0] },
+    { "type": "Input" },
+    { "type": "Camera", "fov": 45, "near": 0.1, "far": 100 },
+    { "type": "ConeLight" },
+    { "type": "CameraController", "moveSpeed": 5.0, "mouseSensitivity": 0.1, "pitchLimit": 89.0 },
+    { "type": "FlashLight", "color": [1, 1, 1], "intensity": 1.0 },
+    { "type": "CubeSpawner", "prefab": "assets/gameObjects/rigid_box.json", "scene": "physics_level", "spawnDistance": 2.0 }
+  ]
+}

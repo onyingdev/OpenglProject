@@ -1,0 +1,10 @@
+{
+  "name": "physics_level",
+  "transform": { "position": [0, 0, 0] },
+  "objects": [
+    "assets/gameObjects/sun.json",
+    "assets/gameObjects/playground.json",
+    "assets/gameObjects/rigid_icosphere.json",
+    "assets/gameObjects/rigid_box.json"
+  ]
+}
