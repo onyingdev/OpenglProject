@@ -13,12 +13,20 @@ enum class RenderBackend { OpenGL, Vulkan };
 // How the window is presented. Borderless/Fullscreen are placeholders until wired.
 enum class WindowMode { Windowed, Fullscreen, Borderless };
 
+// How the window responds to manual resizing:
+//   Free       - resize to any size (desktop default)
+//   Locked     - not resizable at all (typical "game" behavior) recommended, + fullscreen.
+//   KeepAspect - resizable, but GLFW holds the configured aspect ratio so the rendered
+//                image never gets stretched into an odd shape (no camera misalignment) TODO: fix internal game size not changing.
+enum class ResizeMode { Free, Locked, KeepAspect };
+
 // Platform/window configuration (consumed by Window).
 struct WindowSettings {
     int         width  = 1920;
     int         height = 1080;
     std::string title  = "OpenGL";
     WindowMode  mode   = WindowMode::Windowed;
+    ResizeMode  resize = ResizeMode::KeepAspect;   // games usually lock or aspect-lock
     bool        vsync  = false;
     int         glMajor = 3, glMinor = 3;   // GL context version (OpenGL backend only)
 };
@@ -28,7 +36,7 @@ struct WindowSettings {
 //
 //   { "backend": "opengl",
 //     "window": { "width":1920, "height":1080, "title":"OpenGL", "mode":"windowed",
-//                 "vsync":false, "glMajor":3, "glMinor":3 },
+//                 "resize":"keepAspect", "vsync":false, "glMajor":3, "glMinor":3 },
 //     "render": { "internalWidth":1920, "internalHeight":1080,
 //                 "antialiasing":"msaa", "msaaSamples":2 } }
 struct EngineSettings {
@@ -70,7 +78,8 @@ private:
             s.window.vsync   = w.value("vsync",   s.window.vsync);
             s.window.glMajor = w.value("glMajor", s.window.glMajor);
             s.window.glMinor = w.value("glMinor", s.window.glMinor);
-            if (w.contains("mode")) s.window.mode = parseMode(w["mode"].get<std::string>(), s.window.mode);
+            if (w.contains("mode"))   s.window.mode   = parseMode(w["mode"].get<std::string>(),     s.window.mode);
+            if (w.contains("resize")) s.window.resize = parseResize(w["resize"].get<std::string>(), s.window.resize);
         }
 
         if (j.contains("render") && j["render"].is_object()) {
@@ -96,10 +105,18 @@ private:
         if (v == "borderless") return WindowMode::Borderless;
         return fallback;
     }
+    static ResizeMode parseResize(std::string v, ResizeMode fallback) {
+        for (char& c : v) c = (char)std::tolower((unsigned char)c);
+        if (v == "free")       return ResizeMode::Free;
+        if (v == "locked")     return ResizeMode::Locked;
+        if (v == "keepaspect") return ResizeMode::KeepAspect;
+        return fallback;
+    }
     static AntiAliasing parseAA(std::string v, AntiAliasing fallback) {
         for (char& c : v) c = (char)std::tolower((unsigned char)c);
         if (v == "none") return AntiAliasing::None;
         if (v == "msaa") return AntiAliasing::MSAA;
+        if (v == "fxaa") return AntiAliasing::FXAA;
         return fallback;
     }
 };
