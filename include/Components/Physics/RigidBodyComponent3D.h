@@ -9,6 +9,9 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 // RigidBody 3D. A spatial component backed by a Collider (its surface), a Mesh, a mass and
 // (optionally) angular dynamics. Two per-body simulation modes:
@@ -124,11 +127,27 @@ public:
     // outer loop is dynamic-only. Call from the engine's fixed-timestep accumulator.
     static void stepWorld(float dt) {
         auto& dyn = dynamicBodies();
-        for (auto* b : dyn) b->integrate(dt);
+
+        // 1. Integrate the dynamic world. Each body touches only its own state, so this
+        //    parallelizes cleanly. Guarded (like HurtBox) so small scenes stay serial and
+        //    don't pay thread spin-up; degrades to a plain loop when built without OpenMP.
+        #pragma omp parallel for schedule(static) if(dyn.size() > 256)
+        for (size_t i = 0; i < dyn.size(); ++i) dyn[i]->integrate(dt);
 
         const auto& colliders = ColliderComponent3D::colliders();
-        for (auto* c : colliders) c->syncShape();   // refresh OBB/ball orientations + plane normals
-        for (auto* a : dyn) {
+        // Refresh OBB/ball orientations + plane normals — per-collider, independent.
+        #pragma omp parallel for schedule(static) if(colliders.size() > 256)
+        for (size_t i = 0; i < colliders.size(); ++i) colliders[i]->syncShape();
+
+        // 2. DETECTION — parallel, mirroring HurtBox::tickWorld. Each dynamic body collects its
+        //    contact manifolds into its OWN row (m_contacts), so threads never write shared state:
+        //    manifold() is const and reads only the (already-synced) shapes + start-of-step poses.
+        //    1 point for most pairs; up to 8 corners for box/OBB-vs-plane so a flat box rests on a
+        //    balanced set of points instead of rocking on one.
+        #pragma omp parallel for schedule(guided) if(dyn.size() > 256)
+        for (size_t i = 0; i < dyn.size(); ++i) {
+            auto* a = dyn[i];
+            a->m_contacts.clear();
             if (a->m_asleep || a->m_invMass == 0.0f || !a->collider || !a->collider->Shape) continue;
             for (auto* other : colliders) {
                 if (other == a->collider || !other->Shape) continue;
@@ -136,34 +155,47 @@ public:
 
                 RigidBodyComponent3D* otherBody = other->owner->getComponent<RigidBodyComponent3D>();
                 const bool otherDynamic = otherBody && otherBody->m_invMass != 0.0f;
-                if (otherDynamic && a >= otherBody) continue;   // resolve dynamic pair once
+                // Resolve each AWAKE dynamic pair once (lower pointer drives). Don't defer to a
+                // SLEEPING otherBody — it's skipped as a driver, so the awake `a` must handle the
+                // pair itself (and resolve() wakes it), else the contact is dropped and a phases through.
+                if (otherDynamic && !otherBody->m_asleep && a >= otherBody) continue;
 
-                // Contact manifold (1 point for most pairs; up to 8 corners for box-vs-plane,
-                // so a flat box rests on balanced contacts instead of rocking on one point).
-                Contact contacts[8];
-                const int nc = a->collider->Shape->manifold(
+                ContactBatch batch;
+                batch.other = otherBody;
+                batch.nc = a->collider->Shape->manifold(
                     *other->Shape,
                     a->collider->position(), a->collider->scale(),
                     other->position(),       other->scale(),
-                    contacts, 8);
-                // Split the positional push-out across the contacts so N points don't over-correct.
-                const float posScale = (nc > 1) ? 1.0f / static_cast<float>(nc) : 1.0f;
-                // Sequential-impulse iterations: re-solve the manifold so the per-corner impulses
-                // converge (one pass leaves residual linear+angular velocity → drift/jitter).
-                // Position correction is applied only on the first iteration.
-                constexpr int kSolverIterations = 8;
-                for (int it = 0; it < kSolverIterations; ++it)
-                    for (int i = 0; i < nc; ++i)
-                        resolve(a, otherBody, contacts[i], posScale, it == 0);
+                    batch.contacts, 8);
+                if (batch.nc > 0) a->m_contacts.push_back(batch);
             }
         }
 
-        // Sleep pass — runs AFTER resolution, where a supported body's velocity is ~0 (the normal
-        // impulse cancelled the gravity velocity). A body that's been supported (m_hadContact) and
-        // below the speed thresholds for kSleepDelay is put to sleep: zeroed and skipped next step
-        // until a force/impulse or an incoming contact wakes it. Cheap: one pass, squared compares.
+        // 3. RESOLUTION — serial, and it MUST be: resolve() mutates BOTH bodies' velocity and
+        //    position, so two threads sharing an `other` would race. Same body/contact order as
+        //    the old interleaved loop, so resting behaviour is preserved (a body touching a single
+        //    collider — e.g. the box on the ground — is bit-for-bit identical; only a body hitting
+        //    several colliders at once now solves against start-of-step poses, the standard
+        //    detect-then-solve order). Sequential-impulse iterations converge the per-corner
+        //    impulses; the positional push-out is split across the manifold and applied once.
+        for (auto* a : dyn) {
+            for (const auto& batch : a->m_contacts) {
+                const float posScale = (batch.nc > 1) ? 1.0f / static_cast<float>(batch.nc) : 1.0f;
+                constexpr int kSolverIterations = 8;
+                for (int it = 0; it < kSolverIterations; ++it)
+                    for (int i = 0; i < batch.nc; ++i)
+                        resolve(a, batch.other, batch.contacts[i], posScale, it == 0);
+            }
+        }
+
+        // 4. Sleep pass — runs AFTER resolution, where a supported body's velocity is ~0 (the normal
+        //    impulse cancelled the gravity velocity). A body that's been supported (m_hadContact) and
+        //    below the speed thresholds for kSleepDelay is put to sleep: zeroed and skipped next step
+        //    until a force/impulse or an incoming contact wakes it. Per-body → parallel-safe.
         constexpr float kLinSleepSq = 0.05f * 0.05f, kAngSleepSq = 0.06f * 0.06f, kSleepDelay = 0.4f;
-        for (auto* b : dyn) {
+        #pragma omp parallel for schedule(static) if(dyn.size() > 256)
+        for (size_t i = 0; i < dyn.size(); ++i) {
+            auto* b = dyn[i];
             if (b->m_asleep) continue;
             const float linSq = glm::dot(b->Velocity, b->Velocity);
             const float angSq = glm::dot(b->AngularVelocity, b->AngularVelocity);
@@ -187,6 +219,16 @@ private:
     bool      m_hadContact = false;      // got a contact this step (supported => may sleep)
     bool      m_asleep     = false;      // skips integration + resolution until woken
     float     m_sleepTimer = 0.0f;       // seconds spent supported + below the sleep thresholds
+
+    // Per-body contact scratch: filled in the PARALLEL detection phase (each body writes only
+    // its own row, so no locking), drained in the SERIAL resolution phase. cleared() — not freed —
+    // each step so the capacity is reused. Contact[8] matches the manifold cap (box/OBB corners).
+    struct ContactBatch {
+        RigidBodyComponent3D* other;     // the other body; null for a bare/static collider
+        int     nc;                      // contact count in this manifold
+        Contact contacts[8];
+    };
+    std::vector<ContactBatch> m_contacts;
 
     glm::vec3 defaultCenterOfMass() const { return glm::vec3(0.0f); }
 

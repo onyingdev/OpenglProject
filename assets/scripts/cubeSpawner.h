@@ -45,7 +45,7 @@ public:
     std::string cubePrefab = "assets/gameObjects/rigid_box.json";
     std::string targetScene = "physics_level";    // scene name from the manifest, use owner
     std::string spawnAction = "SpawnCube";
-    float spawnDistance = 2.0f;            // offset along camera forward so it isn't inside the lens
+    float spawnDistance = 4.0f;            // offset along camera forward so it isn't inside the lens
     float launchSpeed   = 0.0f;            // >0 throws the cube along the camera forward
 
     void deserialize(const nlohmann::json& j, LoadContext&) override {
