@@ -8,6 +8,7 @@
 #include <glm/gtc/quaternion.hpp>
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <vector>
 #ifdef _OPENMP
 #include <omp.h>
@@ -37,6 +38,10 @@ class RigidBodyComponent3D : public SpatialComponent3D {
 
 public:
     enum class Simulation { Simple, Complex };
+
+    // Per-frame state dump of awake bodies in stepWorld(). When false the print block is skipped
+    // entirely — zero overhead, no output. Flip to false to silence; set in code or via a toggle.
+    inline static bool DebugPrint = true;
 
     float      Mass            = 1.0f;        // <= 0 or Static => infinite mass (immovable)
     float      Friction        = 0.5f;        // Coulomb (sliding) coefficient — combined geo mean
@@ -178,13 +183,41 @@ public:
         //    several colliders at once now solves against start-of-step poses, the standard
         //    detect-then-solve order). Sequential-impulse iterations converge the per-corner
         //    impulses; the positional push-out is split across the manifold and applied once.
-        for (auto* a : dyn) {
-            for (const auto& batch : a->m_contacts) {
-                const float posScale = (batch.nc > 1) ? 1.0f / static_cast<float>(batch.nc) : 1.0f;
-                constexpr int kSolverIterations = 8;
-                for (int it = 0; it < kSolverIterations; ++it)
+        //    A body can have SEVERAL manifolds at once (e.g. a box resting on the ground WITH a box
+        //    on top of it), and in a stack those manifolds span multiple driver bodies. They must
+        //    be solved TOGETHER, so the iteration loop is the OUTERMOST loop and cycles over EVERY
+        //    contact each pass (global sequential impulse). Solving one manifold to convergence
+        //    before the next lets them fight — the box-on-top impulse undoes the ground solution
+        //    every step, so the stack never settles and the top box spins up. Position correction
+        //    (Baumgarte) is applied once per contact, on the first iteration only.
+        constexpr int kSolverIterations = 8;
+        for (int it = 0; it < kSolverIterations; ++it)
+            for (auto* a : dyn)
+                for (const auto& batch : a->m_contacts) {
+                    const float posScale = (batch.nc > 1) ? 1.0f / static_cast<float>(batch.nc) : 1.0f;
                     for (int i = 0; i < batch.nc; ++i)
                         resolve(a, batch.other, batch.contacts[i], posScale, it == 0);
+                }
+
+        // Debug: dump the state of every AWAKE (non-resting) body. Gated by DebugPrint — when it's
+        // false this whole block is skipped, so it leaves no footprint (no I/O, no counter tick).
+        // Runs after resolution (velocities are post-solve) and before the sleep pass clears the
+        // contact flags, so `pairs`/`nc` reflect this step. Throttled so it stays readable.
+        if (DebugPrint) {
+            static int s_dbgTick = 0;
+            constexpr int kEvery = 6;                  // ~10 dumps/sec at a 60 Hz step
+            if (s_dbgTick++ % kEvery == 0) {
+                for (auto* b : dyn) {
+                    if (b->m_asleep) continue;         // only non-resting bodies
+                    int nc = 0; for (const auto& bt : b->m_contacts) nc += bt.nc;
+                    const glm::vec3 p = b->position();
+                    std::cout << "[phys] " << b->owner->Name
+                              << " pos(" << p.x << ", " << p.y << ", " << p.z << ")"
+                              << " |v|="  << glm::length(b->Velocity)
+                              << " |w|="  << glm::length(b->AngularVelocity)
+                              << " pairs=" << b->m_contacts.size()
+                              << " nc="    << nc << "\n";
+                }
             }
         }
 
