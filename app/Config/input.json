@@ -11,6 +11,7 @@
     "IncreaseAttenuation": "Up",
     "DecreaseAttenuation": "Down",
     "ReloadScenes": "R",
-    "ToggleColliders": "F1"
+    "ToggleColliders": "F1",
+    "SpawnCube": "Space"
   }
 }

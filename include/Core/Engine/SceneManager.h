@@ -163,6 +163,18 @@ public:
     // --- access / queries ---
 
     Scene* getScene(const std::string& name) {
+        // std::cout << "=== DEBUG: m_scenes (" << m_scenes.size() << " entries) ===\n";
+        // for (const auto& [key, entry] : m_scenes) {
+        //     std::cout << "Map Key:  \"" << key << "\"\n";
+        //     std::cout << "  Active: " << (entry.active ? "true" : "false") << "\n";
+            
+        //     if (entry.scene) {
+        //         std::cout << "  Scene->Name: \"" << entry.scene->Name << "\"\n";
+        //     } else {
+        //         std::cout << "  Scene->Name: [NULL POINTER]\n";
+        //     }
+        // }
+        // std::cout << "======================================\n";
         auto it = m_scenes.find(name);
         return it == m_scenes.end() ? nullptr : it->second.scene.get();
     }
