@@ -39,8 +39,8 @@
 // This version drops sleep and the authored center of mass (CoM is the shape centroid = origin).
 // The lifecycle-timer fields are PARSED but not yet acted on (behavior comes later).
 //
-// JSON: { "type": "RigidBody3D", "mass": 1.0, "friction": 0.5, "restitution": 0.1,
-//         "drag": 0.05, "angularDrag": 0.05, "static": false, "useGravity": true,
+// JSON: { "type": "RigidBody3D", "mass": 1.0, "friction": 0.5, "rollingFriction": 0.05,
+//         "restitution": 0.1, "drag": 0.05, "angularDrag": 0.05, "static": false, "useGravity": true,
 //         "gravity": [0,-9.81,0], "simulation": "simple"|"complex",
 //         "layer": 1, "mask": 4294967295,
 //         "shape": { "kind": "obb", "halfExtents": [0.5,0.5,0.5] },
@@ -55,10 +55,10 @@ public:
     enum class TimerStart { Spawn, Contact };
 
     // Per-frame state dump (awake bodies). Zero overhead when false.
-    inline static bool DebugPrint = false;
+    inline static bool DebugPrint = true;
     // Phase timing: averaged ms for detection vs solve vs total, printed periodically. Lets you see
     // whether the narrowphase (parallel) or the serial PGS solve dominates the physics step.
-    inline static bool DebugTimings = true;
+    inline static bool DebugTimings = false;
 
     // --- collision surface (merged collider) ---
     std::unique_ptr<ColliderShape> Shape;
@@ -68,6 +68,7 @@ public:
     // --- dynamics ---
     float      Mass        = 1.0f;            // <= 0 or Static => infinite mass (immovable)
     float      Friction    = 0.5f;            // Coulomb coefficient — combined by geometric mean
+    float      RollingFriction = 0.05f;       // rolling resistance — damps spin so rollers (spheres) stop
     float      Restitution = 0.1f;            // bounciness [0,1], only above an impact-speed threshold
     float      Drag        = 0.05f;           // linear velocity damping
     float      AngularDrag = 0.05f;           // angular velocity damping (Complex)
@@ -102,6 +103,7 @@ public:
     void deserialize(const nlohmann::json& j, LoadContext&) override {
         Mass        = j.value("mass",        Mass);
         Friction    = j.value("friction",    Friction);
+        RollingFriction = j.value("rollingFriction", RollingFriction);
         Restitution = j.value("restitution", Restitution);
         Drag        = j.value("drag",        Drag);
         AngularDrag = j.value("angularDrag", AngularDrag);
@@ -260,6 +262,20 @@ public:
         for (int it = 0; it < kVelIterations; ++it)
             for (auto& c : constraints) { solveNormal(c); solveFriction(c); }
 
+        // Rolling resistance — the PHYSICAL roll-stopper: it damps the spin only on contact, scaled by
+        // the normal impulse, so a rolling ball slows smoothly (sliding friction can't — a pure roll
+        // has zero slip). Use the AVERAGE of the two coefficients, not a geometric mean: that way
+        // raising the ball's rollingFriction controls the stop distance directly, without being capped
+        // by the ground's. (angularDrag also bleeds spin, but it's air-resistance — it acts mid-air
+        // too; prefer rollingFriction for ground rolling and keep angularDrag small.)
+        for (auto& c : constraints) {
+            const float muRoll = 0.5f * (c.A->RollingFriction + c.B->RollingFriction);
+            if (muRoll <= 0.0f) continue;
+            const float budget = muRoll * c.lambdaN;
+            c.A->applyRollingResistance(c.rA, budget);
+            c.B->applyRollingResistance(c.rB, budget);
+        }
+
         // Store the converged impulses for next frame's warm start (fresh map drops stale contacts).
         auto& cache = impulseCache();
         cache.clear();
@@ -314,14 +330,20 @@ public:
         if (DebugPrint) {
             static int tick = 0;
             if (tick++ % 6 == 0)
-                for (auto* b : world)
-                    if (b->m_invMass != 0.0f) {
-                        const glm::vec3 p = b->position();
-                        std::cout << "[phys2] " << b->owner->Name
-                                  << " pos(" << p.x << ", " << p.y << ", " << p.z << ")"
-                                  << " |v|=" << glm::length(b->Velocity)
-                                  << " |w|=" << glm::length(b->AngularVelocity) << "\n";
-                    }
+                for (auto* b : world) {
+                    if (b->m_invMass == 0.0f) continue;
+                    // Sum the support impulse + contact count for this body — lambdaN is what budgets
+                    // BOTH friction (mu*lambdaN) and rolling resistance (muRoll*lambdaN), so if it's ~0
+                    // those params can't bite. For a roller, |w|*r ~= |v| means it's actually rolling.
+                    float lamN = 0.0f; int nc = 0;
+                    for (const auto& c : constraints) if (c.A == b || c.B == b) { lamN += c.lambdaN; ++nc; }
+                    const glm::vec3 p = b->position();
+                    std::cout << "[phys2] " << b->owner->Name
+                              << " pos(" << p.x << ", " << p.y << ", " << p.z << ")"
+                              << " |v|=" << glm::length(b->Velocity)
+                              << " |w|=" << glm::length(b->AngularVelocity)
+                              << " nc=" << nc << " lambdaN=" << lamN << "\n";
+                }
         }
     }
 
@@ -396,6 +418,20 @@ private:
     void applyImpulseAtArm(const glm::vec3& P, const glm::vec3& r) {
         Velocity += P * m_invMass;
         AngularVelocity += m_invInertiaWorld * glm::cross(r, P);
+    }
+
+    // Rolling resistance: a bounded counter-impulse opposing spin so a roller (sphere) slows and
+    // stops — sliding friction alone can't, since a pure roll has zero slip at the contact point.
+    // `budget` (= muRoll * normalImpulse) is scaled by the lever arm and never overshoots past zero.
+    void applyRollingResistance(const glm::vec3& r, float budget) {
+        const float wl = glm::length(AngularVelocity);
+        if (wl < 1e-6f) return;
+        const glm::vec3 axis = AngularVelocity / wl;
+        const float invEff = glm::dot(axis, m_invInertiaWorld * axis);   // 1 / I about the spin axis
+        if (invEff < 1e-8f) return;
+        const float stopImpulse = wl / invEff;                           // angular impulse to fully stop
+        const float maxImpulse  = budget * glm::length(r);
+        AngularVelocity -= axis * (std::min(stopImpulse, maxImpulse) * invEff);
     }
 
     static glm::vec3 pointVel(const RigidBodyComponent3D* b, const glm::vec3& r) {
@@ -504,28 +540,30 @@ private:
         c.B->applyImpulseAtArm( P, c.rB);
     }
 
-    // Boxed Coulomb friction on both tangents, clamped to +/- mu * accumulated normal impulse.
+    // Coulomb friction on both tangents, clamped to the friction CONE: the COMBINED tangent impulse
+    // magnitude is limited to mu * lambdaN (a disk), not each tangent independently (a square). The
+    // square ("box") version over-applies friction along the diagonal, so a diagonally-sliding body
+    // gets dragged toward a tangent axis — on a plane the tangents are world X/Z, so boxes visibly
+    // "snap" to those axes. The cone is isotropic: friction opposes the actual slide direction.
     static void solveFriction(ContactConstraint& c) {
-        const float mu = std::sqrt(std::max(0.0f, c.A->Friction * c.B->Friction));
-        const float limit = mu * c.lambdaN;
-        // tangent 1
-        {
-            const float vt = glm::dot(pointVel(c.B, c.rB) - pointVel(c.A, c.rA), c.t1);
-            const float old = c.lambdaT1;
-            c.lambdaT1 = glm::clamp(old - vt * c.tanMass1, -limit, limit);
-            const glm::vec3 P = (c.lambdaT1 - old) * c.t1;
-            c.A->applyImpulseAtArm(-P, c.rA);
-            c.B->applyImpulseAtArm( P, c.rB);
+        const float mu   = std::sqrt(std::max(0.0f, c.A->Friction * c.B->Friction));
+        const float maxF = mu * c.lambdaN;
+        const glm::vec3 vrel = pointVel(c.B, c.rB) - pointVel(c.A, c.rA);
+
+        float newT1 = c.lambdaT1 - glm::dot(vrel, c.t1) * c.tanMass1;
+        float newT2 = c.lambdaT2 - glm::dot(vrel, c.t2) * c.tanMass2;
+
+        // Clamp the (t1, t2) impulse vector into the disk of radius maxF.
+        const float mag = std::sqrt(newT1 * newT1 + newT2 * newT2);
+        if (mag > maxF && mag > 1e-12f) {
+            const float s = maxF / mag;
+            newT1 *= s; newT2 *= s;
         }
-        // tangent 2
-        {
-            const float vt = glm::dot(pointVel(c.B, c.rB) - pointVel(c.A, c.rA), c.t2);
-            const float old = c.lambdaT2;
-            c.lambdaT2 = glm::clamp(old - vt * c.tanMass2, -limit, limit);
-            const glm::vec3 P = (c.lambdaT2 - old) * c.t2;
-            c.A->applyImpulseAtArm(-P, c.rA);
-            c.B->applyImpulseAtArm( P, c.rB);
-        }
+
+        const glm::vec3 P = (newT1 - c.lambdaT1) * c.t1 + (newT2 - c.lambdaT2) * c.t2;
+        c.lambdaT1 = newT1; c.lambdaT2 = newT2;
+        c.A->applyImpulseAtArm(-P, c.rA);
+        c.B->applyImpulseAtArm( P, c.rB);
     }
 
     // Split-impulse: push the pair apart along the normal using PSEUDO velocities (never the real
