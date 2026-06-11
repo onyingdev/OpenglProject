@@ -1,180 +1,349 @@
 #pragma once
 #include "Core/Components/SpatialComponent3D.h"
+#include "Core/Components/ColliderShapes.h"      // shared shape geometry + manifold() + Contact
 #include "Core/Engine/Services/ComponentRegistry.h"
 #include "Core/Engine/Helpers/JsonHelpers.h"
 #include "Components/Rendering/MeshComponent.h"
-#include "Components/Physics/ColliderComponent3D.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <chrono>
+#include <iostream>
+#include <memory>
+#include <unordered_map>
 #include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
-// RigidBody 3D. A spatial component backed by a Collider (its surface), a Mesh, a mass and
-// (optionally) angular dynamics. Two per-body simulation modes:
-//   - Simple  (default): LINEAR only — gravity, drag, forces/impulses, contact resolution at
-//                        the body center. Cheap; the right choice for most gameplay objects.
-//   - Complex: adds ANGULAR dynamics — an inverse-inertia tensor, torque, angular velocity +
-//                        quaternion integration, and contact impulses applied at the contact
-//                        point (so collisions/friction induce spin & rolling).
-// The two share ONE solver: simple bodies keep inverse-inertia zero, which collapses the
-// angular impulse math back to the linear case, so simple-mode behavior is identical to before.
+// first iteration: [phys2] N=256  detect=6.01731ms  solve=28.5125ms  total=34.5298ms  (12 threads)
+
+// RigidBody 3D (v2) — the rework. Differs from OldRigidBodyComponent3D ("OldRigidBody3D") in two
+// fundamental ways:
 //
-// TRANSFORM AUTHORITY: body/collider/mesh all follow the owner TransformComponent3D via
-// useOwnerPosition()/useOwnerOrientation(); the integrator writes Position and Orientation
-// (quaternion) there, so collider detection and the rendered mesh track the physics pose.
+//   1. MERGED COLLIDER. The body owns its own collision SURFACE (a ColliderShape + layer/mask) and
+//      runs its own narrowphase, so a physics object is just Transform + Mesh + RigidBody3D (no
+//      separate Collider). The old ColliderComponent3D stays for HurtBox/legacy.
 //
-// JSON: { "type": "RigidBody3D", "mass": 1.0, "friction": 0.5, "drag": 0.05,
-//         "restitution": 0.3, "static": false, "useGravity": true, "gravity": [0,-9.81,0],
-//         "simulation": "simple"|"complex", "angularDrag": 0.05,
-//         "centerOfMass": [0,0,0], "initialVelocity": [0,0,0], "initialAngularVelocity": [0,0,0] }
+//   2. ACCUMULATED-IMPULSE PGS SOLVER. Multi-contact resolution is a proper velocity LCP solved by
+//      Projected Gauss-Seidel: each contact keeps a RUNNING normal impulse lambda, clamped >= 0,
+//      and only the DELTA is applied each iteration. That converges to a consistent set of contact
+//      forces that sum to zero, so a resting pile actually comes to rest instead of jittering (the
+//      old solver recomputed each impulse from scratch every iteration and never converged).
+//      Penetration is removed by a SEPARATE split-impulse (pseudo-velocity) position pass, so fixing
+//      overlap never injects energy back into the real velocity. Boxed Coulomb friction is solved in
+//      the same loop, coupled to the accumulated normal impulse.
+//
+// This version drops sleep and the authored center of mass (CoM is the shape centroid = origin).
+// The lifecycle-timer fields are PARSED but not yet acted on (behavior comes later).
+//
+// JSON: { "type": "RigidBody3D", "mass": 1.0, "friction": 0.5, "rollingFriction": 0.05,
+//         "restitution": 0.1, "drag": 0.05, "angularDrag": 0.05, "static": false, "useGravity": true,
+//         "gravity": [0,-9.81,0], "simulation": "simple"|"complex",
+//         "layer": 1, "mask": 4294967295,
+//         "shape": { "kind": "obb", "halfExtents": [0.5,0.5,0.5] },
+//         "initialVelocity": [0,0,0], "initialAngularVelocity": [0,0,0],
+//         "ttl": -1, "ttlStart": "spawn"|"contact",          // PLACED, not implemented yet
+//         "freezeAfter": -1, "freezeStart": "spawn"|"contact" }
 class RigidBodyComponent3D : public SpatialComponent3D {
-    MeshComponent*       mesh     = nullptr;
-    ColliderComponent3D* collider = nullptr; // the body's surface; required
+    MeshComponent* mesh = nullptr;
 
 public:
     enum class Simulation { Simple, Complex };
+    enum class TimerStart { Spawn, Contact };
 
-    float      Mass            = 1.0f;        // <= 0 or Static => infinite mass (immovable)
-    float      Friction        = 0.5f;        // Coulomb (sliding) coefficient — combined geo mean
-    float      RollingFriction = 0.05f;       // rolling resistance — damps spin so rollers stop (Complex)
-    float      Drag            = 0.1f;        // linear drag
-    float      AngularDrag     = 0.05f;       // angular drag (Complex only)
-    float      Restitution = 0.3f;            // bounciness [0,1]
-    bool       Static      = false;           // immovable: no integration, infinite mass
+    // Per-frame state dump (awake bodies). Zero overhead when false.
+    inline static bool DebugPrint = false;
+    // Phase timing: averaged ms for detection vs solve vs total, printed periodically. Lets you see
+    // whether the narrowphase (parallel) or the serial PGS solve dominates the physics step.
+    inline static bool DebugTimings = false;
+
+    // --- collision surface (merged collider) ---
+    std::unique_ptr<ColliderShape> Shape;
+    uint32_t Layer = 0x1;
+    uint32_t Mask  = 0xFFFFFFFF;
+
+    // --- dynamics ---
+    float      Mass        = 1.0f;            // <= 0 or Static => infinite mass (immovable)
+    float      Friction    = 0.5f;            // Coulomb coefficient — combined by geometric mean
+    float      RollingFriction = 0.05f;       // rolling resistance — damps spin so rollers (spheres) stop
+    float      Restitution = 0.1f;            // bounciness [0,1], only above an impact-speed threshold
+    float      Drag        = 0.05f;           // linear velocity damping
+    float      AngularDrag = 0.05f;           // angular velocity damping (Complex)
+    bool       Static      = false;           // immovable world geometry
     bool       UseGravity  = true;
-    bool       AllowSleep  = true;            // may this body go to sleep when it comes to rest?
-    Simulation Mode        = Simulation::Simple;
+    Simulation Mode        = Simulation::Complex;   // v2 defaults to full angular dynamics
     glm::vec3  Gravity{0.0f, -9.81f, 0.0f};
-    glm::vec3  CenterOfMass{0.0f};            // local offset from position (force application point)
-    glm::vec3  Velocity{0.0f};                // linear velocity
-    glm::vec3  AngularVelocity{0.0f};         // world angular velocity (Complex only)
+    glm::vec3  Velocity{0.0f};
+    glm::vec3  AngularVelocity{0.0f};
 
-    // --- force / impulse API -----------------------------------------------------
-    // Any external energy wakes the body so it resumes simulating.
-    void  AddForce(const glm::vec3& f)   { wake(); m_forceAccumulator += f; }
-    void  AddImpulse(const glm::vec3& j) { wake(); Velocity += j * m_invMass; }
-    void  AddTorque(const glm::vec3& t)  { wake(); m_torqueAccumulator += t; }
-    void  SetVelocity(const glm::vec3& v){ wake(); Velocity = v; }
+    // --- lifecycle timers (placed; behavior implemented later) ---
+    float      TTL         = -1.0f;
+    float      FreezeAfter = -1.0f;
+    TimerStart TtlStart    = TimerStart::Spawn;
+    TimerStart FreezeStart = TimerStart::Spawn;
 
-    // Force at a world point: linear force + torque about the center of mass. The torque term
-    // is a no-op for Simple bodies (inverse-inertia is zero).
-    void  AddForceAtPosition(const glm::vec3& f, const glm::vec3& worldPos) {
-        AddForce(f);   // wakes
+    // --- force / impulse API ---
+    void AddForce(const glm::vec3& f)            { m_forceAccumulator += f; }
+    void AddImpulse(const glm::vec3& j)          { Velocity += j * m_invMass; }
+    void AddTorque(const glm::vec3& t)           { m_torqueAccumulator += t; }
+    void SetVelocity(const glm::vec3& v)         { Velocity = v; }
+    void AddForceAtPosition(const glm::vec3& f, const glm::vec3& worldPos) {
+        m_forceAccumulator  += f;
         m_torqueAccumulator += glm::cross(worldPos - worldCenter(), f);
     }
-    // Instantaneous impulse at a world point: changes both linear and angular velocity.
-    void  AddImpulseAtPoint(const glm::vec3& P, const glm::vec3& worldPos) {
-        wake();
+    void AddImpulseAtPoint(const glm::vec3& P, const glm::vec3& worldPos) {
         applyImpulseAtArm(P, worldPos - worldCenter());
     }
-
-    // Sleep control. A sleeping body skips integration and resolution until something disturbs it.
-    void  wake()            { m_asleep = false; m_sleepTimer = 0.0f; }
-    bool  isAsleep() const  { return m_asleep; }
 
     float inverseMass() const { return m_invMass; }
 
     void deserialize(const nlohmann::json& j, LoadContext&) override {
-        Mass            = j.value("mass",            Mass);
-        Friction        = j.value("friction",        Friction);
+        Mass        = j.value("mass",        Mass);
+        Friction    = j.value("friction",    Friction);
         RollingFriction = j.value("rollingFriction", RollingFriction);
-        Drag            = j.value("drag",            Drag);
-        AngularDrag     = j.value("angularDrag",     AngularDrag);
-        Restitution  = j.value("restitution", Restitution);
-        Static       = j.value("static",      Static);
-        UseGravity   = j.value("useGravity",  UseGravity);
-        AllowSleep   = j.value("allowSleep",  AllowSleep);
-        // "simulation" (canonical) or "mode" (alias): "simple" (default) | "complex".
-        const std::string sim = j.value("simulation", j.value("mode", std::string{"simple"}));
-        if (sim == "complex") Mode = Simulation::Complex;
+        Restitution = j.value("restitution", Restitution);
+        Drag        = j.value("drag",        Drag);
+        AngularDrag = j.value("angularDrag", AngularDrag);
+        Static      = j.value("static",      Static);
+        UseGravity  = j.value("useGravity",  UseGravity);
+        const std::string sim = j.value("simulation", j.value("mode", std::string{"complex"}));
+        Mode = (sim == "simple") ? Simulation::Simple : Simulation::Complex;
         Gravity         = jsonVec3(j.value("gravity",                nlohmann::json{}), Gravity);
-        CenterOfMass    = jsonVec3(j.value("centerOfMass",           nlohmann::json{}), CenterOfMass);
         Velocity        = jsonVec3(j.value("initialVelocity",        nlohmann::json{}), Velocity);
         AngularVelocity = jsonVec3(j.value("initialAngularVelocity", nlohmann::json{}), AngularVelocity);
+
+        if (j.contains("layer")) Layer = j["layer"].get<uint32_t>();
+        if (j.contains("mask"))  Mask  = j["mask"].get<uint32_t>();
+        parseShape(j);
+
+        // Timer fields: parsed and stored, but not yet acted on.
+        TTL         = j.value("ttl",         TTL);
+        FreezeAfter = j.value("freezeAfter", FreezeAfter);
+        TtlStart    = parseStart(j.value("ttlStart",    std::string{"spawn"}));
+        FreezeStart = parseStart(j.value("freezeStart", std::string{"spawn"}));
     }
 
     void start() override {
         SpatialComponent3D::start();
         mesh = owner->getComponent<MeshComponent>();
-        if (!mesh) ComponentWarning::missing("RigidBodyComponent3D", "MeshComponent");
-        collider = owner->getComponent<ColliderComponent3D>();
-        if (!collider) throw MissingComponentException("RigidBodyComponent3D", "ColliderComponent3D");
+        if (!Shape) throw MissingComponentException("RigidBodyComponent3D", "shape");
 
-        // One authoritative transform: position + quaternion orientation on the GameObject.
-        this->useOwnerPosition();      this->useOwnerOrientation();
-        collider->useOwnerPosition();  collider->useOwnerOrientation();
+        // One authoritative transform: the body, its shape, and the mesh all follow the owner.
+        this->useOwnerPosition();  this->useOwnerOrientation();
         if (mesh) { mesh->useOwnerPosition(); mesh->useOwnerOrientation(); }
 
         m_invMass = (Static || Mass <= 0.0f) ? 0.0f : 1.0f / Mass;
-        if (CenterOfMass == glm::vec3(0.0f)) CenterOfMass = defaultCenterOfMass();
-        m_invInertiaLocal = computeInvInertiaLocal();   // zero for Simple/Static/plane
-
-        (Static ? staticBodies() : dynamicBodies()).push_back(this);
+        m_invInertiaLocal = computeInvInertiaLocal();
+        bodies().push_back(this);
     }
 
     ~RigidBodyComponent3D() override {
-        auto& list = (Static ? staticBodies() : dynamicBodies());
+        auto& list = bodies();
         list.erase(std::remove(list.begin(), list.end(), this), list.end());
     }
 
-    // One fixed physics slice. The DYNAMIC world (dynamicBodies()) integrates and drives
-    // resolution; the STATIC world (static bodies + bare colliders, reached via the collider
-    // registry) is immovable and never integrates. Static x static is never tested because the
-    // outer loop is dynamic-only. Call from the engine's fixed-timestep accumulator.
+    static const std::vector<RigidBodyComponent3D*>& world() { return bodies(); }
+
+    // One fixed physics slice for the NEW world. Pipeline:
+    //   1. integrate velocities (gravity/forces, drag)   2. sync shapes
+    //   3. narrowphase -> contact constraints             4. velocity LCP (PGS: normal + friction)
+    //   5. integrate positions                            6. split-impulse position correction
     static void stepWorld(float dt) {
-        auto& dyn = dynamicBodies();
-        for (auto* b : dyn) b->integrate(dt);
+        auto& world = bodies();
+        const size_t n = world.size();
+        if (n == 0) return;
 
-        const auto& colliders = ColliderComponent3D::colliders();
-        for (auto* c : colliders) c->syncShape();   // refresh OBB/ball orientations + plane normals
-        for (auto* a : dyn) {
-            if (a->m_asleep || a->m_invMass == 0.0f || !a->collider || !a->collider->Shape) continue;
-            for (auto* other : colliders) {
-                if (other == a->collider || !other->Shape) continue;
-                if (!ColliderComponent3D::masksOverlap(a->collider, other)) continue;
+        // Detection (O(N^2)) parallelizes at a LOW body count so it engages early; the cheap
+        // per-body O(N) loops only pay for the thread fork/join at larger N. Tune to your cores.
+        constexpr size_t kParDetect = 32;
+        constexpr size_t kParBody   = 256;
 
-                RigidBodyComponent3D* otherBody = other->owner->getComponent<RigidBodyComponent3D>();
-                const bool otherDynamic = otherBody && otherBody->m_invMass != 0.0f;
-                if (otherDynamic && a >= otherBody) continue;   // resolve dynamic pair once
+#ifdef _OPENMP
+        // Read the CPU's hardware thread count from OpenMP ONCE and use all of them for the parallel
+        // regions: omp_get_num_procs() is the logical CPU thread count (e.g. 12), and
+        // omp_set_num_threads() makes every parallel-for below default to that team size (overriding
+        // any environment default).
+        static const int kThreads = []{
+            const int t = omp_get_num_procs();
+            omp_set_num_threads(t);
+            return t;
+        }();
 
-                // Contact manifold (1 point for most pairs; up to 8 corners for box-vs-plane,
-                // so a flat box rests on balanced contacts instead of rocking on one point).
-                Contact contacts[8];
-                const int nc = a->collider->Shape->manifold(
-                    *other->Shape,
-                    a->collider->position(), a->collider->scale(),
-                    other->position(),       other->scale(),
-                    contacts, 8);
-                // Split the positional push-out across the contacts so N points don't over-correct.
-                const float posScale = (nc > 1) ? 1.0f / static_cast<float>(nc) : 1.0f;
-                // Sequential-impulse iterations: re-solve the manifold so the per-corner impulses
-                // converge (one pass leaves residual linear+angular velocity → drift/jitter).
-                // Position correction is applied only on the first iteration.
-                constexpr int kSolverIterations = 8;
-                for (int it = 0; it < kSolverIterations; ++it)
-                    for (int i = 0; i < nc; ++i)
-                        resolve(a, otherBody, contacts[i], posScale, it == 0);
+        // Announce when the parallel narrowphase switches on/off — only on the transition (crossing
+        // kParDetect), so it isn't spammy.
+        {
+            static bool s_wasParallel = false;
+            const bool parallel = n > kParDetect;
+            if (parallel != s_wasParallel) {
+                std::cout << "[phys2] narrowphase multithreading " << (parallel ? "ON" : "OFF")
+                          << " (bodies=" << n << ", CPU threads=" << kThreads << ")\n";
+                s_wasParallel = parallel;
+            }
+        }
+#endif
+
+        const auto _tStart = std::chrono::high_resolution_clock::now();
+
+        // 1. Integrate velocities only (pose advances in step 5). Reset per-step solver state.
+        //    Per-body independent → parallel.
+        #pragma omp parallel for schedule(static) if(n > kParBody)
+        for (size_t i = 0; i < n; ++i) {
+            auto* b = world[i];
+            b->m_biasVel = glm::vec3(0.0f);
+            b->m_biasAngVel = glm::vec3(0.0f);
+            if (b->m_invMass == 0.0f) { b->m_forceAccumulator = glm::vec3(0.0f); b->m_torqueAccumulator = glm::vec3(0.0f); continue; }
+            b->Velocity += (b->m_forceAccumulator * b->m_invMass + (b->UseGravity ? b->Gravity : glm::vec3(0.0f))) * dt;
+            b->Velocity *= glm::clamp(1.0f - b->Drag * dt, 0.0f, 1.0f);
+            b->m_forceAccumulator = glm::vec3(0.0f);
+            // World inverse inertia from the current orientation (used by the solver this step).
+            const glm::mat3 R = glm::mat3_cast(b->orientation());
+            b->m_invInertiaWorld = R * b->m_invInertiaLocal * glm::transpose(R);
+            if (b->Mode == Simulation::Complex) {
+                b->AngularVelocity += (b->m_invInertiaWorld * b->m_torqueAccumulator) * dt;
+                b->AngularVelocity *= glm::clamp(1.0f - b->AngularDrag * dt, 0.0f, 1.0f);
+            }
+            b->m_torqueAccumulator = glm::vec3(0.0f);
+        }
+
+        // 2. Sync shape orientation (OBB axes / plane normal). Per-body independent → parallel.
+        #pragma omp parallel for schedule(static) if(n > kParBody)
+        for (size_t i = 0; i < n; ++i)
+            if (world[i]->Shape) world[i]->Shape->setOrientation(world[i]->orientation());
+
+        // 3. Narrowphase — PARALLEL. Each body fills its OWN row with the pairs it owns as the lower
+        //    index (so threads never write shared state); manifold() is const and everything read
+        //    (poses/velocities/inertia/warm-start cache) is stable here. Then a serial concat builds
+        //    the flat list in body order (deterministic regardless of thread scheduling).
+        #pragma omp parallel for schedule(guided) if(n > kParDetect)
+        for (size_t i = 0; i < n; ++i) {
+            RigidBodyComponent3D* A = world[i];
+            A->m_row.clear();
+            if (!A->Shape) continue;
+            for (size_t k = i + 1; k < n; ++k) {
+                RigidBodyComponent3D* B = world[k];
+                if (!B->Shape) continue;
+                if (A->m_invMass == 0.0f && B->m_invMass == 0.0f) continue;       // static vs static
+                if (!layerMaskOverlap(A->Layer, A->Mask, B->Layer, B->Mask)) continue;
+
+                // The DYNAMIC body drives the manifold so a box-vs-plane pair takes the box's
+                // per-corner manifold (not the plane's single-point fallback). Normal stays caller->other.
+                RigidBodyComponent3D* caller = (A->m_invMass != 0.0f) ? A : B;
+                RigidBodyComponent3D* other  = (caller == A) ? B : A;
+                Contact pts[8];
+                const int nc = caller->Shape->manifold(*other->Shape,
+                                                       caller->position(), caller->scale(),
+                                                       other->position(),  other->scale(), pts, 8);
+                for (int c = 0; c < nc; ++c) buildConstraint(caller, other, pts[c], c, A->m_row);
+            }
+        }
+        static std::vector<ContactConstraint> constraints;
+        constraints.clear();
+        for (size_t i = 0; i < n; ++i) {
+            auto& row = world[i]->m_row;
+            constraints.insert(constraints.end(), row.begin(), row.end());
+        }
+        const auto _tDetect = std::chrono::high_resolution_clock::now();
+
+        // 3b. Warm start — re-apply each contact's cached impulse so the solve starts near last
+        //     frame's solution (lambdaN reaches the true support force immediately → friction budget).
+        //     SERIAL (mutates shared bodies).
+        for (auto& c : constraints) {
+            const glm::vec3 P = c.lambdaN * c.n + c.lambdaT1 * c.t1 + c.lambdaT2 * c.t2;
+            c.A->applyImpulseAtArm(-P, c.rA);
+            c.B->applyImpulseAtArm( P, c.rB);
+        }
+
+        // 4. Velocity LCP — PGS. SERIAL: sequential impulses, accumulate-clamp-apply-delta per
+        //    contact; friction coupled to lambdaN. (A parallel solve would need mass-splitting.)
+        constexpr int kVelIterations = 12;
+        for (int it = 0; it < kVelIterations; ++it)
+            for (auto& c : constraints) { solveNormal(c); solveFriction(c); }
+
+        // Rolling resistance — the PHYSICAL roll-stopper: it damps the spin only on contact, scaled by
+        // the normal impulse, so a rolling ball slows smoothly (sliding friction can't — a pure roll
+        // has zero slip). Use the AVERAGE of the two coefficients, not a geometric mean: that way
+        // raising the ball's rollingFriction controls the stop distance directly, without being capped
+        // by the ground's. (angularDrag also bleeds spin, but it's air-resistance — it acts mid-air
+        // too; prefer rollingFriction for ground rolling and keep angularDrag small.)
+        for (auto& c : constraints) {
+            const float muRoll = 0.5f * (c.A->RollingFriction + c.B->RollingFriction);
+            if (muRoll <= 0.0f) continue;
+            const float budget = muRoll * c.lambdaN;
+            c.A->applyRollingResistance(c.rA, budget);
+            c.B->applyRollingResistance(c.rB, budget);
+        }
+
+        // Store the converged impulses for next frame's warm start (fresh map drops stale contacts).
+        auto& cache = impulseCache();
+        cache.clear();
+        for (auto& c : constraints) cache[c.key] = { c.lambdaN, c.lambdaT1, c.lambdaT2 };
+
+        // 5. Integrate positions from the (now consistent) velocities. Per-body → parallel.
+        #pragma omp parallel for schedule(static) if(n > kParBody)
+        for (size_t i = 0; i < n; ++i) {
+            auto* b = world[i];
+            if (b->m_invMass == 0.0f) continue;   // skip static
+            auto* tf = b->owner->getComponent<TransformComponent3D>();
+            tf->Position += b->Velocity * dt;
+            if (b->Mode == Simulation::Complex) integrateOrientation(tf->Orientation, b->AngularVelocity, dt);
+        }
+
+        // 6. Split-impulse position correction — pushes out the detected overlap using PSEUDO
+        //    velocities only, so the real velocity (and thus the resting state) is never disturbed.
+        //    The PGS loop is SERIAL; the final per-body bias integration is parallel.
+        constexpr int kPosIterations = 4;
+        for (int it = 0; it < kPosIterations; ++it)
+            for (auto& c : constraints) solvePosition(c, dt);
+        #pragma omp parallel for schedule(static) if(n > kParBody)
+        for (size_t i = 0; i < n; ++i) {
+            auto* b = world[i];
+            if (b->m_invMass == 0.0f) continue;
+            if (b->m_biasVel == glm::vec3(0.0f) && b->m_biasAngVel == glm::vec3(0.0f)) continue;
+            auto* tf = b->owner->getComponent<TransformComponent3D>();
+            tf->Position += b->m_biasVel * dt;
+            if (b->Mode == Simulation::Complex) integrateOrientation(tf->Orientation, b->m_biasAngVel, dt);
+        }
+
+        if (DebugTimings) {
+            const auto _tEnd = std::chrono::high_resolution_clock::now();
+            using ms = std::chrono::duration<double, std::milli>;
+            static double accDetect = 0, accSolve = 0, accTotal = 0; static int frames = 0;
+            accDetect += ms(_tDetect - _tStart).count();        // integrate + syncShape + narrowphase
+            accSolve  += ms(_tEnd    - _tDetect).count();       // warm-start + velocity/position PGS
+            accTotal  += ms(_tEnd    - _tStart).count();
+            if (++frames >= 60) {
+                std::cout << "[phys2] N=" << n
+                          << "  detect=" << (accDetect / frames) << "ms"
+                          << "  solve="  << (accSolve  / frames) << "ms"
+                          << "  total="  << (accTotal  / frames) << "ms"
+#ifdef _OPENMP
+                          << "  (" << kThreads << " threads)"
+#endif
+                          << "\n";
+                accDetect = accSolve = accTotal = 0.0; frames = 0;
             }
         }
 
-        // Sleep pass — runs AFTER resolution, where a supported body's velocity is ~0 (the normal
-        // impulse cancelled the gravity velocity). A body that's been supported (m_hadContact) and
-        // below the speed thresholds for kSleepDelay is put to sleep: zeroed and skipped next step
-        // until a force/impulse or an incoming contact wakes it. Cheap: one pass, squared compares.
-        constexpr float kLinSleepSq = 0.05f * 0.05f, kAngSleepSq = 0.06f * 0.06f, kSleepDelay = 0.4f;
-        for (auto* b : dyn) {
-            if (b->m_asleep) continue;
-            const float linSq = glm::dot(b->Velocity, b->Velocity);
-            const float angSq = glm::dot(b->AngularVelocity, b->AngularVelocity);
-            if (b->m_hadContact && linSq < kLinSleepSq && angSq < kAngSleepSq) b->m_sleepTimer += dt;
-            else                                                               b->m_sleepTimer = 0.0f;
-            if (b->AllowSleep && b->m_sleepTimer >= kSleepDelay) {
-                b->m_asleep = true;
-                b->Velocity = glm::vec3(0.0f);
-                b->AngularVelocity = glm::vec3(0.0f);
-            }
-            b->m_hadContact = false;   // reset; resolve() re-sets it this/next step
+        if (DebugPrint) {
+            static int tick = 0;
+            if (tick++ % 6 == 0)
+                for (auto* b : world) {
+                    if (b->m_invMass == 0.0f) continue;
+                    // Sum the support impulse + contact count for this body — lambdaN is what budgets
+                    // BOTH friction (mu*lambdaN) and rolling resistance (muRoll*lambdaN), so if it's ~0
+                    // those params can't bite. For a roller, |w|*r ~= |v| means it's actually rolling.
+                    float lamN = 0.0f; int nc = 0;
+                    for (const auto& c : constraints) if (c.A == b || c.B == b) { lamN += c.lambdaN; ++nc; }
+                    const glm::vec3 p = b->position();
+                    std::cout << "[phys2] " << b->owner->Name
+                              << " pos(" << p.x << ", " << p.y << ", " << p.z << ")"
+                              << " |v|=" << glm::length(b->Velocity)
+                              << " |w|=" << glm::length(b->AngularVelocity)
+                              << " nc=" << nc << " lambdaN=" << lamN << "\n";
+                }
         }
     }
 
@@ -182,34 +351,56 @@ private:
     glm::vec3 m_forceAccumulator{0.0f};
     glm::vec3 m_torqueAccumulator{0.0f};
     float     m_invMass = 1.0f;
-    glm::mat3 m_invInertiaLocal{0.0f};   // 0 => no angular response (Simple / Static / plane)
-    glm::mat3 m_invInertiaWorld{0.0f};   // refreshed each step from orientation
-    bool      m_hadContact = false;      // got a contact this step (supported => may sleep)
-    bool      m_asleep     = false;      // skips integration + resolution until woken
-    float     m_sleepTimer = 0.0f;       // seconds spent supported + below the sleep thresholds
+    glm::mat3 m_invInertiaLocal{0.0f};
+    glm::mat3 m_invInertiaWorld{0.0f};
+    glm::vec3 m_biasVel{0.0f};       // split-impulse pseudo linear velocity (position pass only)
+    glm::vec3 m_biasAngVel{0.0f};    // split-impulse pseudo angular velocity
 
-    glm::vec3 defaultCenterOfMass() const { return glm::vec3(0.0f); }
+    // CoM is the shape centroid (origin), so the world center of mass is just the position.
+    glm::vec3 worldCenter() const { return position(); }
 
-    // World center of mass (position + oriented local offset). CoM defaults to the origin.
-    glm::vec3 worldCenter() const {
-        return position() + glm::mat3_cast(orientation()) * CenterOfMass;
+    static TimerStart parseStart(const std::string& s) {
+        return s == "contact" ? TimerStart::Contact : TimerStart::Spawn;
     }
 
-    // Inverse inertia tensor in LOCAL (body) space, from the collider shape × mass. Zero for
-    // Simple/Static bodies and shapes without a sensible solid (plane), which keeps them linear.
+    // Parse the "shape" block — same vocabulary as ColliderComponent3D.
+    void parseShape(const nlohmann::json& j) {
+        if (!j.contains("shape")) return;
+        const nlohmann::json& s = j["shape"];
+        const std::string kind = s.value("kind", std::string{"box"});
+        if (kind == "box") {
+            Shape = std::make_unique<BoxShape>(s.contains("halfExtents") ? jsonVec3(s["halfExtents"], glm::vec3(0.5f)) : glm::vec3(0.5f));
+        } else if (kind == "obb") {
+            Shape = std::make_unique<OBBShape>(s.contains("halfExtents") ? jsonVec3(s["halfExtents"], glm::vec3(0.5f)) : glm::vec3(0.5f));
+        } else if (kind == "sphere") {
+            Shape = std::make_unique<SphereShape>(s.value("radius", 0.5f));
+        } else if (kind == "ball") {
+            Shape = std::make_unique<OrientedSphereShape>(s.value("radius", 0.5f));
+        } else if (kind == "plane") {
+            glm::vec3 n = s.contains("normal") ? jsonVec3(s["normal"], glm::vec3(0, 1, 0)) : glm::vec3(0, 1, 0);
+            const bool infinite = s.value("infinite", true);
+            const bool oneSided = s.value("oneSided", true);
+            glm::vec2 he{5.0f, 5.0f};
+            if (s.contains("halfExtents") && s["halfExtents"].is_array() && s["halfExtents"].size() >= 2)
+                he = { s["halfExtents"][0].get<float>(), s["halfExtents"][1].get<float>() };
+            Shape = std::make_unique<PlaneShape>(n, infinite, he, oneSided);
+        } else {
+            std::cerr << "[RigidBodyComponent3D] unknown shape kind: " << kind << "\n";
+        }
+    }
+
+    // Inverse inertia tensor in LOCAL space from shape x mass. Zero for Simple/Static/plane.
     glm::mat3 computeInvInertiaLocal() const {
-        if (Mode != Simulation::Complex || m_invMass == 0.0f || !collider || !collider->Shape)
-            return glm::mat3(0.0f);
-        ColliderShape* s = collider->Shape.get();
-        const glm::vec3 sc = collider->scale();
+        if (Mode != Simulation::Complex || m_invMass == 0.0f || !Shape) return glm::mat3(0.0f);
+        const glm::vec3 sc = scale();
         const float m = Mass;
-        switch (s->kind()) {
+        switch (Shape->kind()) {
             case ShapeKind::Box:
             case ShapeKind::OBB: {
-                const glm::vec3 he = (s->kind() == ShapeKind::Box)
-                    ? static_cast<BoxShape*>(s)->HalfExtents
-                    : static_cast<OBBShape*>(s)->HalfExtents;
-                const glm::vec3 w = 2.0f * he * sc;   // full extents
+                const glm::vec3 he = (Shape->kind() == ShapeKind::Box)
+                    ? static_cast<BoxShape*>(Shape.get())->HalfExtents
+                    : static_cast<OBBShape*>(Shape.get())->HalfExtents;
+                const glm::vec3 w = 2.0f * he * sc;
                 const float ix = (1.0f/12.0f) * m * (w.y*w.y + w.z*w.z);
                 const float iy = (1.0f/12.0f) * m * (w.x*w.x + w.z*w.z);
                 const float iz = (1.0f/12.0f) * m * (w.x*w.x + w.y*w.y);
@@ -217,52 +408,22 @@ private:
             }
             case ShapeKind::Sphere:
             case ShapeKind::Ball: {
-                const float r = static_cast<SphereShape*>(s)->Radius * sc.x;
+                const float r = static_cast<SphereShape*>(Shape.get())->Radius * sc.x;
                 const float i = (2.0f/5.0f) * m * r * r;
-                return glm::mat3(i > 0.0f ? 1.0f/i : 0.0f);   // (2/5)mr^2 * I, inverted
+                return glm::mat3(i > 0.0f ? 1.0f/i : 0.0f);
             }
-            default: return glm::mat3(0.0f);   // plane: treat as no rotational response
+            default: return glm::mat3(0.0f);
         }
     }
 
-    // Semi-implicit Euler. Writes Position always; for Complex bodies also integrates the
-    // orientation quaternion from angular velocity. Static bodies don't move.
-    void integrate(float dt) {
-        if (m_asleep) return;                                  // frozen: gravity can't perturb it
-        if (m_invMass == 0.0f) { m_forceAccumulator = glm::vec3(0.0f); m_torqueAccumulator = glm::vec3(0.0f); return; }
-
-        // Linear.
-        const glm::vec3 accel = m_forceAccumulator * m_invMass + (UseGravity ? Gravity : glm::vec3(0.0f));
-        Velocity += accel * dt;
-        Velocity *= glm::clamp(1.0f - Drag * dt, 0.0f, 1.0f);
-        owner->getComponent<TransformComponent3D>()->Position += Velocity * dt;
-        m_forceAccumulator = glm::vec3(0.0f);
-
-        // Angular (Complex only; m_invInertiaLocal is zero otherwise).
-        if (Mode == Simulation::Complex) {
-            glm::quat& q = owner->getComponent<TransformComponent3D>()->Orientation;
-            const glm::mat3 R = glm::mat3_cast(q);
-            m_invInertiaWorld = R * m_invInertiaLocal * glm::transpose(R);
-            AngularVelocity += (m_invInertiaWorld * m_torqueAccumulator) * dt;
-            AngularVelocity *= glm::clamp(1.0f - AngularDrag * dt, 0.0f, 1.0f);
-            const glm::quat spin(0.0f, AngularVelocity.x, AngularVelocity.y, AngularVelocity.z);
-            q = glm::normalize(q + 0.5f * spin * q * dt);
-            m_torqueAccumulator = glm::vec3(0.0f);
-        }
-        // Resting/sleep is decided in stepWorld's post-resolution pass (where a supported body's
-        // velocity is ~0), not here — gravity has just been added, so it's never ~0 at this point.
-    }
-
-    // Apply an impulse P at world arm r (relative to the center of mass): linear + angular.
     void applyImpulseAtArm(const glm::vec3& P, const glm::vec3& r) {
         Velocity += P * m_invMass;
-        AngularVelocity += m_invInertiaWorld * glm::cross(r, P);   // invInertiaWorld is 0 for Simple
+        AngularVelocity += m_invInertiaWorld * glm::cross(r, P);
     }
 
-    // Rolling resistance: a bounded counter-impulse opposing spin, so a rolling body slows and
-    // stops (sliding friction alone can't — a pure roll has zero contact-point slip). `budget`
-    // (= muRoll * normalImpulse) is scaled by the lever arm to torque units and never overshoots
-    // past zero. No-op for Simple/static bodies (m_invInertiaWorld is zero).
+    // Rolling resistance: a bounded counter-impulse opposing spin so a roller (sphere) slows and
+    // stops — sliding friction alone can't, since a pure roll has zero slip at the contact point.
+    // `budget` (= muRoll * normalImpulse) is scaled by the lever arm and never overshoots past zero.
     void applyRollingResistance(const glm::vec3& r, float budget) {
         const float wl = glm::length(AngularVelocity);
         if (wl < 1e-6f) return;
@@ -274,95 +435,158 @@ private:
         AngularVelocity -= axis * (std::min(stopImpulse, maxImpulse) * invEff);
     }
 
-    // Velocity of a body's material point at world arm r (linear + rotational).
-    static glm::vec3 pointVelocity(RigidBodyComponent3D* body, const glm::vec3& r) {
-        return body ? body->Velocity + glm::cross(body->AngularVelocity, r) : glm::vec3(0.0f);
+    static glm::vec3 pointVel(const RigidBodyComponent3D* b, const glm::vec3& r) {
+        return b->Velocity + glm::cross(b->AngularVelocity, r);
+    }
+    static glm::vec3 biasPointVel(const RigidBodyComponent3D* b, const glm::vec3& r) {
+        return b->m_biasVel + glm::cross(b->m_biasAngVel, r);
     }
 
-    // Resolve one contact. `c.normal` points A -> B; `c.point` is the world contact point.
-    // Uses contact-point impulses (linear + angular); for Simple bodies the angular terms
-    // vanish (inverse-inertia 0) and this reduces exactly to the old linear resolution.
-    static void resolve(RigidBodyComponent3D* A, RigidBodyComponent3D* B, const Contact& c,
-                        float posScale = 1.0f, bool applyPosition = true) {
-        const float invA   = A->m_invMass;
-        const float invB   = B ? B->m_invMass : 0.0f;
-        const float invSum = invA + invB;
-        if (invSum <= 0.0f) return;
-
-        const glm::vec3 n = c.normal;
-
-        // 1. Positional correction (Baumgarte, linear) — push the pair apart along the normal.
-        //    Applied ONCE per step (first velocity iteration only); posScale splits it across a
-        //    multi-point manifold so it doesn't over-push.
-        if (applyPosition) {
-            const float slop = 0.001f, percent = 0.8f;
-            const float corr = std::max(c.penetration - slop, 0.0f) / invSum * percent * posScale;
-            const glm::vec3 push = corr * n;
-            A->owner->getComponent<TransformComponent3D>()->Position -= push * invA;
-            if (B) B->owner->getComponent<TransformComponent3D>()->Position += push * invB;
-        }
-
-        // Contact arms (relative to each center of mass).
-        const glm::vec3 rA = c.point - A->worldCenter();
-        const glm::vec3 rB = c.point - (B ? B->worldCenter() : c.point);
-        const glm::mat3 IiA = A->m_invInertiaWorld;
-        const glm::mat3 IiB = B ? B->m_invInertiaWorld : glm::mat3(0.0f);
-
-        // 2. Normal impulse with restitution (effective mass includes the angular term).
-        glm::vec3 vrel = pointVelocity(B, rB) - pointVelocity(A, rA);
-        const float velN = glm::dot(vrel, n);
-        if (velN > 0.0f) return;                        // separating
-        const glm::vec3 rnA = glm::cross(rA, n), rnB = glm::cross(rB, n);
-        const float kN = invSum + glm::dot(n, glm::cross(IiA * rnA, rA))
-                                + glm::dot(n, glm::cross(IiB * rnB, rB));
-        // Restitution only for real impacts: below a small approach speed (resting / settling
-        // under gravity) treat e=0, else the bounce re-injects velocity every step and the body
-        // jitters forever instead of coming to rest.
-        constexpr float kRestitutionThreshold = 0.5f;   // m/s
-        float e = std::min(A->Restitution, B ? B->Restitution : A->Restitution);
-        if (-velN < kRestitutionThreshold) e = 0.0f;
-        const float jN = -(1.0f + e) * velN / kN;
-        const glm::vec3 Pn = jN * n;
-        A->applyImpulseAtArm(-Pn, rA);
-        if (B) B->applyImpulseAtArm(Pn, rB);
-
-        // 3. Friction: tangential impulse clamped to the Coulomb cone.
-        vrel = pointVelocity(B, rB) - pointVelocity(A, rA);
-        glm::vec3 t = vrel - glm::dot(vrel, n) * n;
-        const float tl = glm::length(t);
-        if (tl > 1e-6f) {
-            t /= tl;
-            const glm::vec3 rtA = glm::cross(rA, t), rtB = glm::cross(rB, t);
-            const float kT = invSum + glm::dot(t, glm::cross(IiA * rtA, rA))
-                                    + glm::dot(t, glm::cross(IiB * rtB, rB));
-            float jt = -glm::dot(vrel, t) / kT;
-            const float mu = std::sqrt(A->Friction * (B ? B->Friction : A->Friction));
-            jt = glm::clamp(jt, -jN * mu, jN * mu);
-            const glm::vec3 Pt = jt * t;
-            A->applyImpulseAtArm(-Pt, rA);
-            if (B) B->applyImpulseAtArm(Pt, rB);
-        }
-
-        // 4. Rolling resistance — damp spin so a rolling body comes to rest.
-        const float muRoll = std::sqrt(A->RollingFriction * (B ? B->RollingFriction : A->RollingFriction));
-        if (muRoll > 0.0f) {
-            A->applyRollingResistance(rA, muRoll * jN);
-            if (B) B->applyRollingResistance(rB, muRoll * jN);
-        }
-
-        // Mark both as supported this step (gates sleeping). An awake A contacting a sleeping B
-        // wakes B so it resumes simulating (A is never asleep here — skipped in the outer loop).
-        A->m_hadContact = true;
-        if (B) { B->m_hadContact = true; if (B->m_asleep) B->wake(); }
+    static void integrateOrientation(glm::quat& q, const glm::vec3& w, float dt) {
+        const glm::quat spin(0.0f, w.x, w.y, w.z);
+        q = glm::normalize(q + 0.5f * spin * q * dt);
     }
 
-    // The two physics worlds. Dynamic bodies integrate + drive resolution; static bodies are
-    // immovable world geometry (collided against via the collider registry, never integrated).
-    static std::vector<RigidBodyComponent3D*>& dynamicBodies() {
-        static std::vector<RigidBodyComponent3D*> v;
-        return v;
+    // ---- contact constraint (one per manifold point) ----
+    struct ContactConstraint {
+        RigidBodyComponent3D* A;
+        RigidBodyComponent3D* B;
+        glm::vec3 n, t1, t2;          // normal (A->B) + tangent basis
+        glm::vec3 rA, rB;             // arms from each center to the contact point
+        float normalMass = 0.0f;
+        float tanMass1 = 0.0f, tanMass2 = 0.0f;
+        float restitutionBias = 0.0f; // target normal velocity from restitution (<=0)
+        float penetration = 0.0f;
+        float lambdaN = 0.0f;         // accumulated normal impulse (>= 0)
+        float lambdaT1 = 0.0f, lambdaT2 = 0.0f;
+        float lambdaPos = 0.0f;       // accumulated position-correction impulse (>= 0)
+        uint64_t key = 0;             // stable id (bodyA, bodyB, manifold slot) for warm-starting
+    };
+
+    // Per-body narrowphase scratch: the parallel detection loop fills each body's OWN row (the
+    // pairs it owns as the lower index), so threads never write shared state. Concatenated into the
+    // flat constraint list — in body order, so the solve order stays deterministic. Cleared (not
+    // freed) each step to reuse capacity.
+    std::vector<ContactConstraint> m_row;
+
+    // Warm-start cache: last frame's accumulated impulses, keyed per contact. Re-applying them so
+    // the solver starts near the solution makes lambdaN reach the true support force immediately,
+    // which is what gives friction (mu * lambdaN) a real budget on resting stacks (without it the
+    // velocity normal impulse stays tiny — split-impulse does the holding — and stacks slide).
+    struct CachedImpulse { float n = 0.0f, t1 = 0.0f, t2 = 0.0f; };
+    static std::unordered_map<uint64_t, CachedImpulse>& impulseCache() {
+        static std::unordered_map<uint64_t, CachedImpulse> m;
+        return m;
     }
-    static std::vector<RigidBodyComponent3D*>& staticBodies() {
+    static uint64_t contactKey(const RigidBodyComponent3D* A, const RigidBodyComponent3D* B, int slot) {
+        const uint64_t a = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(A));
+        const uint64_t b = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(B));
+        return (a * 0x9E3779B97F4A7C15ull) ^ (b * 0xC2B2AE3D27D4EB4Full) ^ (uint64_t(slot) * 0x165667B19E3779F9ull);
+    }
+
+    // Effective mass along a unit axis L at this contact (the old kN formula).
+    static float effectiveMass(const ContactConstraint& c, const glm::vec3& L) {
+        const glm::vec3 rnA = glm::cross(c.rA, L), rnB = glm::cross(c.rB, L);
+        const float k = c.A->m_invMass + c.B->m_invMass
+                      + glm::dot(L, glm::cross(c.A->m_invInertiaWorld * rnA, c.rA))
+                      + glm::dot(L, glm::cross(c.B->m_invInertiaWorld * rnB, c.rB));
+        return k > 0.0f ? 1.0f / k : 0.0f;
+    }
+
+    static void buildConstraint(RigidBodyComponent3D* A, RigidBodyComponent3D* B,
+                                const Contact& pt, int slot, std::vector<ContactConstraint>& out) {
+        ContactConstraint c;
+        c.A = A; c.B = B;
+        c.n = glm::normalize(pt.normal);
+        c.penetration = pt.penetration;
+        c.rA = pt.point - A->worldCenter();
+        c.rB = pt.point - B->worldCenter();
+
+        // Tangent basis perpendicular to n.
+        if (std::abs(c.n.x) >= 0.57735f) c.t1 = glm::normalize(glm::vec3(c.n.y, -c.n.x, 0.0f));
+        else                             c.t1 = glm::normalize(glm::vec3(0.0f, c.n.z, -c.n.y));
+        c.t2 = glm::cross(c.n, c.t1);
+
+        c.normalMass = effectiveMass(c, c.n);
+        c.tanMass1   = effectiveMass(c, c.t1);
+        c.tanMass2   = effectiveMass(c, c.t2);
+
+        // Restitution bias: only for real impacts (below a small approach speed, treat as e=0 so
+        // resting contacts don't bounce). vn < 0 == approaching.
+        const float vn = glm::dot(pointVel(B, c.rB) - pointVel(A, c.rA), c.n);
+        constexpr float kRestitutionThreshold = 0.5f;
+        const float e = std::sqrt(std::max(0.0f, A->Restitution * B->Restitution));
+        c.restitutionBias = (vn < -kRestitutionThreshold) ? e * vn : 0.0f;
+
+        // Warm start: seed the accumulated impulses from last frame's solution for this contact.
+        c.key = contactKey(A, B, slot);
+        auto it = impulseCache().find(c.key);
+        if (it != impulseCache().end()) {
+            c.lambdaN  = it->second.n;
+            c.lambdaT1 = it->second.t1;
+            c.lambdaT2 = it->second.t2;
+        }
+
+        out.push_back(c);
+    }
+
+    // Normal constraint: drive (vn + restitutionBias) -> 0, with the accumulated impulse clamped >= 0.
+    static void solveNormal(ContactConstraint& c) {
+        const float vn = glm::dot(pointVel(c.B, c.rB) - pointVel(c.A, c.rA), c.n);
+        const float dl = -(vn + c.restitutionBias) * c.normalMass;
+        const float old = c.lambdaN;
+        c.lambdaN = std::max(0.0f, old + dl);
+        const glm::vec3 P = (c.lambdaN - old) * c.n;
+        c.A->applyImpulseAtArm(-P, c.rA);
+        c.B->applyImpulseAtArm( P, c.rB);
+    }
+
+    // Coulomb friction on both tangents, clamped to the friction CONE: the COMBINED tangent impulse
+    // magnitude is limited to mu * lambdaN (a disk), not each tangent independently (a square). The
+    // square ("box") version over-applies friction along the diagonal, so a diagonally-sliding body
+    // gets dragged toward a tangent axis — on a plane the tangents are world X/Z, so boxes visibly
+    // "snap" to those axes. The cone is isotropic: friction opposes the actual slide direction.
+    static void solveFriction(ContactConstraint& c) {
+        const float mu   = std::sqrt(std::max(0.0f, c.A->Friction * c.B->Friction));
+        const float maxF = mu * c.lambdaN;
+        const glm::vec3 vrel = pointVel(c.B, c.rB) - pointVel(c.A, c.rA);
+
+        float newT1 = c.lambdaT1 - glm::dot(vrel, c.t1) * c.tanMass1;
+        float newT2 = c.lambdaT2 - glm::dot(vrel, c.t2) * c.tanMass2;
+
+        // Clamp the (t1, t2) impulse vector into the disk of radius maxF.
+        const float mag = std::sqrt(newT1 * newT1 + newT2 * newT2);
+        if (mag > maxF && mag > 1e-12f) {
+            const float s = maxF / mag;
+            newT1 *= s; newT2 *= s;
+        }
+
+        const glm::vec3 P = (newT1 - c.lambdaT1) * c.t1 + (newT2 - c.lambdaT2) * c.t2;
+        c.lambdaT1 = newT1; c.lambdaT2 = newT2;
+        c.A->applyImpulseAtArm(-P, c.rA);
+        c.B->applyImpulseAtArm( P, c.rB);
+    }
+
+    // Split-impulse: push the pair apart along the normal using PSEUDO velocities (never the real
+    // velocity), so removing penetration adds no energy. beta scales how fast overlap is removed.
+    static void solvePosition(ContactConstraint& c, float dt) {
+        constexpr float kBeta = 0.2f, kSlop = 0.005f;
+        const float target = (kBeta / dt) * std::max(c.penetration - kSlop, 0.0f);   // desired separating speed
+        if (target <= 0.0f) return;
+        const float vn = glm::dot(biasPointVel(c.B, c.rB) - biasPointVel(c.A, c.rA), c.n);
+        const float dl = (target - vn) * c.normalMass;
+        const float old = c.lambdaPos;
+        c.lambdaPos = std::max(0.0f, old + dl);
+        const glm::vec3 P = (c.lambdaPos - old) * c.n;
+        // Apply to the bias (pseudo) velocities only.
+        c.A->m_biasVel    -= P * c.A->m_invMass;
+        c.A->m_biasAngVel -= c.A->m_invInertiaWorld * glm::cross(c.rA, P);
+        c.B->m_biasVel    += P * c.B->m_invMass;
+        c.B->m_biasAngVel += c.B->m_invInertiaWorld * glm::cross(c.rB, P);
+    }
+
+    // The new physics world: every v2 body (dynamic + static) lives here; the narrowphase sweeps it.
+    static std::vector<RigidBodyComponent3D*>& bodies() {
         static std::vector<RigidBodyComponent3D*> v;
         return v;
     }

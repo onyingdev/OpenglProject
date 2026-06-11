@@ -2,6 +2,7 @@
 #include "Core/Components/ColliderShapes.h"
 #include "Components/Physics/ColliderComponent3D.h"
 #include "Components/Physics/HurtBoxComponent3D.h"
+#include "Components/Physics/RigidBodyComponent3D.h"   // new merged-collider bodies
 #include "Render/API/IRenderer.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -62,14 +63,20 @@ inline void debugDrawShape(IRenderer& r, const ColliderShape& shape,
     }
 }
 
-// Draw every live collider (green) and hurtbox (red). Call between beginScene/endScene.
+// Draw every live collider (green), hurtbox (red), and new rigid-body shape (cyan). The new
+// RigidBodyComponent3D owns its shape (merged collider), so it has its own registry to sweep.
+// Call between beginScene/endScene.
 inline void debugDrawColliders(IRenderer& r) {
-    const glm::vec3 kColliderColor{0.2f, 1.0f, 0.2f};
-    const glm::vec3 kHurtBoxColor {1.0f, 0.2f, 0.2f};
+    const glm::vec3 kColliderColor {0.2f, 1.0f, 0.2f};
+    const glm::vec3 kHurtBoxColor  {1.0f, 0.2f, 0.2f};
+    const glm::vec3 kRigidBodyColor{0.2f, 0.7f, 1.0f};
 
     for (auto* c : ColliderComponent3D::colliders())
         if (c && c->Shape) debugDrawShape(r, *c->Shape, c->position(), c->scale(), kColliderColor);
 
     for (auto* h : HurtBoxComponent3D::hurtboxes())
         if (h && h->Shape) debugDrawShape(r, *h->Shape, h->position(), h->scale(), kHurtBoxColor);
+
+    for (auto* b : RigidBodyComponent3D::world())
+        if (b && b->Shape) debugDrawShape(r, *b->Shape, b->position(), b->scale(), kRigidBodyColor);
 }

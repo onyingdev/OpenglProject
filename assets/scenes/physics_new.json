@@ -1,0 +1,28 @@
+{
+  "name": "physics_new",
+  "transform": { "position": [0, 0, 0] },
+  "objects": [
+    { "name": "GroundNew", "components": [
+      { "type": "Transform", "position": [0, -1, 0] },
+      { "type": "RigidBody3D", "static": true, "shape": { "kind": "plane", "normal": [0, 1, 0], "infinite": true } }
+    ]},
+    { "name": "BoxNew0", "components": [
+      { "type": "Transform", "position": [2, -0.5, 0] },
+      { "type": "Mesh", "model": "assets/models/1meterCube/cube1m.obj" },
+      { "type": "RigidBody3D", "mass": 1.0, "friction": 5.6, "restitution": 0.0, "simulation": "complex",
+        "shape": { "kind": "obb", "halfExtents": [0.5, 0.5, 0.5] } }
+    ]},
+    { "name": "BoxNew1", "components": [
+      { "type": "Transform", "position": [2.03, 0.5, 0.02] },
+      { "type": "Mesh", "model": "assets/models/1meterCube/cube1m.obj" },
+      { "type": "RigidBody3D", "mass": 1.0, "friction": 5.6, "restitution": 0.0, "simulation": "complex",
+        "shape": { "kind": "obb", "halfExtents": [0.5, 0.5, 0.5] } }
+    ]},
+    { "name": "BoxNew2", "components": [
+      { "type": "Transform", "position": [1.98, 1.5, -0.01] },
+      { "type": "Mesh", "model": "assets/models/1meterCube/cube1m.obj" },
+      { "type": "RigidBody3D", "mass": 1.0, "friction": 5.6, "restitution": 0.0, "simulation": "complex",
+        "shape": { "kind": "obb", "halfExtents": [0.5, 0.5, 0.5] } }
+    ]}
+  ]
+}

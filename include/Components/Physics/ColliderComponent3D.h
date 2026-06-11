@@ -11,7 +11,7 @@
 
 // Physics collider: a body's collision SURFACE. Owns a shape and a layer/mask, and
 // registers into a static list the rigid-body solver sweeps for contacts
-// (RigidBodyComponent3D::stepWorld -> colliders() + Shape->collide()). This is the
+// (OldRigidBodyComponent3D::stepWorld -> colliders() + Shape->collide()). This is the
 // PHYSICS half only; gameplay overlap triggers (enter/stay/exit) live in the separate,
 // lighter HurtBoxComponent3D. The two sweep independent registries on purpose.
 //
@@ -45,10 +45,11 @@ public:
             glm::vec3 n = s.contains("normal") ? jsonVec3(s["normal"], glm::vec3(0.0f, 1.0f, 0.0f))
                                                : glm::vec3(0.0f, 1.0f, 0.0f);
             const bool infinite = s.value("infinite", true);
+            const bool oneSided = s.value("oneSided", true);
             glm::vec2 he{5.0f, 5.0f};
             if (s.contains("halfExtents") && s["halfExtents"].is_array() && s["halfExtents"].size() >= 2)
                 he = { s["halfExtents"][0].get<float>(), s["halfExtents"][1].get<float>() };
-            Shape = std::make_unique<PlaneShape>(n, infinite, he);
+            Shape = std::make_unique<PlaneShape>(n, infinite, he, oneSided);
         } else if (kind == "obb") {
             glm::vec3 he = s.contains("halfExtents") ? jsonVec3(s["halfExtents"], glm::vec3(0.5f))
                                                      : glm::vec3(0.5f);
@@ -80,7 +81,7 @@ public:
     }
 
     // Read-only access to the live-collider registry for the physics solver
-    // (RigidBodyComponent3D::stepWorld) and the debug-draw pass.
+    // (OldRigidBodyComponent3D::stepWorld) and the debug-draw pass.
     static const std::vector<ColliderComponent3D*>& colliders() { return AllColliders(); }
 
     // Public layer/mask filter so the solver reuses the same rule.

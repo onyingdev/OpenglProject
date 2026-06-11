@@ -378,11 +378,15 @@ public:
     bool      Infinite = true;               // true: unbounded half-space (fastest path, no lateral test)
     glm::vec2 HalfExtents{5.0f, 5.0f};       // half-size along the plane's tangent axes (used only when !Infinite)
     glm::vec3 LocalNormal{0.0f, 1.0f, 0.0f}; // authored normal; Normal = ownerRotation * LocalNormal
+    bool      OneSided = true;               // true: only collide bodies on the +N side (a body whose
+                                             // center is below the plane passes through, like a game
+                                             // ground/one-way platform). false: two-sided half-space.
 
     explicit PlaneShape(glm::vec3 normal = glm::vec3(0.0f, 1.0f, 0.0f),
                         bool infinite = true,
-                        glm::vec2 halfExtents = glm::vec2(5.0f))
-        : Normal(normal), Infinite(infinite), HalfExtents(halfExtents), LocalNormal(normal) {}
+                        glm::vec2 halfExtents = glm::vec2(5.0f),
+                        bool oneSided = true)
+        : Normal(normal), Infinite(infinite), HalfExtents(halfExtents), LocalNormal(normal), OneSided(oneSided) {}
 
     ShapeKind kind() const override { return ShapeKind::Plane; }
 
@@ -476,7 +480,9 @@ inline bool BoxShape::intersectsPlane(const PlaneShape& other,
     const glm::vec3 N = glm::normalize(other.Normal);
     const glm::vec3 h = HalfExtents * selfScale;
     const float R = h.x * std::abs(N.x) + h.y * std::abs(N.y) + h.z * std::abs(N.z);
-    return glm::dot(selfPos - otherPos, N) < R && other.withinBounds(selfPos, otherPos);
+    const float s = glm::dot(selfPos - otherPos, N);
+    if (other.OneSided && s < 0.0f) return false;        // center below a one-sided plane → no contact
+    return s < R && other.withinBounds(selfPos, otherPos);
 }
 inline Contact BoxShape::collidePlane(const PlaneShape& other,
                                       const glm::vec3& selfPos,  const glm::vec3& selfScale,
@@ -486,6 +492,7 @@ inline Contact BoxShape::collidePlane(const PlaneShape& other,
     const float R = h.x * std::abs(N.x) + h.y * std::abs(N.y) + h.z * std::abs(N.z);
     const float s = glm::dot(selfPos - otherPos, N);
     if (s >= R || !other.withinBounds(selfPos, otherPos)) return {};
+    if (other.OneSided && s < 0.0f) return {};           // center below a one-sided plane → no contact
     Contact c;
     c.hit         = true;
     c.normal      = -N;          // box -> plane
@@ -503,7 +510,9 @@ inline bool SphereShape::intersectsPlane(const PlaneShape& other,
                                          const glm::vec3& otherPos, const glm::vec3& /*otherScale*/) const {
     const glm::vec3 N = glm::normalize(other.Normal);
     const float r = Radius * selfScale.x;
-    return glm::dot(selfPos - otherPos, N) < r && other.withinBounds(selfPos, otherPos);
+    const float s = glm::dot(selfPos - otherPos, N);
+    if (other.OneSided && s < 0.0f) return false;        // center below a one-sided plane → no contact
+    return s < r && other.withinBounds(selfPos, otherPos);
 }
 inline Contact SphereShape::collidePlane(const PlaneShape& other,
                                          const glm::vec3& selfPos,  const glm::vec3& selfScale,
@@ -512,6 +521,7 @@ inline Contact SphereShape::collidePlane(const PlaneShape& other,
     const float r = Radius * selfScale.x;
     const float s = glm::dot(selfPos - otherPos, N);
     if (s >= r || !other.withinBounds(selfPos, otherPos)) return {};
+    if (other.OneSided && s < 0.0f) return {};           // center below a one-sided plane → no contact
     Contact c;
     c.hit         = true;
     c.normal      = -N;          // sphere -> plane
@@ -528,36 +538,80 @@ inline Contact SphereShape::collidePlane(const PlaneShape& other,
 // Contact whose normal points A -> B (least-penetration axis = MTV). Tests 15 axes: A's 3
 // faces, B's 3 faces, 9 edge cross-products; near-zero cross axes (parallel edges) are
 // skipped. An AABB is just a box with identity axes, so this serves OBB-vs-AABB too.
-inline Contact satBoxes(const glm::vec3& ca, const glm::vec3 ax[3], const glm::vec3& ha,
-                        const glm::vec3& cb, const glm::vec3 bx[3], const glm::vec3& hb) {
-    const glm::vec3 t = cb - ca;            // A center -> B center
-    float     minPen = std::numeric_limits<float>::max();
-    glm::vec3 bestAxis(0.0f);
-    bool      separated = false;
+// Richer SAT result: besides the MTV (normal A->B + penetration) it reports WHICH axis won —
+// a face of A, a face of B, or an edge-edge cross — and the axis index/indices. The contact
+// manifold builder needs this to know which face to clip (or that it's an edge-edge point).
+struct SatResult {
+    bool      hit         = false;
+    glm::vec3 normal{0.0f};        // A -> B (MTV direction)
+    float     penetration = 0.0f;
+    int       type        = 0;     // 0 = A face, 1 = B face, 2 = edge-edge
+    int       aIndex      = -1;    // A face/edge axis (0..2), or -1
+    int       bIndex      = -1;    // B face/edge axis (0..2), or -1
+};
 
-    auto testAxis = [&](glm::vec3 L) {
-        if (separated) return;
+// Full 15-axis SAT (A's 3 faces, B's 3 faces, 9 edge cross-products). Faces are BIASED over
+// edges on near-ties: a flat box resting on a flat box has a face contact and an edge contact at
+// nearly equal penetration, and flip-flopping between them frame-to-frame is itself a jitter
+// source — so an edge axis only wins if it's clearly shallower. An AABB is a box with identity
+// axes, so this serves OBB-vs-AABB too.
+inline SatResult satBoxesEx(const glm::vec3& ca, const glm::vec3 ax[3], const glm::vec3& ha,
+                            const glm::vec3& cb, const glm::vec3 bx[3], const glm::vec3& hb) {
+    const glm::vec3 t = cb - ca;            // A center -> B center
+    SatResult r;
+    bool separated = false;
+
+    // Penetration along (possibly unnormalized) axis L. Returns false on a degenerate axis or
+    // on a separating axis (sets `separated`). Writes the oriented (A->B) unit axis + depth.
+    auto axisPen = [&](glm::vec3 L, glm::vec3& outAxis, float& outPen) -> bool {
         const float len = glm::length(L);
-        if (len < 1e-6f) return;            // degenerate (parallel edges) — covered by face axes
+        if (len < 1e-6f) return false;      // degenerate (parallel edges) — covered by face axes
         L /= len;
         const float ra = ha.x*std::abs(glm::dot(ax[0],L)) + ha.y*std::abs(glm::dot(ax[1],L)) + ha.z*std::abs(glm::dot(ax[2],L));
         const float rb = hb.x*std::abs(glm::dot(bx[0],L)) + hb.y*std::abs(glm::dot(bx[1],L)) + hb.z*std::abs(glm::dot(bx[2],L));
         const float pen = (ra + rb) - std::abs(glm::dot(t, L));
-        if (pen < 0.0f) { separated = true; return; }
-        if (pen < minPen) { minPen = pen; bestAxis = (glm::dot(t, L) < 0.0f) ? -L : L; }
+        if (pen < 0.0f) { separated = true; return false; }
+        outAxis = (glm::dot(t, L) < 0.0f) ? -L : L;
+        outPen  = pen;
+        return true;
     };
 
-    for (int i = 0; i < 3; ++i) testAxis(ax[i]);
-    for (int i = 0; i < 3; ++i) testAxis(bx[i]);
-    for (int i = 0; i < 3; ++i)
-        for (int j = 0; j < 3; ++j) testAxis(glm::cross(ax[i], bx[j]));
-    if (separated) return {};
+    // Faces first.
+    float faceMin = std::numeric_limits<float>::max();
+    glm::vec3 faceAxis(0.0f); int faceType = 0, faceA = -1, faceB = -1;
+    for (int i = 0; i < 3 && !separated; ++i) { glm::vec3 L; float p; if (axisPen(ax[i], L, p) && p < faceMin) { faceMin = p; faceAxis = L; faceType = 0; faceA = i; faceB = -1; } }
+    for (int i = 0; i < 3 && !separated; ++i) { glm::vec3 L; float p; if (axisPen(bx[i], L, p) && p < faceMin) { faceMin = p; faceAxis = L; faceType = 1; faceA = -1; faceB = i; } }
+    if (separated) return r;                 // hit stays false
 
+    // Then edges.
+    float edgeMin = std::numeric_limits<float>::max();
+    glm::vec3 edgeAxis(0.0f); int edgeA = -1, edgeB = -1;
+    for (int i = 0; i < 3 && !separated; ++i)
+        for (int j = 0; j < 3 && !separated; ++j) { glm::vec3 L; float p; if (axisPen(glm::cross(ax[i], bx[j]), L, p) && p < edgeMin) { edgeMin = p; edgeAxis = L; edgeA = i; edgeB = j; } }
+    if (separated) return r;
+
+    r.hit = true;
+    // Bias: edge only wins if clearly shallower than the best face (relative + absolute slack).
+    constexpr float kRelTol = 0.95f, kAbsTol = 0.005f;
+    if (edgeMin < faceMin * kRelTol - kAbsTol) {
+        r.normal = edgeAxis; r.penetration = edgeMin; r.type = 2; r.aIndex = edgeA; r.bIndex = edgeB;
+    } else {
+        r.normal = faceAxis; r.penetration = faceMin; r.type = faceType; r.aIndex = faceA; r.bIndex = faceB;
+    }
+    return r;
+}
+
+// Single-point form for collide()/intersects() (which only read hit/normal/penetration). Keeps the
+// old "midpoint between centers" contact point — those callers ignore the point anyway.
+inline Contact satBoxes(const glm::vec3& ca, const glm::vec3 ax[3], const glm::vec3& ha,
+                        const glm::vec3& cb, const glm::vec3 bx[3], const glm::vec3& hb) {
+    const SatResult s = satBoxesEx(ca, ax, ha, cb, bx, hb);
+    if (!s.hit) return {};
     Contact c;
     c.hit         = true;
-    c.normal      = bestAxis;               // A -> B
-    c.penetration = minPen;
-    c.point       = ca + 0.5f * t;          // approximate (linear solver ignores point)
+    c.normal      = s.normal;               // A -> B
+    c.penetration = s.penetration;
+    c.point       = ca + 0.5f * (cb - ca);  // approximate (single-point callers ignore the point)
     return c;
 }
 
@@ -568,6 +622,7 @@ inline Contact satBoxes(const glm::vec3& ca, const glm::vec3 ax[3], const glm::v
 inline int boxPlaneManifold(const glm::vec3& C, const glm::vec3 a[3], const glm::vec3& h,
                             const PlaneShape& plane, const glm::vec3& P, Contact* out, int maxOut) {
     const glm::vec3 N = glm::normalize(plane.Normal);
+    if (plane.OneSided && glm::dot(C - P, N) < 0.0f) return 0;   // box center below a one-sided plane → skip
     int count = 0;
     for (int sx = -1; sx <= 1; sx += 2)
     for (int sy = -1; sy <= 1; sy += 2)
@@ -588,21 +643,147 @@ inline int boxPlaneManifold(const glm::vec3& C, const glm::vec3 a[3], const glm:
     return count;
 }
 
-inline int BoxShape::manifold(const ColliderShape& other,
-                              const glm::vec3& selfPos,  const glm::vec3& selfScale,
-                              const glm::vec3& otherPos, const glm::vec3& otherScale,
-                              Contact* out, int maxOut) const {
-    if (other.kind() == ShapeKind::Plane) {
-        const glm::vec3 a[3] = { glm::vec3(1,0,0), glm::vec3(0,1,0), glm::vec3(0,0,1) };
-        return boxPlaneManifold(selfPos, a, HalfExtents * selfScale,
-                                static_cast<const PlaneShape&>(other), otherPos, out, maxOut);
+// Closest points between two segments [a0,a1] and [b0,b1] (Ericson, Real-Time Collision
+// Detection). Writes the closest point on each; used for the edge-edge contact point.
+inline void closestSegSeg(const glm::vec3& a0, const glm::vec3& a1,
+                          const glm::vec3& b0, const glm::vec3& b1,
+                          glm::vec3& c1, glm::vec3& c2) {
+    const glm::vec3 d1 = a1 - a0, d2 = b1 - b0, r = a0 - b0;
+    const float A = glm::dot(d1, d1), E = glm::dot(d2, d2), F = glm::dot(d2, r);
+    constexpr float EPS = 1e-8f;
+    float s, t;
+    if (A <= EPS && E <= EPS) { s = 0.0f; t = 0.0f; }
+    else if (A <= EPS)        { s = 0.0f; t = glm::clamp(F / E, 0.0f, 1.0f); }
+    else {
+        const float C = glm::dot(d1, r);
+        if (E <= EPS) { t = 0.0f; s = glm::clamp(-C / A, 0.0f, 1.0f); }
+        else {
+            const float B = glm::dot(d1, d2);
+            const float denom = A * E - B * B;
+            s = (denom != 0.0f) ? glm::clamp((B * F - C * E) / denom, 0.0f, 1.0f) : 0.0f;
+            t = (B * s + F) / E;
+            if      (t < 0.0f) { t = 0.0f; s = glm::clamp(-C / A,        0.0f, 1.0f); }
+            else if (t > 1.0f) { t = 1.0f; s = glm::clamp((B - C) / A,   0.0f, 1.0f); }
+        }
     }
-    if (maxOut < 1) return 0;
-    const Contact c = collide(other, selfPos, selfScale, otherPos, otherScale);
-    if (!c.hit) return 0;
-    out[0] = c;
-    return 1;
+    c1 = a0 + d1 * s;
+    c2 = b0 + d2 * t;
 }
+
+// Oriented box-vs-box contact MANIFOLD via Sutherland-Hodgman face clipping. Produces the balanced
+// multi-point contact set a stack needs (single-point SAT rocks, like a box on a plane did before
+// boxPlaneManifold). Normal is A->B for every emitted contact. Handles AABB (identity axes), OBB,
+// and the mix. c*/.*x[3]/h* are world center / unit axes / world half-extents.
+inline int boxBoxManifold(const glm::vec3& ca, const glm::vec3 ax[3], const glm::vec3& ha,
+                          const glm::vec3& cb, const glm::vec3 bx[3], const glm::vec3& hb,
+                          Contact* out, int maxOut) {
+    if (maxOut < 1) return 0;
+    const SatResult s = satBoxesEx(ca, ax, ha, cb, bx, hb);
+    if (!s.hit) return 0;
+
+    // Edge-edge: a single contact at the closest points of the two involved edges. Each edge runs
+    // along its box's contact axis, offset along the other two axes toward the other box.
+    if (s.type == 2) {
+        const int ea = s.aIndex, eb = s.bIndex;
+        glm::vec3 pA = ca, pB = cb;
+        for (int k = 0; k < 3; ++k) {
+            if (k != ea) pA += (glm::dot(ax[k], s.normal) >= 0.0f ?  ha[k] : -ha[k]) * ax[k]; // toward B (+normal)
+            if (k != eb) pB += (glm::dot(bx[k], s.normal) >= 0.0f ? -hb[k] :  hb[k]) * bx[k]; // toward A (-normal)
+        }
+        glm::vec3 c1, c2;
+        closestSegSeg(pA - ha[ea] * ax[ea], pA + ha[ea] * ax[ea],
+                      pB - hb[eb] * bx[eb], pB + hb[eb] * bx[eb], c1, c2);
+        out[0].hit         = true;
+        out[0].normal      = s.normal;
+        out[0].penetration = s.penetration;
+        out[0].point       = 0.5f * (c1 + c2);
+        return 1;
+    }
+
+    // Face contact. Reference = the box whose face won; nR is the reference face's outward normal
+    // (toward the incident box). The emitted contact normal is always A->B (= s.normal).
+    const bool refIsA = (s.type == 0);
+    const glm::vec3  cR  = refIsA ? ca : cb;
+    const glm::vec3* R   = refIsA ? ax : bx;
+    const glm::vec3  hR  = refIsA ? ha : hb;
+    const int        ri  = refIsA ? s.aIndex : s.bIndex;
+    const glm::vec3  nR  = refIsA ? s.normal : -s.normal;     // reference outward, toward incident
+
+    const glm::vec3  cI  = refIsA ? cb : ca;
+    const glm::vec3* I   = refIsA ? bx : ax;
+    const glm::vec3  hI  = refIsA ? hb : ha;
+
+    // Reference face: center + the two in-face (tangent) axes with their half-widths.
+    const int ru = (ri + 1) % 3, rw = (ri + 2) % 3;
+    const glm::vec3 refC = cR + hR[ri] * nR;
+    const glm::vec3 u = R[ru]; const float hu = hR[ru];
+    const glm::vec3 w = R[rw]; const float hw = hR[rw];
+
+    // Incident face: the incident-box face whose outward normal is most anti-parallel to nR.
+    int   ik = 0; float isgn = 1.0f, best = 2.0f;
+    for (int k = 0; k < 3; ++k) {
+        const float dp = glm::dot(I[k], nR);
+        if ( dp < best) { best =  dp; ik = k; isgn =  1.0f; }   // +I[k] faces toward -nR
+        if (-dp < best) { best = -dp; ik = k; isgn = -1.0f; }   // -I[k] faces toward -nR
+    }
+    const int iu = (ik + 1) % 3, iw = (ik + 2) % 3;
+    const glm::vec3 incC = cI + isgn * hI[ik] * I[ik];
+    // The 4 incident-face vertices.
+    glm::vec3 poly[8];
+    int n = 0;
+    for (int su = -1; su <= 1; su += 2)
+        for (int sw = -1; sw <= 1; sw += 2)
+            poly[n++] = incC + (float)su * hI[iu] * I[iu] + (float)sw * hI[iw] * I[iw];
+
+    // Clip the incident polygon against the 4 side planes of the reference face (keep inside).
+    auto clip = [](glm::vec3* in, int inN, const glm::vec3& planePt, const glm::vec3& outN,
+                   glm::vec3* outBuf) -> int {
+        int m = 0;
+        for (int i = 0; i < inN; ++i) {
+            const glm::vec3& cur = in[i];
+            const glm::vec3& nxt = in[(i + 1) % inN];
+            const float dc = glm::dot(cur - planePt, outN);
+            const float dn = glm::dot(nxt - planePt, outN);
+            if (dc <= 0.0f) outBuf[m++] = cur;
+            if ((dc <= 0.0f) != (dn <= 0.0f)) {
+                const float tt = dc / (dc - dn);
+                outBuf[m++] = cur + tt * (nxt - cur);
+            }
+        }
+        return m;
+    };
+    glm::vec3 tmp[8];
+    n = clip(poly, n, refC + hu * u,  u, tmp);   for (int i = 0; i < n; ++i) poly[i] = tmp[i];
+    n = clip(poly, n, refC - hu * u, -u, tmp);   for (int i = 0; i < n; ++i) poly[i] = tmp[i];
+    n = clip(poly, n, refC + hw * w,  w, tmp);   for (int i = 0; i < n; ++i) poly[i] = tmp[i];
+    n = clip(poly, n, refC - hw * w, -w, tmp);   for (int i = 0; i < n; ++i) poly[i] = tmp[i];
+
+    // Keep clipped points at/under the reference face; each is a contact (depth along nR).
+    int count = 0;
+    constexpr float kClipTol = 0.01f;            // keep just-touching points too (stable manifold)
+    for (int i = 0; i < n && count < maxOut; ++i) {
+        const float d = glm::dot(refC - poly[i], nR);   // >0 == below the face == penetrating
+        if (d <= -kClipTol) continue;
+        out[count].hit         = true;
+        out[count].normal      = s.normal;       // A -> B
+        out[count].penetration = std::max(d, 0.0f);
+        out[count].point       = poly[i];
+        ++count;
+    }
+
+    // Degenerate fallback (shouldn't trigger for a real face overlap): one midpoint contact.
+    if (count == 0) {
+        out[0].hit         = true;
+        out[0].normal      = s.normal;
+        out[0].penetration = s.penetration;
+        out[0].point       = ca + 0.5f * (cb - ca);
+        return 1;
+    }
+    return count;
+}
+
+// BoxShape::manifold is defined out-of-line below OBBShape (it routes box/OBB pairs to
+// boxBoxManifold, which needs the OBBShape type complete).
 
 // Oriented box. Unlike BoxShape (AABB), it carries a WORLD orientation refreshed from the
 // owner Transform by ColliderComponent3D::syncShape() each frame. SAT-resolved (~20-50x an
@@ -624,15 +805,28 @@ public:
         out[0] = R[0]; out[1] = R[1]; out[2] = R[2];
     }
 
-    // Oriented box vs plane emits a corner manifold (balanced contacts → no resting jitter).
+    // Oriented box vs plane/box/OBB emits a multi-point manifold (balanced contacts → no resting
+    // jitter, and stable stacking). Sphere/ball and other kinds keep the single-point fallback.
     int manifold(const ColliderShape& other,
                  const glm::vec3& selfPos,  const glm::vec3& selfScale,
                  const glm::vec3& otherPos, const glm::vec3& otherScale,
                  Contact* out, int maxOut) const override {
+        glm::vec3 a[3]; axes(a);
         if (other.kind() == ShapeKind::Plane) {
-            glm::vec3 a[3]; axes(a);
             return boxPlaneManifold(selfPos, a, HalfExtents * selfScale,
                                     static_cast<const PlaneShape&>(other), otherPos, out, maxOut);
+        }
+        if (other.kind() == ShapeKind::Box) {
+            const glm::vec3 b[3] = { glm::vec3(1,0,0), glm::vec3(0,1,0), glm::vec3(0,0,1) };
+            const auto& o = static_cast<const BoxShape&>(other);
+            return boxBoxManifold(selfPos, a, HalfExtents * selfScale,
+                                  otherPos, b, o.HalfExtents * otherScale, out, maxOut);
+        }
+        if (other.kind() == ShapeKind::OBB) {
+            const auto& o = static_cast<const OBBShape&>(other);
+            glm::vec3 b[3]; o.axes(b);
+            return boxBoxManifold(selfPos, a, HalfExtents * selfScale,
+                                  otherPos, b, o.HalfExtents * otherScale, out, maxOut);
         }
         if (maxOut < 1) return 0;
         const Contact c = collide(other, selfPos, selfScale, otherPos, otherScale);
@@ -737,6 +931,7 @@ public:
         const float R = h.x*std::abs(glm::dot(a[0],N)) + h.y*std::abs(glm::dot(a[1],N)) + h.z*std::abs(glm::dot(a[2],N));
         const float s = glm::dot(selfPos - otherPos, N);
         if (s >= R || !other.withinBounds(selfPos, otherPos)) return {};
+        if (other.OneSided && s < 0.0f) return {};   // center below a one-sided plane → no contact
         Contact c;
         c.hit         = true;
         c.normal      = -N;          // OBB -> plane
@@ -748,6 +943,36 @@ public:
         return c;
     }
 };
+
+// AABB box manifold: routes plane to the corner manifold and box/OBB to the clipping manifold
+// (out-of-line because the OBB branch needs the OBBShape type complete). Self is identity-axis.
+inline int BoxShape::manifold(const ColliderShape& other,
+                              const glm::vec3& selfPos,  const glm::vec3& selfScale,
+                              const glm::vec3& otherPos, const glm::vec3& otherScale,
+                              Contact* out, int maxOut) const {
+    const glm::vec3 a[3] = { glm::vec3(1,0,0), glm::vec3(0,1,0), glm::vec3(0,0,1) };
+    if (other.kind() == ShapeKind::Plane) {
+        return boxPlaneManifold(selfPos, a, HalfExtents * selfScale,
+                                static_cast<const PlaneShape&>(other), otherPos, out, maxOut);
+    }
+    if (other.kind() == ShapeKind::Box) {
+        const glm::vec3 b[3] = { glm::vec3(1,0,0), glm::vec3(0,1,0), glm::vec3(0,0,1) };
+        const auto& o = static_cast<const BoxShape&>(other);
+        return boxBoxManifold(selfPos, a, HalfExtents * selfScale,
+                              otherPos, b, o.HalfExtents * otherScale, out, maxOut);
+    }
+    if (other.kind() == ShapeKind::OBB) {
+        const auto& o = static_cast<const OBBShape&>(other);
+        glm::vec3 b[3]; o.axes(b);
+        return boxBoxManifold(selfPos, a, HalfExtents * selfScale,
+                              otherPos, b, o.HalfExtents * otherScale, out, maxOut);
+    }
+    if (maxOut < 1) return 0;
+    const Contact c = collide(other, selfPos, selfScale, otherPos, otherScale);
+    if (!c.hit) return 0;
+    out[0] = c;
+    return 1;
+}
 
 // Out-of-line OBB forwarders for the other shapes (need OBBShape complete). Each forwards to
 // the OBB's matching base handler and negates the normal to undo the A/B swap.
