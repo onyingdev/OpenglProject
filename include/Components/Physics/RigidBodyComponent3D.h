@@ -55,7 +55,7 @@ public:
     enum class TimerStart { Spawn, Contact };
 
     // Per-frame state dump (awake bodies). Zero overhead when false.
-    inline static bool DebugPrint = true;
+    inline static bool DebugPrint = false;
     // Phase timing: averaged ms for detection vs solve vs total, printed periodically. Lets you see
     // whether the narrowphase (parallel) or the serial PGS solve dominates the physics step.
     inline static bool DebugTimings = false;
@@ -379,10 +379,11 @@ private:
         } else if (kind == "plane") {
             glm::vec3 n = s.contains("normal") ? jsonVec3(s["normal"], glm::vec3(0, 1, 0)) : glm::vec3(0, 1, 0);
             const bool infinite = s.value("infinite", true);
+            const bool oneSided = s.value("oneSided", true);
             glm::vec2 he{5.0f, 5.0f};
             if (s.contains("halfExtents") && s["halfExtents"].is_array() && s["halfExtents"].size() >= 2)
                 he = { s["halfExtents"][0].get<float>(), s["halfExtents"][1].get<float>() };
-            Shape = std::make_unique<PlaneShape>(n, infinite, he);
+            Shape = std::make_unique<PlaneShape>(n, infinite, he, oneSided);
         } else {
             std::cerr << "[RigidBodyComponent3D] unknown shape kind: " << kind << "\n";
         }

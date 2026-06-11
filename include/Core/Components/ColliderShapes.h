@@ -378,11 +378,15 @@ public:
     bool      Infinite = true;               // true: unbounded half-space (fastest path, no lateral test)
     glm::vec2 HalfExtents{5.0f, 5.0f};       // half-size along the plane's tangent axes (used only when !Infinite)
     glm::vec3 LocalNormal{0.0f, 1.0f, 0.0f}; // authored normal; Normal = ownerRotation * LocalNormal
+    bool      OneSided = true;               // true: only collide bodies on the +N side (a body whose
+                                             // center is below the plane passes through, like a game
+                                             // ground/one-way platform). false: two-sided half-space.
 
     explicit PlaneShape(glm::vec3 normal = glm::vec3(0.0f, 1.0f, 0.0f),
                         bool infinite = true,
-                        glm::vec2 halfExtents = glm::vec2(5.0f))
-        : Normal(normal), Infinite(infinite), HalfExtents(halfExtents), LocalNormal(normal) {}
+                        glm::vec2 halfExtents = glm::vec2(5.0f),
+                        bool oneSided = true)
+        : Normal(normal), Infinite(infinite), HalfExtents(halfExtents), LocalNormal(normal), OneSided(oneSided) {}
 
     ShapeKind kind() const override { return ShapeKind::Plane; }
 
@@ -476,7 +480,9 @@ inline bool BoxShape::intersectsPlane(const PlaneShape& other,
     const glm::vec3 N = glm::normalize(other.Normal);
     const glm::vec3 h = HalfExtents * selfScale;
     const float R = h.x * std::abs(N.x) + h.y * std::abs(N.y) + h.z * std::abs(N.z);
-    return glm::dot(selfPos - otherPos, N) < R && other.withinBounds(selfPos, otherPos);
+    const float s = glm::dot(selfPos - otherPos, N);
+    if (other.OneSided && s < 0.0f) return false;        // center below a one-sided plane → no contact
+    return s < R && other.withinBounds(selfPos, otherPos);
 }
 inline Contact BoxShape::collidePlane(const PlaneShape& other,
                                       const glm::vec3& selfPos,  const glm::vec3& selfScale,
@@ -486,6 +492,7 @@ inline Contact BoxShape::collidePlane(const PlaneShape& other,
     const float R = h.x * std::abs(N.x) + h.y * std::abs(N.y) + h.z * std::abs(N.z);
     const float s = glm::dot(selfPos - otherPos, N);
     if (s >= R || !other.withinBounds(selfPos, otherPos)) return {};
+    if (other.OneSided && s < 0.0f) return {};           // center below a one-sided plane → no contact
     Contact c;
     c.hit         = true;
     c.normal      = -N;          // box -> plane
@@ -503,7 +510,9 @@ inline bool SphereShape::intersectsPlane(const PlaneShape& other,
                                          const glm::vec3& otherPos, const glm::vec3& /*otherScale*/) const {
     const glm::vec3 N = glm::normalize(other.Normal);
     const float r = Radius * selfScale.x;
-    return glm::dot(selfPos - otherPos, N) < r && other.withinBounds(selfPos, otherPos);
+    const float s = glm::dot(selfPos - otherPos, N);
+    if (other.OneSided && s < 0.0f) return false;        // center below a one-sided plane → no contact
+    return s < r && other.withinBounds(selfPos, otherPos);
 }
 inline Contact SphereShape::collidePlane(const PlaneShape& other,
                                          const glm::vec3& selfPos,  const glm::vec3& selfScale,
@@ -512,6 +521,7 @@ inline Contact SphereShape::collidePlane(const PlaneShape& other,
     const float r = Radius * selfScale.x;
     const float s = glm::dot(selfPos - otherPos, N);
     if (s >= r || !other.withinBounds(selfPos, otherPos)) return {};
+    if (other.OneSided && s < 0.0f) return {};           // center below a one-sided plane → no contact
     Contact c;
     c.hit         = true;
     c.normal      = -N;          // sphere -> plane
@@ -612,6 +622,7 @@ inline Contact satBoxes(const glm::vec3& ca, const glm::vec3 ax[3], const glm::v
 inline int boxPlaneManifold(const glm::vec3& C, const glm::vec3 a[3], const glm::vec3& h,
                             const PlaneShape& plane, const glm::vec3& P, Contact* out, int maxOut) {
     const glm::vec3 N = glm::normalize(plane.Normal);
+    if (plane.OneSided && glm::dot(C - P, N) < 0.0f) return 0;   // box center below a one-sided plane → skip
     int count = 0;
     for (int sx = -1; sx <= 1; sx += 2)
     for (int sy = -1; sy <= 1; sy += 2)
@@ -920,6 +931,7 @@ public:
         const float R = h.x*std::abs(glm::dot(a[0],N)) + h.y*std::abs(glm::dot(a[1],N)) + h.z*std::abs(glm::dot(a[2],N));
         const float s = glm::dot(selfPos - otherPos, N);
         if (s >= R || !other.withinBounds(selfPos, otherPos)) return {};
+        if (other.OneSided && s < 0.0f) return {};   // center below a one-sided plane → no contact
         Contact c;
         c.hit         = true;
         c.normal      = -N;          // OBB -> plane

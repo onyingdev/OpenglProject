@@ -3,6 +3,6 @@
   "components": [
     { "type": "Transform",  "position": [0, -1, 0], "rotation": [0, 0, 0] },
     { "type": "Mesh",       "model": "assets/models/test_playground/testPlayground.obj", "flipUVs": false },
-    { "type": "RigidBody3D", "static": true, "shape": { "kind": "plane", "normal": [0, 1, 0], "infinite": true } }
+    { "type": "RigidBody3D", "static": true, "shape": { "kind": "plane", "normal": [0, 1, 0], "infinite": true, "oneSided": false } }
   ]
 }
