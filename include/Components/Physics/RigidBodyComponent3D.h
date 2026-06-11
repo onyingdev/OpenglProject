@@ -9,10 +9,16 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <chrono>
 #include <iostream>
 #include <memory>
 #include <unordered_map>
 #include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+// first iteration: [phys2] N=256  detect=6.01731ms  solve=28.5125ms  total=34.5298ms  (12 threads)
 
 // RigidBody 3D (v2) — the rework. Differs from OldRigidBodyComponent3D ("OldRigidBody3D") in two
 // fundamental ways:
@@ -50,6 +56,9 @@ public:
 
     // Per-frame state dump (awake bodies). Zero overhead when false.
     inline static bool DebugPrint = false;
+    // Phase timing: averaged ms for detection vs solve vs total, printed periodically. Lets you see
+    // whether the narrowphase (parallel) or the serial PGS solve dominates the physics step.
+    inline static bool DebugTimings = true;
 
     // --- collision surface (merged collider) ---
     std::unique_ptr<ColliderShape> Shape;
@@ -142,10 +151,45 @@ public:
     //   5. integrate positions                            6. split-impulse position correction
     static void stepWorld(float dt) {
         auto& world = bodies();
-        if (world.empty()) return;
+        const size_t n = world.size();
+        if (n == 0) return;
+
+        // Detection (O(N^2)) parallelizes at a LOW body count so it engages early; the cheap
+        // per-body O(N) loops only pay for the thread fork/join at larger N. Tune to your cores.
+        constexpr size_t kParDetect = 32;
+        constexpr size_t kParBody   = 256;
+
+#ifdef _OPENMP
+        // Read the CPU's hardware thread count from OpenMP ONCE and use all of them for the parallel
+        // regions: omp_get_num_procs() is the logical CPU thread count (e.g. 12), and
+        // omp_set_num_threads() makes every parallel-for below default to that team size (overriding
+        // any environment default).
+        static const int kThreads = []{
+            const int t = omp_get_num_procs();
+            omp_set_num_threads(t);
+            return t;
+        }();
+
+        // Announce when the parallel narrowphase switches on/off — only on the transition (crossing
+        // kParDetect), so it isn't spammy.
+        {
+            static bool s_wasParallel = false;
+            const bool parallel = n > kParDetect;
+            if (parallel != s_wasParallel) {
+                std::cout << "[phys2] narrowphase multithreading " << (parallel ? "ON" : "OFF")
+                          << " (bodies=" << n << ", CPU threads=" << kThreads << ")\n";
+                s_wasParallel = parallel;
+            }
+        }
+#endif
+
+        const auto _tStart = std::chrono::high_resolution_clock::now();
 
         // 1. Integrate velocities only (pose advances in step 5). Reset per-step solver state.
-        for (auto* b : world) {
+        //    Per-body independent → parallel.
+        #pragma omp parallel for schedule(static) if(n > kParBody)
+        for (size_t i = 0; i < n; ++i) {
+            auto* b = world[i];
             b->m_biasVel = glm::vec3(0.0f);
             b->m_biasAngVel = glm::vec3(0.0f);
             if (b->m_invMass == 0.0f) { b->m_forceAccumulator = glm::vec3(0.0f); b->m_torqueAccumulator = glm::vec3(0.0f); continue; }
@@ -162,16 +206,21 @@ public:
             b->m_torqueAccumulator = glm::vec3(0.0f);
         }
 
-        // 2. Sync shape orientation (OBB axes / plane normal).
-        for (auto* b : world) if (b->Shape) b->Shape->setOrientation(b->orientation());
+        // 2. Sync shape orientation (OBB axes / plane normal). Per-body independent → parallel.
+        #pragma omp parallel for schedule(static) if(n > kParBody)
+        for (size_t i = 0; i < n; ++i)
+            if (world[i]->Shape) world[i]->Shape->setOrientation(world[i]->orientation());
 
-        // 3. Narrowphase — every unordered pair once. Build the flat constraint list.
-        static std::vector<ContactConstraint> constraints;
-        constraints.clear();
-        for (size_t i = 0; i < world.size(); ++i) {
+        // 3. Narrowphase — PARALLEL. Each body fills its OWN row with the pairs it owns as the lower
+        //    index (so threads never write shared state); manifold() is const and everything read
+        //    (poses/velocities/inertia/warm-start cache) is stable here. Then a serial concat builds
+        //    the flat list in body order (deterministic regardless of thread scheduling).
+        #pragma omp parallel for schedule(guided) if(n > kParDetect)
+        for (size_t i = 0; i < n; ++i) {
             RigidBodyComponent3D* A = world[i];
+            A->m_row.clear();
             if (!A->Shape) continue;
-            for (size_t k = i + 1; k < world.size(); ++k) {
+            for (size_t k = i + 1; k < n; ++k) {
                 RigidBodyComponent3D* B = world[k];
                 if (!B->Shape) continue;
                 if (A->m_invMass == 0.0f && B->m_invMass == 0.0f) continue;       // static vs static
@@ -185,19 +234,28 @@ public:
                 const int nc = caller->Shape->manifold(*other->Shape,
                                                        caller->position(), caller->scale(),
                                                        other->position(),  other->scale(), pts, 8);
-                for (int c = 0; c < nc; ++c) buildConstraint(caller, other, pts[c], c, constraints);
+                for (int c = 0; c < nc; ++c) buildConstraint(caller, other, pts[c], c, A->m_row);
             }
         }
+        static std::vector<ContactConstraint> constraints;
+        constraints.clear();
+        for (size_t i = 0; i < n; ++i) {
+            auto& row = world[i]->m_row;
+            constraints.insert(constraints.end(), row.begin(), row.end());
+        }
+        const auto _tDetect = std::chrono::high_resolution_clock::now();
 
         // 3b. Warm start — re-apply each contact's cached impulse so the solve starts near last
         //     frame's solution (lambdaN reaches the true support force immediately → friction budget).
+        //     SERIAL (mutates shared bodies).
         for (auto& c : constraints) {
             const glm::vec3 P = c.lambdaN * c.n + c.lambdaT1 * c.t1 + c.lambdaT2 * c.t2;
             c.A->applyImpulseAtArm(-P, c.rA);
             c.B->applyImpulseAtArm( P, c.rB);
         }
 
-        // 4. Velocity LCP — PGS. Accumulate-clamp-apply-delta per contact; friction coupled to lambdaN.
+        // 4. Velocity LCP — PGS. SERIAL: sequential impulses, accumulate-clamp-apply-delta per
+        //    contact; friction coupled to lambdaN. (A parallel solve would need mass-splitting.)
         constexpr int kVelIterations = 12;
         for (int it = 0; it < kVelIterations; ++it)
             for (auto& c : constraints) { solveNormal(c); solveFriction(c); }
@@ -207,9 +265,11 @@ public:
         cache.clear();
         for (auto& c : constraints) cache[c.key] = { c.lambdaN, c.lambdaT1, c.lambdaT2 };
 
-        // 5. Integrate positions from the (now consistent) velocities.
-        for (auto* b : world) {
-            if (b->m_invMass == 0.0f) continue;
+        // 5. Integrate positions from the (now consistent) velocities. Per-body → parallel.
+        #pragma omp parallel for schedule(static) if(n > kParBody)
+        for (size_t i = 0; i < n; ++i) {
+            auto* b = world[i];
+            if (b->m_invMass == 0.0f) continue;   // skip static
             auto* tf = b->owner->getComponent<TransformComponent3D>();
             tf->Position += b->Velocity * dt;
             if (b->Mode == Simulation::Complex) integrateOrientation(tf->Orientation, b->AngularVelocity, dt);
@@ -217,15 +277,38 @@ public:
 
         // 6. Split-impulse position correction — pushes out the detected overlap using PSEUDO
         //    velocities only, so the real velocity (and thus the resting state) is never disturbed.
+        //    The PGS loop is SERIAL; the final per-body bias integration is parallel.
         constexpr int kPosIterations = 4;
         for (int it = 0; it < kPosIterations; ++it)
             for (auto& c : constraints) solvePosition(c, dt);
-        for (auto* b : world) {
+        #pragma omp parallel for schedule(static) if(n > kParBody)
+        for (size_t i = 0; i < n; ++i) {
+            auto* b = world[i];
             if (b->m_invMass == 0.0f) continue;
             if (b->m_biasVel == glm::vec3(0.0f) && b->m_biasAngVel == glm::vec3(0.0f)) continue;
             auto* tf = b->owner->getComponent<TransformComponent3D>();
             tf->Position += b->m_biasVel * dt;
             if (b->Mode == Simulation::Complex) integrateOrientation(tf->Orientation, b->m_biasAngVel, dt);
+        }
+
+        if (DebugTimings) {
+            const auto _tEnd = std::chrono::high_resolution_clock::now();
+            using ms = std::chrono::duration<double, std::milli>;
+            static double accDetect = 0, accSolve = 0, accTotal = 0; static int frames = 0;
+            accDetect += ms(_tDetect - _tStart).count();        // integrate + syncShape + narrowphase
+            accSolve  += ms(_tEnd    - _tDetect).count();       // warm-start + velocity/position PGS
+            accTotal  += ms(_tEnd    - _tStart).count();
+            if (++frames >= 60) {
+                std::cout << "[phys2] N=" << n
+                          << "  detect=" << (accDetect / frames) << "ms"
+                          << "  solve="  << (accSolve  / frames) << "ms"
+                          << "  total="  << (accTotal  / frames) << "ms"
+#ifdef _OPENMP
+                          << "  (" << kThreads << " threads)"
+#endif
+                          << "\n";
+                accDetect = accSolve = accTotal = 0.0; frames = 0;
+            }
         }
 
         if (DebugPrint) {
@@ -342,6 +425,12 @@ private:
         float lambdaPos = 0.0f;       // accumulated position-correction impulse (>= 0)
         uint64_t key = 0;             // stable id (bodyA, bodyB, manifold slot) for warm-starting
     };
+
+    // Per-body narrowphase scratch: the parallel detection loop fills each body's OWN row (the
+    // pairs it owns as the lower index), so threads never write shared state. Concatenated into the
+    // flat constraint list — in body order, so the solve order stays deterministic. Cleared (not
+    // freed) each step to reuse capacity.
+    std::vector<ContactConstraint> m_row;
 
     // Warm-start cache: last frame's accumulated impulses, keyed per contact. Re-applying them so
     // the solver starts near the solution makes lambdaN reach the true support force immediately,
