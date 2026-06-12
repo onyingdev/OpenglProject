@@ -58,7 +58,7 @@ public:
     inline static bool DebugPrint = false;
     // Phase timing: averaged ms for detection vs solve vs total, printed periodically. Lets you see
     // whether the narrowphase (parallel) or the serial PGS solve dominates the physics step.
-    inline static bool DebugTimings = false;
+    inline static bool DebugTimings = true;
 
     // --- collision surface (merged collider) ---
     std::unique_ptr<ColliderShape> Shape;
@@ -135,7 +135,7 @@ public:
         this->useOwnerPosition();  this->useOwnerOrientation();
         if (mesh) { mesh->useOwnerPosition(); mesh->useOwnerOrientation(); }
 
-        m_invMass = (Static || Mass <= 0.0f) ? 0.0f : 1.0f / Mass;
+        m_invMass = (Static || Mass <= 0.0f) ? 0.0f : 1.0f / Mass; //if static or mass negative = 0, else 1.0f/mass
         m_invInertiaLocal = computeInvInertiaLocal();
         bodies().push_back(this);
     }
