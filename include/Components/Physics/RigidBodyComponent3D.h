@@ -3,6 +3,8 @@
 #include "Core/Components/ColliderShapes.h"      // shared shape geometry + manifold() + Contact
 #include "Core/Engine/Services/ComponentRegistry.h"
 #include "Core/Engine/Helpers/JsonHelpers.h"
+#include "Core/Engine/Physics/physics_manager.h"   // owns the body list + drives the step
+#include "Core/Engine/Scene.h"                      // owner->scene()->removeObject() for TTL despawn
 #include "Components/Rendering/MeshComponent.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -13,12 +15,23 @@
 #include <iostream>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
+// current version v3.1
+
 // first iteration: [phys2] N=256  detect=6.01731ms  solve=28.5125ms  total=34.5298ms  (12 threads)
+// second iteration, improved detection: [phys2] N=258  detect=1.91467ms  solve=24.4167ms  total=26.3313ms  (12 threads)
+// third iteration early out: [phys2] N=256  detect=2.35294ms  solve=23.6921ms  total=26.045ms  (12 threads)
+// third but spread out boxes instead of pile: [phys2] N=256  detect=1.10597ms  solve=3.5679ms  total=4.67387ms  (12 threads)
+// fourth iteration contact islands (spread): [phys2] N=264  detect=1.13651ms  solve=0.872342ms  total=2.00885ms  (12 threads)
+// with pile: [phys2] N=256  detect=2.08472ms  solve=17.8367ms  total=19.9214ms  (12 threads)
+// fifth iteration with island coloring: [phys2] N=256  detect=2.11326ms  solve=18.0347ms  total=20.148ms  (12 threads)
+// but some time after the island settles: [phys2] N=256  detect=2.17994ms  solve=5.52122ms  total=7.70116ms  (12 threads)
+// six iteration, static body optimisation (pile): [phys2] N=261  detect=1.75468ms  solve=17.4337ms  total=19.1883ms  (12 threads)
 
 // RigidBody 3D (v2) — the rework. Differs from OldRigidBodyComponent3D ("OldRigidBody3D") in two
 // fundamental ways:
@@ -37,21 +50,21 @@
 //      the same loop, coupled to the accumulated normal impulse.
 //
 // This version drops sleep and the authored center of mass (CoM is the shape centroid = origin).
-// The lifecycle-timer fields are PARSED but not yet acted on (behavior comes later).
+// Lifecycle timers ARE acted on (stepWorld step 7): FreezeAfter collapses the body into a passive
+// static, TTL despawns it; both can count from spawn or from the body's first contact.
 //
 // JSON: { "type": "RigidBody3D", "mass": 1.0, "friction": 0.5, "rollingFriction": 0.05,
 //         "restitution": 0.1, "drag": 0.05, "angularDrag": 0.05, "static": false, "useGravity": true,
-//         "gravity": [0,-9.81,0], "simulation": "simple"|"complex",
+//         "gravity": [0,-9.81,0],
 //         "layer": 1, "mask": 4294967295,
 //         "shape": { "kind": "obb", "halfExtents": [0.5,0.5,0.5] },
 //         "initialVelocity": [0,0,0], "initialAngularVelocity": [0,0,0],
-//         "ttl": -1, "ttlStart": "spawn"|"contact",          // PLACED, not implemented yet
-//         "freezeAfter": -1, "freezeStart": "spawn"|"contact" }
+//         "ttl": -1, "ttlStart": "spawn"|"contact",          // <=0 = never despawn
+//         "freezeAfter": -1, "freezeStart": "spawn"|"contact" }   // <=0 = never freeze
 class RigidBodyComponent3D : public SpatialComponent3D {
     MeshComponent* mesh = nullptr;
 
 public:
-    enum class Simulation { Simple, Complex };
     enum class TimerStart { Spawn, Contact };
 
     // Per-frame state dump (awake bodies). Zero overhead when false.
@@ -59,6 +72,10 @@ public:
     // Phase timing: averaged ms for detection vs solve vs total, printed periodically. Lets you see
     // whether the narrowphase (parallel) or the serial PGS solve dominates the physics step.
     inline static bool DebugTimings = false;
+    // Solver shape: averaged island/constraint counts + the big island's colour count, printed
+    // periodically. Tells you whether a slow solve is "many tiny colour batches" (→ single-region
+    // refactor pays off) or genuinely a lot of constraints. Zero overhead when false.
+    inline static bool DebugSolver = false;
 
     // --- collision surface (merged collider) ---
     std::unique_ptr<ColliderShape> Shape;
@@ -71,18 +88,17 @@ public:
     float      RollingFriction = 0.05f;       // rolling resistance — damps spin so rollers (spheres) stop
     float      Restitution = 0.1f;            // bounciness [0,1], only above an impact-speed threshold
     float      Drag        = 0.05f;           // linear velocity damping
-    float      AngularDrag = 0.05f;           // angular velocity damping (Complex)
+    float      AngularDrag = 0.05f;           // angular velocity damping
     bool       Static      = false;           // immovable world geometry
     bool       UseGravity  = true;
-    Simulation Mode        = Simulation::Complex;   // v2 defaults to full angular dynamics
     glm::vec3  Gravity{0.0f, -9.81f, 0.0f};
     glm::vec3  Velocity{0.0f};
     glm::vec3  AngularVelocity{0.0f};
 
-    // --- lifecycle timers (placed; behavior implemented later) ---
-    float      TTL         = -1.0f;
-    float      FreezeAfter = -1.0f;
-    TimerStart TtlStart    = TimerStart::Spawn;
+    // --- lifecycle timers (acted on in stepWorld step 7; <=0 disables) ---
+    float      TTL         = -1.0f;   // seconds until despawn (frees the GameObject)
+    float      FreezeAfter = -1.0f;   // seconds until the body turns into a passive static
+    TimerStart TtlStart    = TimerStart::Spawn;   // count from spawn, or from first contact
     TimerStart FreezeStart = TimerStart::Spawn;
 
     // --- force / impulse API ---
@@ -109,8 +125,6 @@ public:
         AngularDrag = j.value("angularDrag", AngularDrag);
         Static      = j.value("static",      Static);
         UseGravity  = j.value("useGravity",  UseGravity);
-        const std::string sim = j.value("simulation", j.value("mode", std::string{"complex"}));
-        Mode = (sim == "simple") ? Simulation::Simple : Simulation::Complex;
         Gravity         = jsonVec3(j.value("gravity",                nlohmann::json{}), Gravity);
         Velocity        = jsonVec3(j.value("initialVelocity",        nlohmann::json{}), Velocity);
         AngularVelocity = jsonVec3(j.value("initialAngularVelocity", nlohmann::json{}), AngularVelocity);
@@ -119,7 +133,7 @@ public:
         if (j.contains("mask"))  Mask  = j["mask"].get<uint32_t>();
         parseShape(j);
 
-        // Timer fields: parsed and stored, but not yet acted on.
+        // Lifecycle timer fields (acted on in stepWorld step 7).
         TTL         = j.value("ttl",         TTL);
         FreezeAfter = j.value("freezeAfter", FreezeAfter);
         TtlStart    = parseStart(j.value("ttlStart",    std::string{"spawn"}));
@@ -135,24 +149,22 @@ public:
         this->useOwnerPosition();  this->useOwnerOrientation();
         if (mesh) { mesh->useOwnerPosition(); mesh->useOwnerOrientation(); }
 
-        m_invMass = (Static || Mass <= 0.0f) ? 0.0f : 1.0f / Mass;
+        m_invMass = (Static || Mass <= 0.0f) ? 0.0f : 1.0f / Mass; //if static or mass negative = 0, else 1.0f/mass
         m_invInertiaLocal = computeInvInertiaLocal();
-        bodies().push_back(this);
+        PhysicsManager::instance().add(this);   // self-register (manager owns the list now)
     }
 
     ~RigidBodyComponent3D() override {
-        auto& list = bodies();
-        list.erase(std::remove(list.begin(), list.end(), this), list.end());
+        PhysicsManager::instance().remove(this);
     }
 
-    static const std::vector<RigidBodyComponent3D*>& world() { return bodies(); }
+    static const std::vector<RigidBodyComponent3D*>& world() { return PhysicsManager::instance().bodies(); }
 
     // One fixed physics slice for the NEW world. Pipeline:
     //   1. integrate velocities (gravity/forces, drag)   2. sync shapes
     //   3. narrowphase -> contact constraints             4. velocity LCP (PGS: normal + friction)
     //   5. integrate positions                            6. split-impulse position correction
-    static void stepWorld(float dt) {
-        auto& world = bodies();
+    static void stepWorld(const std::vector<RigidBodyComponent3D*>& world, UniformGrid& grid, float dt) {
         const size_t n = world.size();
         if (n == 0) return;
 
@@ -201,10 +213,8 @@ public:
             // World inverse inertia from the current orientation (used by the solver this step).
             const glm::mat3 R = glm::mat3_cast(b->orientation());
             b->m_invInertiaWorld = R * b->m_invInertiaLocal * glm::transpose(R);
-            if (b->Mode == Simulation::Complex) {
-                b->AngularVelocity += (b->m_invInertiaWorld * b->m_torqueAccumulator) * dt;
-                b->AngularVelocity *= glm::clamp(1.0f - b->AngularDrag * dt, 0.0f, 1.0f);
-            }
+            b->AngularVelocity += (b->m_invInertiaWorld * b->m_torqueAccumulator) * dt;
+            b->AngularVelocity *= glm::clamp(1.0f - b->AngularDrag * dt, 0.0f, 1.0f);
             b->m_torqueAccumulator = glm::vec3(0.0f);
         }
 
@@ -213,31 +223,49 @@ public:
         for (size_t i = 0; i < n; ++i)
             if (world[i]->Shape) world[i]->Shape->setOrientation(world[i]->orientation());
 
-        // 3. Narrowphase — PARALLEL. Each body fills its OWN row with the pairs it owns as the lower
-        //    index (so threads never write shared state); manifold() is const and everything read
-        //    (poses/velocities/inertia/warm-start cache) is stable here. Then a serial concat builds
-        //    the flat list in body order (deterministic regardless of thread scheduling).
+        // 3a. Broadphase build — SERIAL scatter, O(N). Compute each body's world AABB and bin it into
+        //     the grid. Infinite planes go to the unbounded list (a plane can't be celled — its AABB
+        //     spans everything); out-of-range or shapeless bodies are skipped. The AABB is cached on
+        //     the body so the parallel pass below doesn't recompute it. This replaces the old O(N^2)
+        //     all-pairs sweep: bodies that share no cell are never tested.
+        grid.clear();
+        for (size_t i = 0; i < n; ++i) {
+            auto* A = world[i];
+            A->m_bodyIndex = int(i);    // for island union-find later in the step
+            A->m_inGrid = false;
+            if (!A->Shape) { A->m_aabbInfinite = false; continue; }
+            const AABBox box = A->Shape->worldAABB(A->position(), A->scale());
+            A->m_aabbMin = box.min; A->m_aabbMax = box.max; A->m_aabbInfinite = box.infinite;
+            if (box.infinite) { grid.unbounded.push_back(int(i)); continue; }   // planes: tested vs every finite body
+            if (!grid.inRange(A->position())) continue;                         // range cull (broadphase only for now)
+            grid.insert(int(i), box.min, box.max);
+            A->m_inGrid = true;
+        }
+
+        // 3b. Narrowphase — PARALLEL. Only DYNAMIC, finite, in-grid bodies drive the query: statics don't
+        //     move and may freely overlap, so they never check neighbours — they're passive grid occupants
+        //     that dynamic bodies find. Each driver writes only its OWN row (race-free); the serial concat
+        //     below flattens in body order (deterministic). Ownership: a dynamic–static pair is always
+        //     owned by the dynamic (the static never queries); a dynamic–dynamic pair by the lower index
+        //     (j>i) so it's built exactly once.
         #pragma omp parallel for schedule(guided) if(n > kParDetect)
         for (size_t i = 0; i < n; ++i) {
             RigidBodyComponent3D* A = world[i];
             A->m_row.clear();
-            if (!A->Shape) continue;
-            for (size_t k = i + 1; k < n; ++k) {
-                RigidBodyComponent3D* B = world[k];
-                if (!B->Shape) continue;
-                if (A->m_invMass == 0.0f && B->m_invMass == 0.0f) continue;       // static vs static
-                if (!layerMaskOverlap(A->Layer, A->Mask, B->Layer, B->Mask)) continue;
+            if (!A->Shape || A->m_aabbInfinite || !A->m_inGrid || A->m_invMass == 0.0f) continue;  // statics/planes/culled drive nothing
 
-                // The DYNAMIC body drives the manifold so a box-vs-plane pair takes the box's
-                // per-corner manifold (not the plane's single-point fallback). Normal stays caller->other.
-                RigidBodyComponent3D* caller = (A->m_invMass != 0.0f) ? A : B;
-                RigidBodyComponent3D* other  = (caller == A) ? B : A;
-                Contact pts[8];
-                const int nc = caller->Shape->manifold(*other->Shape,
-                                                       caller->position(), caller->scale(),
-                                                       other->position(),  other->scale(), pts, 8);
-                for (int c = 0; c < nc; ++c) buildConstraint(caller, other, pts[c], c, A->m_row);
+            thread_local std::vector<int> cand;
+            cand.clear();
+            grid.query(A->m_aabbMin, A->m_aabbMax, cand);
+            std::sort(cand.begin(), cand.end());
+            cand.erase(std::unique(cand.begin(), cand.end()), cand.end());   // dedup multi-cell neighbours
+
+            for (int j : cand) {
+                RigidBodyComponent3D* B = world[j];
+                if (B->m_invMass == 0.0f) narrowPair(A, B, A->m_row);          // dynamic–static: dynamic owns it
+                else if (size_t(j) > i)   narrowPair(A, B, A->m_row);          // dynamic–dynamic: lower index owns it
             }
+            for (int p : grid.unbounded) narrowPair(A, world[p], A->m_row);    // dynamic–plane (A drives)
         }
         static std::vector<ContactConstraint> constraints;
         constraints.clear();
@@ -247,34 +275,44 @@ public:
         }
         const auto _tDetect = std::chrono::high_resolution_clock::now();
 
-        // 3b. Warm start — re-apply each contact's cached impulse so the solve starts near last
-        //     frame's solution (lambdaN reaches the true support force immediately → friction budget).
-        //     SERIAL (mutates shared bodies).
-        for (auto& c : constraints) {
-            const glm::vec3 P = c.lambdaN * c.n + c.lambdaT1 * c.t1 + c.lambdaT2 * c.t2;
-            c.A->applyImpulseAtArm(-P, c.rA);
-            c.B->applyImpulseAtArm( P, c.rB);
+        // --- ISLAND BUILD — union-find over the contacts. Two dynamic bodies linked by a contact
+        //     (directly or transitively) form one island that MUST be solved together. STATICS are
+        //     never union nodes: unioning through them would fuse every pile resting on the same ground
+        //     into one giant island. A static just rides along in whichever islands touch it, and since
+        //     impulses to a static are no-ops (skipped in applyImpulseAtArm / solvePosition), the same
+        //     static appearing in several islands solved on different threads is race-free.
+        static std::vector<int> ufParent, ufRank;
+        ufParent.resize(n); ufRank.assign(n, 0);
+        for (size_t i = 0; i < n; ++i) ufParent[i] = int(i);
+        for (auto& c : constraints)
+            if (c.A->m_invMass != 0.0f && c.B->m_invMass != 0.0f)          // dynamic–dynamic edge only
+                ufUnite(ufParent, ufRank, c.A->m_bodyIndex, c.B->m_bodyIndex);
+        for (auto& c : constraints) {                                      // tag each contact with its island root (the dynamic side)
+            c.A->m_hasContact = true; c.B->m_hasContact = true;            // latch first-contact for the lifecycle timers
+            const int dyn = (c.A->m_invMass != 0.0f) ? c.A->m_bodyIndex : c.B->m_bodyIndex;
+            c.island = ufFind(ufParent, dyn);
+        }
+        // Group contacts into contiguous per-island ranges; stable_sort keeps body order within island
+        // (so the solve order — and thus the result — stays deterministic regardless of thread scheduling).
+        std::stable_sort(constraints.begin(), constraints.end(),
+                         [](const ContactConstraint& a, const ContactConstraint& b) { return a.island < b.island; });
+        static std::vector<std::pair<size_t, size_t>> islands;             // [begin,end) ranges into constraints
+        islands.clear();
+        for (size_t s = 0; s < constraints.size(); ) {
+            size_t e = s + 1;
+            while (e < constraints.size() && constraints[e].island == constraints[s].island) ++e;
+            islands.push_back({ s, e });
+            s = e;
         }
 
-        // 4. Velocity LCP — PGS. SERIAL: sequential impulses, accumulate-clamp-apply-delta per
-        //    contact; friction coupled to lambdaN. (A parallel solve would need mass-splitting.)
-        constexpr int kVelIterations = 12;
-        for (int it = 0; it < kVelIterations; ++it)
-            for (auto& c : constraints) { solveNormal(c); solveFriction(c); }
-
-        // Rolling resistance — the PHYSICAL roll-stopper: it damps the spin only on contact, scaled by
-        // the normal impulse, so a rolling ball slows smoothly (sliding friction can't — a pure roll
-        // has zero slip). Use the AVERAGE of the two coefficients, not a geometric mean: that way
-        // raising the ball's rollingFriction controls the stop distance directly, without being capped
-        // by the ground's. (angularDrag also bleeds spin, but it's air-resistance — it acts mid-air
-        // too; prefer rollingFriction for ground rolling and keep angularDrag small.)
-        for (auto& c : constraints) {
-            const float muRoll = 0.5f * (c.A->RollingFriction + c.B->RollingFriction);
-            if (muRoll <= 0.0f) continue;
-            const float budget = muRoll * c.lambdaN;
-            c.A->applyRollingResistance(c.rA, budget);
-            c.B->applyRollingResistance(c.rB, budget);
-        }
+        // 3b+4. Per-island velocity solve (warm start → PGS w/ symmetric sweep + early-out → rolling),
+        //       PARALLEL ACROSS islands — each island is body-disjoint, so threads never race, and each
+        //       early-outs independently (a settled cluster stops while a busy one keeps iterating).
+        //       A single dominant pile still lands on one thread; in-island parallelism was tried via
+        //       graph-colouring and reverted — the colour count / barrier overhead didn't pay off on CPU.
+        #pragma omp parallel for schedule(dynamic) if(islands.size() > 1)
+        for (size_t i = 0; i < islands.size(); ++i)
+            solveIslandVelocity(constraints, islands[i].first, islands[i].second);
 
         // Store the converged impulses for next frame's warm start (fresh map drops stale contacts).
         auto& cache = impulseCache();
@@ -288,15 +326,16 @@ public:
             if (b->m_invMass == 0.0f) continue;   // skip static
             auto* tf = b->owner->getComponent<TransformComponent3D>();
             tf->Position += b->Velocity * dt;
-            if (b->Mode == Simulation::Complex) integrateOrientation(tf->Orientation, b->AngularVelocity, dt);
+            integrateOrientation(tf->Orientation, b->AngularVelocity, dt);
         }
 
         // 6. Split-impulse position correction — pushes out the detected overlap using PSEUDO
         //    velocities only, so the real velocity (and thus the resting state) is never disturbed.
-        //    The PGS loop is SERIAL; the final per-body bias integration is parallel.
-        constexpr int kPosIterations = 4;
-        for (int it = 0; it < kPosIterations; ++it)
-            for (auto& c : constraints) solvePosition(c, dt);
+        //    PARALLEL over islands (disjoint bodies, same as the velocity solve); the per-body bias
+        //    integration below is also parallel.
+        #pragma omp parallel for schedule(dynamic) if(islands.size() > 1)
+        for (size_t i = 0; i < islands.size(); ++i)
+            solveIslandPosition(constraints, islands[i].first, islands[i].second, dt);
         #pragma omp parallel for schedule(static) if(n > kParBody)
         for (size_t i = 0; i < n; ++i) {
             auto* b = world[i];
@@ -304,7 +343,7 @@ public:
             if (b->m_biasVel == glm::vec3(0.0f) && b->m_biasAngVel == glm::vec3(0.0f)) continue;
             auto* tf = b->owner->getComponent<TransformComponent3D>();
             tf->Position += b->m_biasVel * dt;
-            if (b->Mode == Simulation::Complex) integrateOrientation(tf->Orientation, b->m_biasAngVel, dt);
+            integrateOrientation(tf->Orientation, b->m_biasAngVel, dt);
         }
 
         if (DebugTimings) {
@@ -327,6 +366,25 @@ public:
             }
         }
 
+        if (DebugSolver) {
+            // This step's solver shape — `constraints` and `islands` still hold this step's data here.
+            // biggestIsland = the largest contact cluster (the pile). A single island is solved on one
+            // thread, so a high value here is the serial-solve ceiling (islands parallelise ACROSS clusters).
+            size_t biggest = 0;
+            for (const auto& isl : islands) biggest = std::max(biggest, isl.second - isl.first);
+            static double accConstraints = 0, accIslands = 0; static size_t peakBiggest = 0; static int sframes = 0;
+            accConstraints += double(constraints.size());
+            accIslands     += double(islands.size());
+            peakBiggest = std::max(peakBiggest, biggest);
+            if (++sframes >= 60) {
+                std::cout << "[phys2-solver] islands="   << (accIslands     / sframes)
+                          << "  constraints="            << (accConstraints / sframes)
+                          << "  biggestIsland(peak)="    << peakBiggest
+                          << "\n";
+                accConstraints = accIslands = 0.0; peakBiggest = 0; sframes = 0;
+            }
+        }
+
         if (DebugPrint) {
             static int tick = 0;
             if (tick++ % 6 == 0)
@@ -345,6 +403,30 @@ public:
                               << " nc=" << nc << " lambdaN=" << lamN << "\n";
                 }
         }
+
+        // 7. Lifecycle timers — FreezeAfter (turn the body static) and TTL (despawn it). SERIAL and
+        //    last: a despawn frees the GameObject (→ ~RigidBodyComponent3D → PhysicsManager::remove),
+        //    which mutates the body list, so it must run after every parallel pass; the actual removal
+        //    is deferred until after this loop so `world` is never read while it shrinks.
+        static std::vector<RigidBodyComponent3D*> dead;
+        dead.clear();
+        for (size_t i = 0; i < n; ++i) {
+            auto* b = world[i];
+            // FreezeAfter: once the (spawn- or contact-started) timer elapses, become a passive static.
+            // Only meaningful while still dynamic; the guard also stops the timer after freezing.
+            if (b->FreezeAfter > 0.0f && b->m_invMass != 0.0f &&
+                (b->FreezeStart == TimerStart::Spawn || b->m_hasContact)) {
+                b->m_freezeTimer += dt;
+                if (b->m_freezeTimer >= b->FreezeAfter) b->freeze();
+            }
+            // TTL: once the (spawn- or contact-started) timer elapses, mark the body for despawn.
+            if (b->TTL > 0.0f && (b->TtlStart == TimerStart::Spawn || b->m_hasContact)) {
+                b->m_ttlTimer += dt;
+                if (b->m_ttlTimer >= b->TTL) dead.push_back(b);
+            }
+        }
+        for (auto* b : dead)
+            if (b->owner && b->owner->scene()) b->owner->scene()->removeObject(b->owner->Name);
     }
 
 private:
@@ -356,8 +438,33 @@ private:
     glm::vec3 m_biasVel{0.0f};       // split-impulse pseudo linear velocity (position pass only)
     glm::vec3 m_biasAngVel{0.0f};    // split-impulse pseudo angular velocity
 
+    // --- lifecycle timer state (advanced in stepWorld step 7) ---
+    float m_ttlTimer    = 0.0f;      // accumulated ACTIVE time toward TTL (despawn)
+    float m_freezeTimer = 0.0f;      // accumulated ACTIVE time toward FreezeAfter (turn static)
+    bool  m_hasContact  = false;     // latched once the body is in any contact ("contact" timer start)
+
+    // Broadphase scratch (filled by stepWorld's grid build, read by the narrowphase pass).
+    glm::vec3 m_aabbMin{0.0f}, m_aabbMax{0.0f};
+    bool      m_aabbInfinite = false;   // shape has no finite AABB (plane) → in the unbounded list, not the grid
+    bool      m_inGrid       = false;   // finite + in range → inserted into the grid this step
+    int       m_bodyIndex    = -1;      // this body's index in the world list (key for island union-find)
+
     // CoM is the shape centroid (origin), so the world center of mass is just the position.
     glm::vec3 worldCenter() const { return position(); }
+
+    // FreezeAfter elapsed: collapse the body into a passive static. It keeps its shape and pose and
+    // stays in the grid (others still collide with it), but with zero inverse mass/inertia it no
+    // longer integrates or drives the narrowphase. Velocities/accumulators are cleared so it rests.
+    void freeze() {
+        Static = true;
+        m_invMass = 0.0f;
+        m_invInertiaLocal = glm::mat3(0.0f);
+        m_invInertiaWorld = glm::mat3(0.0f);
+        Velocity = glm::vec3(0.0f);
+        AngularVelocity = glm::vec3(0.0f);
+        m_forceAccumulator = glm::vec3(0.0f);
+        m_torqueAccumulator = glm::vec3(0.0f);
+    }
 
     static TimerStart parseStart(const std::string& s) {
         return s == "contact" ? TimerStart::Contact : TimerStart::Spawn;
@@ -389,9 +496,9 @@ private:
         }
     }
 
-    // Inverse inertia tensor in LOCAL space from shape x mass. Zero for Simple/Static/plane.
+    // Inverse inertia tensor in LOCAL space from shape x mass. Zero for Static/plane.
     glm::mat3 computeInvInertiaLocal() const {
-        if (Mode != Simulation::Complex || m_invMass == 0.0f || !Shape) return glm::mat3(0.0f);
+        if (m_invMass == 0.0f || !Shape) return glm::mat3(0.0f);
         const glm::vec3 sc = scale();
         const float m = Mass;
         switch (Shape->kind()) {
@@ -417,6 +524,7 @@ private:
     }
 
     void applyImpulseAtArm(const glm::vec3& P, const glm::vec3& r) {
+        if (m_invMass == 0.0f) return;   // static: immovable, and skipping the no-op write keeps the parallel island solve race-free
         Velocity += P * m_invMass;
         AngularVelocity += m_invInertiaWorld * glm::cross(r, P);
     }
@@ -461,6 +569,7 @@ private:
         float lambdaT1 = 0.0f, lambdaT2 = 0.0f;
         float lambdaPos = 0.0f;       // accumulated position-correction impulse (>= 0)
         uint64_t key = 0;             // stable id (bodyA, bodyB, manifold slot) for warm-starting
+        int      island = -1;         // island root (union-find) — contacts are grouped by this for the parallel solve
     };
 
     // Per-body narrowphase scratch: the parallel detection loop fills each body's OWN row (the
@@ -530,15 +639,37 @@ private:
         out.push_back(c);
     }
 
+    // One candidate pair → contacts appended to `row`. Mirrors the old inner-loop body: skip
+    // static-static and non-overlapping layers, let the DYNAMIC body drive the manifold (so
+    // box-vs-plane uses the box's corner manifold), append a constraint per contact point. The
+    // caller guarantees each pair is passed exactly once. Defined after ContactConstraint/buildConstraint
+    // so the std::vector<ContactConstraint>& parameter type is complete.
+    static void narrowPair(RigidBodyComponent3D* A, RigidBodyComponent3D* B, std::vector<ContactConstraint>& row) {
+        if (!B->Shape) return;
+        if (A->m_invMass == 0.0f && B->m_invMass == 0.0f) return;       // static vs static
+        if (!layerMaskOverlap(A->Layer, A->Mask, B->Layer, B->Mask)) return;
+        RigidBodyComponent3D* caller = (A->m_invMass != 0.0f) ? A : B;
+        RigidBodyComponent3D* other  = (caller == A) ? B : A;
+        Contact pts[8];
+        const int nc = caller->Shape->manifold(*other->Shape,
+                                               caller->position(), caller->scale(),
+                                               other->position(),  other->scale(), pts, 8);
+        for (int c = 0; c < nc; ++c) buildConstraint(caller, other, pts[c], c, row);
+    }
+
     // Normal constraint: drive (vn + restitutionBias) -> 0, with the accumulated impulse clamped >= 0.
-    static void solveNormal(ContactConstraint& c) {
+    // Returns the magnitude of the impulse actually applied (after the clamp) so the solve loop can
+    // detect convergence and early-out.
+    static float solveNormal(ContactConstraint& c) {
         const float vn = glm::dot(pointVel(c.B, c.rB) - pointVel(c.A, c.rA), c.n);
         const float dl = -(vn + c.restitutionBias) * c.normalMass;
         const float old = c.lambdaN;
         c.lambdaN = std::max(0.0f, old + dl);
-        const glm::vec3 P = (c.lambdaN - old) * c.n;
+        const float applied = c.lambdaN - old;          // real change after clamp (n is unit → this is |P|)
+        const glm::vec3 P = applied * c.n;
         c.A->applyImpulseAtArm(-P, c.rA);
         c.B->applyImpulseAtArm( P, c.rB);
+        return std::abs(applied);
     }
 
     // Coulomb friction on both tangents, clamped to the friction CONE: the COMBINED tangent impulse
@@ -546,7 +677,8 @@ private:
     // square ("box") version over-applies friction along the diagonal, so a diagonally-sliding body
     // gets dragged toward a tangent axis — on a plane the tangents are world X/Z, so boxes visibly
     // "snap" to those axes. The cone is isotropic: friction opposes the actual slide direction.
-    static void solveFriction(ContactConstraint& c) {
+    // Returns the magnitude of the tangent impulse delta applied this call (for the solve early-out).
+    static float solveFriction(ContactConstraint& c) {
         const float mu   = std::sqrt(std::max(0.0f, c.A->Friction * c.B->Friction));
         const float maxF = mu * c.lambdaN;
         const glm::vec3 vrel = pointVel(c.B, c.rB) - pointVel(c.A, c.rA);
@@ -561,10 +693,12 @@ private:
             newT1 *= s; newT2 *= s;
         }
 
-        const glm::vec3 P = (newT1 - c.lambdaT1) * c.t1 + (newT2 - c.lambdaT2) * c.t2;
+        const float dT1 = newT1 - c.lambdaT1, dT2 = newT2 - c.lambdaT2;   // t1,t2 orthonormal → |P| = hypot(dT1,dT2)
+        const glm::vec3 P = dT1 * c.t1 + dT2 * c.t2;
         c.lambdaT1 = newT1; c.lambdaT2 = newT2;
         c.A->applyImpulseAtArm(-P, c.rA);
         c.B->applyImpulseAtArm( P, c.rB);
+        return std::sqrt(dT1 * dT1 + dT2 * dT2);
     }
 
     // Split-impulse: push the pair apart along the normal using PSEUDO velocities (never the real
@@ -578,18 +712,79 @@ private:
         const float old = c.lambdaPos;
         c.lambdaPos = std::max(0.0f, old + dl);
         const glm::vec3 P = (c.lambdaPos - old) * c.n;
-        // Apply to the bias (pseudo) velocities only.
-        c.A->m_biasVel    -= P * c.A->m_invMass;
-        c.A->m_biasAngVel -= c.A->m_invInertiaWorld * glm::cross(c.rA, P);
-        c.B->m_biasVel    += P * c.B->m_invMass;
-        c.B->m_biasAngVel += c.B->m_invInertiaWorld * glm::cross(c.rB, P);
+        // Apply to the bias (pseudo) velocities only. Skip statics: no-op writes, and skipping them
+        // keeps the parallel per-island position solve race-free on a shared static.
+        if (c.A->m_invMass != 0.0f) {
+            c.A->m_biasVel    -= P * c.A->m_invMass;
+            c.A->m_biasAngVel -= c.A->m_invInertiaWorld * glm::cross(c.rA, P);
+        }
+        if (c.B->m_invMass != 0.0f) {
+            c.B->m_biasVel    += P * c.B->m_invMass;
+            c.B->m_biasAngVel += c.B->m_invInertiaWorld * glm::cross(c.rB, P);
+        }
     }
 
-    // The new physics world: every v2 body (dynamic + static) lives here; the narrowphase sweeps it.
-    static std::vector<RigidBodyComponent3D*>& bodies() {
-        static std::vector<RigidBodyComponent3D*> v;
-        return v;
+    // ---- island solve helpers (one island = a body-disjoint contact range, safe on its own thread) ----
+
+    // Union-find over body indices: find with path-halving, union by rank.
+    static int ufFind(std::vector<int>& parent, int i) {
+        while (parent[i] != i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+        return i;
     }
+    static void ufUnite(std::vector<int>& parent, std::vector<int>& rnk, int a, int b) {
+        a = ufFind(parent, a); b = ufFind(parent, b);
+        if (a == b) return;
+        if (rnk[a] < rnk[b]) std::swap(a, b);
+        parent[b] = a;
+        if (rnk[a] == rnk[b]) ++rnk[a];
+    }
+
+    // Solve one island's contacts cs[b..e): warm start → velocity PGS (symmetric sweep + early-out) →
+    // rolling resistance. Body-disjoint from every other island, so this runs lock-free on its thread.
+    static void solveIslandVelocity(std::vector<ContactConstraint>& cs, size_t b, size_t e) {
+        for (size_t i = b; i < e; ++i) {                              // warm start (mutates this island's bodies)
+            auto& c = cs[i];
+            const glm::vec3 P = c.lambdaN * c.n + c.lambdaT1 * c.t1 + c.lambdaT2 * c.t2;
+            c.A->applyImpulseAtArm(-P, c.rA);
+            c.B->applyImpulseAtArm( P, c.rB);
+        }
+        constexpr int   kVelIterations = 12;
+        constexpr float kVelEpsilon    = 1e-5f;
+        const size_t    m = e - b;
+        for (int it = 0; it < kVelIterations; ++it) {
+            float maxDelta = 0.0f;
+            const bool forward = (it & 1) == 0;                        // symmetric sweep
+            for (size_t k = 0; k < m; ++k) {
+                auto& c = cs[b + (forward ? k : (m - 1 - k))];
+                maxDelta = std::max(maxDelta, solveNormal(c));
+                maxDelta = std::max(maxDelta, solveFriction(c));
+            }
+            if (maxDelta < kVelEpsilon) break;                         // converged → stop early
+        }
+        for (size_t i = b; i < e; ++i) {                              // rolling resistance
+            auto& c = cs[i];
+            const float muRoll = 0.5f * (c.A->RollingFriction + c.B->RollingFriction);
+            if (muRoll <= 0.0f) continue;
+            const float budget = muRoll * c.lambdaN;
+            c.A->applyRollingResistance(c.rA, budget);
+            c.B->applyRollingResistance(c.rB, budget);
+        }
+    }
+
+    // Solve one island's split-impulse position correction.
+    static void solveIslandPosition(std::vector<ContactConstraint>& cs, size_t b, size_t e, float dt) {
+        constexpr int kPosIterations = 4;
+        for (int it = 0; it < kPosIterations; ++it)
+            for (size_t i = b; i < e; ++i) solvePosition(cs[i], dt);
+    }
+
 };
+
+// Defined here (not in physics_manager.h) because it needs the COMPLETE RigidBodyComponent3D type;
+// the manager header only forward-declares it to avoid an include cycle. The manager owns the list,
+// the body owns the step logic — step() just hands its list to the (still-static) solver.
+inline void PhysicsManager::step(float dt) {
+    RigidBodyComponent3D::stepWorld(m_bodies, m_grid, dt);
+}
 
 REGISTER_COMPONENT(RigidBodyComponent3D, "RigidBody3D")

@@ -1,6 +1,7 @@
 #pragma once
 #include "Core/Components/SpatialComponent3D.h"
 #include "Core/Components/ColliderShapes.h"     // shared shape hierarchy
+#include "Core/Engine/Physics/uniform_grid.h"   // broadphase grid (shared with rigid-body physics)
 #include "Core/Engine/Services/ComponentRegistry.h"
 #include "Core/Engine/Helpers/JsonHelpers.h"
 #include <glm/glm.hpp>
@@ -93,23 +94,67 @@ public:
     // Read-only access to the live-hurtbox registry (debug-draw pass).
     static const std::vector<HurtBoxComponent3D*>& hurtboxes() { return AllHurtBoxes(); }
 
-    // Call once per frame. Naive O(N^2) overlap sweep (boolean intersects() only),
-    // parallelized past 256 hurtboxes; then a frame-to-frame diff fires enter/stay/exit.
-    // TODO: broadphase; only sweep compatible layers.
+    // Call once per frame. Uniform-grid broadphase (the same spatial hash the rigid-body
+    // physics uses) feeds a boolean intersects() narrowphase; then a frame-to-frame diff
+    // fires enter/stay/exit. Unlike the rigid-body grid, overlaps are MUTUAL (no j>i owner
+    // rule): each hurtbox records every hurtbox it overlaps into its OWN thisFrame, so each
+    // thread writes only its own row and the query pass is race-free.
     static void tickWorld() {
         auto& list = AllHurtBoxes();
+        const int n = int(list.size());
 
-        for (auto* c : list) c->syncShape();   // refresh OBB orientations (no-op otherwise)
+        for (auto* c : list) c->syncShape();   // refresh OBB orientations (no-op otherwise) — before AABBs
 
-        #pragma omp parallel for schedule(guided) if(list.size() > 256)
-        for (size_t i = 0; i < list.size(); ++i) {
+        // --- broadphase build (serial): cache each AABB, bin finite ones, list planes ---
+        UniformGrid& g = grid();
+        g.clear();
+        for (int i = 0; i < n; ++i) {
+            auto* a = list[i];
+            if (!a->Shape) { a->m_aabbInfinite = false; continue; }
+            const AABBox box = a->Shape->worldAABB(a->position(), a->scale());
+            a->m_aabbMin = box.min; a->m_aabbMax = box.max; a->m_aabbInfinite = box.infinite;
+            if (box.infinite) g.unbounded.push_back(i);   // infinite plane — can't be binned
+            else              g.insert(i, box.min, box.max);
+        }
+
+        // --- narrowphase (parallel): each hurtbox fills its own thisFrame ---
+        #pragma omp parallel for schedule(guided) if(n > 256)
+        for (int i = 0; i < n; ++i) {
             auto* a = list[i];
             a->thisFrame.clear();
             if (!a->Shape) continue;
-            for (size_t j = 0; j < list.size(); ++j) {
+
+            if (a->m_aabbInfinite) {
+                // Plane: spans every cell, so it can't query the grid — test against all finite hurtboxes.
+                for (int j = 0; j < n; ++j) {
+                    if (j == i) continue;
+                    auto* b = list[j];
+                    if (!b->Shape || !passesMask(a, b)) continue;
+                    if (a->Shape->intersects(*b->Shape, a->position(), a->scale(),
+                                                        b->position(), b->scale()))
+                        a->thisFrame.insert(b);
+                }
+                continue;
+            }
+
+            // Finite: gather candidates from the cells the AABB overlaps (with duplicates), dedup.
+            thread_local std::vector<int> cand;
+            cand.clear();
+            g.query(a->m_aabbMin, a->m_aabbMax, cand);
+            std::sort(cand.begin(), cand.end());
+            cand.erase(std::unique(cand.begin(), cand.end()), cand.end());
+            for (int j : cand) {
                 if (j == i) continue;
                 auto* b = list[j];
-                if (!passesMask(a, b) || !b->Shape) continue;
+                if (!b->Shape || !passesMask(a, b)) continue;
+                if (a->Shape->intersects(*b->Shape, a->position(), a->scale(),
+                                                    b->position(), b->scale()))
+                    a->thisFrame.insert(b);
+            }
+            // Also test against the infinite planes (never binned).
+            for (int p : g.unbounded) {
+                auto* b = list[p];
+                if (!b->Shape || !passesMask(a, b)) continue;
                 if (a->Shape->intersects(*b->Shape, a->position(), a->scale(),
                                                     b->position(), b->scale()))
                     a->thisFrame.insert(b);
@@ -138,9 +183,20 @@ private:
     std::unordered_set<HurtBoxComponent3D*> thisFrame;
     std::unordered_set<HurtBoxComponent3D*> lastFrame;
 
+    // Broadphase AABB cached each frame (built before the parallel narrowphase reads it).
+    glm::vec3 m_aabbMin{0.0f}, m_aabbMax{0.0f};
+    bool      m_aabbInfinite = false;
+
     static std::vector<HurtBoxComponent3D*>& AllHurtBoxes() {
         static std::vector<HurtBoxComponent3D*> v;
         return v;
+    }
+
+    // Hurtboxes own a separate broadphase grid from the rigid-body physics (different set,
+    // ticked post-physics). Function-local static so its bucket capacity is reused across frames.
+    static UniformGrid& grid() {
+        static UniformGrid g;
+        return g;
     }
 
     static bool passesMask(const HurtBoxComponent3D* a, const HurtBoxComponent3D* b) {

@@ -16,9 +16,9 @@ Source files:
 ## 1. Overview
 
 The engine is **impulse-based** with **semi-implicit (symplectic) Euler** integration on a
-**fixed timestep** (`1/60 s`). It supports two per-body simulation modes — **Simple** (linear only)
-and **Complex** (full angular dynamics) — sharing one solver. Collision is **narrowphase-only**
-(no broadphase yet): every dynamic body is tested against every collider each step.
+**fixed timestep** (`1/60 s`). Every body runs **full angular dynamics** (linear + rotational);
+statics and planes simply carry a zero inverse-inertia tensor, which collapses the angular terms
+to no-ops. Broadphase is a **uniform-grid spatial hash**, then a narrowphase contact solve.
 
 Key design choices:
 - **Component-driven & data-first.** A physics object is a GameObject with a `Transform`, a
@@ -80,7 +80,6 @@ so small scenes stay serial and pay no thread overhead; without OpenMP it all de
 | Field | Type | Default | Meaning |
 |---|---|---|---|
 | `mass` | float | `1.0` | Mass in kg. `<= 0` ⇒ infinite mass (immovable). |
-| `simulation` (or `mode`) | `"simple"`/`"complex"` | `"simple"` | Linear-only vs. full angular dynamics. |
 | `static` | bool | `false` | Immovable world geometry: never integrates, infinite mass. |
 | `useGravity` | bool | `true` | Apply `gravity` each step. |
 | `gravity` | vec3 | `[0,-9.81,0]` | Per-body gravity vector. |
@@ -196,7 +195,7 @@ Two independent, optional timers make spawned bodies modular. Each starts counti
 Example — spawned cube that locks solid 5 s after it lands, and lives forever:
 
 ```jsonc
-{ "type": "RigidBody3D", "mass": 2.0, "simulation": "complex",
+{ "type": "RigidBody3D", "mass": 2.0,
   "freezeAfter": 5.0, "freezeStart": "contact",
   "ttl": -1, "ttlStart": "spawn" }
 ```
@@ -204,7 +203,7 @@ Example — spawned cube that locks solid 5 s after it lands, and lives forever:
 Example — a projectile that despawns 3 s after it first hits something:
 
 ```jsonc
-{ "type": "RigidBody3D", "mass": 1.0, "simulation": "simple",
+{ "type": "RigidBody3D", "mass": 1.0,
   "ttl": 3.0, "ttlStart": "contact" }
 ```
 
