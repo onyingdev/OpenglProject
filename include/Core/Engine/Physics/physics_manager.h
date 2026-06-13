@@ -31,15 +31,21 @@ public:
     // --- registration (borrowed; the body's lifetime is the component's) ---
     // add(body)    ← called from RigidBodyComponent3D::start()
     // remove(body) ← called from the component's destructor
-    void add(RigidBodyComponent3D* body) {
-        if (body) m_bodies.push_back(body);   // push_back preserves order → deterministic solve order
-    }
+    void add(RigidBodyComponent3D* body);     // defined in RigidBodyComponent3D.h (needs inverseMass())
     void remove(RigidBodyComponent3D* body) {
         m_bodies.erase(std::remove(m_bodies.begin(), m_bodies.end(), body), m_bodies.end());
+        // erase-remove shifts every later element, so the static grid's cached indices are now
+        // stale regardless of which body left → force a rebuild next step.
+        m_staticDirty = true;
     }
 
     //reset physics — drop every registered body (does NOT free them; scenes own them).
-    void reset() { m_bodies.clear(); }
+    void reset() { m_bodies.clear(); m_staticDirty = true; }
+
+    // The static grid is a persistent broadphase partition (built once, reused across frames). Any
+    // change to the static set or its binning must invalidate it: a new/removed static, a body that
+    // freezes into a static, or a range/cell-size change. Frozen bodies call this from freeze().
+    void markStaticDirty() { m_staticDirty = true; }
 
     // --- per-frame drive ---
     // One fixed physics slice. Engine owns the accumulator and calls this N times per frame
@@ -54,15 +60,17 @@ public:
     // --- simulation range (geography gate) ---
     // Cubic by default-ish (pass equal extents), but halfExtents is a vec3 so you can clamp the
     // horizontal (x/z) and vertical (y) reach independently. Disabled until set → unbounded world.
+    // Each of these re-bins statics (range/cell geometry changed), so they mark the static grid dirty.
     void setRange(const glm::vec3& center, const glm::vec3& halfExtents) {
         m_grid.rangeEnabled = true; m_grid.rangeCenter = center; m_grid.rangeHalf = halfExtents;
+        m_staticDirty = true;
     }
     void setRangeCubic(const glm::vec3& center, float halfExtent) {
         setRange(center, glm::vec3(halfExtent));
     }
-    void clearRange()              { m_grid.rangeEnabled = false; }
-    void setRangeCenter(const glm::vec3& c) { m_grid.rangeCenter = c; }   // move the active box (e.g. follow the camera)
-    void setCellSize(float s)      { if (s > 0.0f) m_grid.cellSize = s; }
+    void clearRange()              { m_grid.rangeEnabled = false; m_staticDirty = true; }
+    void setRangeCenter(const glm::vec3& c) { m_grid.rangeCenter = c; m_staticDirty = true; }   // move the active box (e.g. follow the camera)
+    void setCellSize(float s)      { if (s > 0.0f) { m_grid.cellSize = s; m_staticDirty = true; } }
 
     //grid → candidate PAIRS → narrowphase → CONTACTS → island build → ISLANDS → solver
     //     (pair-parallel ✓)              (union-find)        (island-parallel ✓)
@@ -94,9 +102,12 @@ private:
     // behavior is unchanged. The split into dynamic/static/unbounded comes later.
     std::vector<RigidBodyComponent3D*> m_bodies;   // borrowed — scenes own the bodies
 
-    // increment 2: the broadphase grid. Rebuilt each step (inside stepWorld, which has the complete
-    // body type to compute AABBs); the manager owns the storage so capacity is reused across steps.
+    // increment 2: the broadphase grid. The DYNAMIC partition is rebuilt each step (inside stepWorld,
+    // which has the complete body type to compute AABBs); the STATIC partition is persistent and only
+    // rebuilt when m_staticDirty (a static added/removed/frozen, or range/cell-size changed). The
+    // manager owns the storage so capacity is reused across steps.
     UniformGrid m_grid;
+    bool        m_staticDirty = true;   // static partition needs a (re)build before the next query
 
     // --- planned layout (next increments) ---
     // std::vector<RigidBodyComponent3D*> m_dynamic;     // integrate + query grid

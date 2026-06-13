@@ -21,7 +21,7 @@
 #include <omp.h>
 #endif
 
-// current version v3.1
+// current version v3.2
 
 // first iteration: [phys2] N=256  detect=6.01731ms  solve=28.5125ms  total=34.5298ms  (12 threads)
 // second iteration, improved detection: [phys2] N=258  detect=1.91467ms  solve=24.4167ms  total=26.3313ms  (12 threads)
@@ -32,6 +32,8 @@
 // fifth iteration with island coloring: [phys2] N=256  detect=2.11326ms  solve=18.0347ms  total=20.148ms  (12 threads)
 // but some time after the island settles: [phys2] N=256  detect=2.17994ms  solve=5.52122ms  total=7.70116ms  (12 threads)
 // six iteration, static body optimisation (pile): [phys2] N=261  detect=1.75468ms  solve=17.4337ms  total=19.1883ms  (12 threads)
+// new iterations not documented yet.
+
 
 // RigidBody 3D (v2) — the rework. Differs from OldRigidBodyComponent3D ("OldRigidBody3D") in two
 // fundamental ways:
@@ -71,7 +73,7 @@ public:
     inline static bool DebugPrint = false;
     // Phase timing: averaged ms for detection vs solve vs total, printed periodically. Lets you see
     // whether the narrowphase (parallel) or the serial PGS solve dominates the physics step.
-    inline static bool DebugTimings = false;
+    inline static bool DebugTimings = true;
     // Solver shape: averaged island/constraint counts + the big island's colour count, printed
     // periodically. Tells you whether a slow solve is "many tiny colour batches" (→ single-region
     // refactor pays off) or genuinely a lot of constraints. Zero overhead when false.
@@ -164,7 +166,8 @@ public:
     //   1. integrate velocities (gravity/forces, drag)   2. sync shapes
     //   3. narrowphase -> contact constraints             4. velocity LCP (PGS: normal + friction)
     //   5. integrate positions                            6. split-impulse position correction
-    static void stepWorld(const std::vector<RigidBodyComponent3D*>& world, UniformGrid& grid, float dt) {
+    static void stepWorld(const std::vector<RigidBodyComponent3D*>& world, UniformGrid& grid,
+                          bool& staticDirty, float dt) {
         const size_t n = world.size();
         if (n == 0) return;
 
@@ -199,6 +202,21 @@ public:
 
         const auto _tStart = std::chrono::high_resolution_clock::now();
 
+        // Fast path: with no dynamic body there is nothing to detect or solve — only the lifecycle
+        // timers still need to advance (a frozen static can have a TTL). A cheap scan with early-out
+        // on the first dynamic; if none, skip the entire detect/solve pipeline below. Still timed and
+        // reported (detect=solve=0) so the residual static + lifecycle cost stays visible.
+        bool anyDynamic = false;
+        for (size_t i = 0; i < n; ++i) if (world[i]->m_invMass != 0.0f) { anyDynamic = true; break; }
+        if (!anyDynamic) {
+            runLifecycle(world, dt);
+            if (DebugTimings) {
+                using ms = std::chrono::duration<double, std::milli>;
+                reportTimings(n, 0.0, 0.0, ms(std::chrono::high_resolution_clock::now() - _tStart).count());
+            }
+            return;
+        }
+
         // 1. Integrate velocities only (pose advances in step 5). Reset per-step solver state.
         //    Per-body independent → parallel.
         #pragma omp parallel for schedule(static) if(n > kParBody)
@@ -223,24 +241,41 @@ public:
         for (size_t i = 0; i < n; ++i)
             if (world[i]->Shape) world[i]->Shape->setOrientation(world[i]->orientation());
 
-        // 3a. Broadphase build — SERIAL scatter, O(N). Compute each body's world AABB and bin it into
-        //     the grid. Infinite planes go to the unbounded list (a plane can't be celled — its AABB
-        //     spans everything); out-of-range or shapeless bodies are skipped. The AABB is cached on
-        //     the body so the parallel pass below doesn't recompute it. This replaces the old O(N^2)
-        //     all-pairs sweep: bodies that share no cell are never tested.
-        grid.clear();
+        // 3a. Broadphase build — SERIAL scatter, O(N). Two partitions: DYNAMIC bodies recompute their
+        //     world AABB and re-bin every step; STATIC bodies are binned ONCE into a persistent
+        //     partition and skipped here until the static set changes (staticDirty). Infinite planes
+        //     go to the matching unbounded list (a plane can't be celled). The driver's AABB is cached
+        //     for the parallel query below. The steady-state win: a settled scene of statics costs
+        //     almost nothing here because their branch does no work.
+        const bool staticRebuilt = staticDirty;   // profiler: did the static partition rebuild this step?
+        int dynCount = 0, statCount = 0;          // profiler: dynamic vs static body split
+        grid.clear();                          // dynamic partition: every step
+        if (staticDirty) grid.clearStatic();   // static partition: only on a dirty rebuild
         for (size_t i = 0; i < n; ++i) {
             auto* A = world[i];
-            A->m_bodyIndex = int(i);    // for island union-find later in the step
+            if (A->m_invMass != 0.0f) ++dynCount; else ++statCount;
+            A->m_bodyIndex = int(i);    // for island union-find later in the step (used by the dynamic side)
             A->m_inGrid = false;
             if (!A->Shape) { A->m_aabbInfinite = false; continue; }
-            const AABBox box = A->Shape->worldAABB(A->position(), A->scale());
-            A->m_aabbMin = box.min; A->m_aabbMax = box.max; A->m_aabbInfinite = box.infinite;
-            if (box.infinite) { grid.unbounded.push_back(int(i)); continue; }   // planes: tested vs every finite body
-            if (!grid.inRange(A->position())) continue;                         // range cull (broadphase only for now)
-            grid.insert(int(i), box.min, box.max);
-            A->m_inGrid = true;
+            if (A->m_invMass != 0.0f) {
+                // DYNAMIC: recompute AABB and re-bin into the dynamic partition.
+                const AABBox box = A->Shape->worldAABB(A->position(), A->scale());
+                A->m_aabbMin = box.min; A->m_aabbMax = box.max; A->m_aabbInfinite = box.infinite;
+                if (box.infinite) { grid.unbounded.push_back(int(i)); continue; }   // dynamic plane (rare)
+                if (!grid.inRange(A->position())) continue;                         // range cull
+                grid.insert(int(i), box.min, box.max);
+                A->m_inGrid = true;
+            } else if (staticDirty) {
+                // STATIC: bin ONCE into the persistent partition (only when dirty).
+                const AABBox box = A->Shape->worldAABB(A->position(), A->scale());
+                A->m_aabbMin = box.min; A->m_aabbMax = box.max; A->m_aabbInfinite = box.infinite;
+                if (box.infinite) { grid.staticUnbounded.push_back(int(i)); continue; }  // e.g. the ground
+                if (!grid.inRange(A->position())) continue;
+                grid.insertStatic(int(i), box.min, box.max);
+            }
+            // static + !staticDirty: already in the static partition — do nothing (the win).
         }
+        staticDirty = false;   // static partition now matches the current static set
 
         // 3b. Narrowphase — PARALLEL. Only DYNAMIC, finite, in-grid bodies drive the query: statics don't
         //     move and may freely overlap, so they never check neighbours — they're passive grid occupants
@@ -248,7 +283,10 @@ public:
         //     below flattens in body order (deterministic). Ownership: a dynamic–static pair is always
         //     owned by the dynamic (the static never queries); a dynamic–dynamic pair by the lower index
         //     (j>i) so it's built exactly once.
-        #pragma omp parallel for schedule(guided) if(n > kParDetect)
+        // candTotal/narrowTotal feed the detection profiler (DebugSolver). The increments are a couple
+        // of integer adds beside the manifold math — negligible — so they're always collected.
+        long long candTotal = 0, narrowTotal = 0;
+        #pragma omp parallel for schedule(guided) if(n > kParDetect) reduction(+:candTotal,narrowTotal)
         for (size_t i = 0; i < n; ++i) {
             RigidBodyComponent3D* A = world[i];
             A->m_row.clear();
@@ -256,16 +294,24 @@ public:
 
             thread_local std::vector<int> cand;
             cand.clear();
-            grid.query(A->m_aabbMin, A->m_aabbMax, cand);
+            grid.query(A->m_aabbMin, A->m_aabbMax, cand);         // dynamic neighbours
+            grid.queryStatic(A->m_aabbMin, A->m_aabbMax, cand);   // static neighbours (persistent partition)
             std::sort(cand.begin(), cand.end());
             cand.erase(std::unique(cand.begin(), cand.end()), cand.end());   // dedup multi-cell neighbours
+            candTotal += (long long)cand.size();
 
+            // Ownership keys off the candidate's MASS, not which partition it came from, so merging
+            // both lists is safe: a static is always owned by the dynamic driver, a dynamic–dynamic
+            // pair by the lower index (j>i) so it's built exactly once.
+            long long localNarrow = 0;
             for (int j : cand) {
                 RigidBodyComponent3D* B = world[j];
-                if (B->m_invMass == 0.0f) narrowPair(A, B, A->m_row);          // dynamic–static: dynamic owns it
-                else if (size_t(j) > i)   narrowPair(A, B, A->m_row);          // dynamic–dynamic: lower index owns it
+                if (B->m_invMass == 0.0f) { narrowPair(A, B, A->m_row); ++localNarrow; }   // dynamic–static: dynamic owns it
+                else if (size_t(j) > i)   { narrowPair(A, B, A->m_row); ++localNarrow; }   // dynamic–dynamic: lower index owns it
             }
-            for (int p : grid.unbounded) narrowPair(A, world[p], A->m_row);    // dynamic–plane (A drives)
+            for (int p : grid.unbounded)       { narrowPair(A, world[p], A->m_row); ++localNarrow; }  // dynamic plane (A drives)
+            for (int p : grid.staticUnbounded) { narrowPair(A, world[p], A->m_row); ++localNarrow; }  // static plane (e.g. ground)
+            narrowTotal += localNarrow;
         }
         static std::vector<ContactConstraint> constraints;
         constraints.clear();
@@ -349,39 +395,48 @@ public:
         if (DebugTimings) {
             const auto _tEnd = std::chrono::high_resolution_clock::now();
             using ms = std::chrono::duration<double, std::milli>;
-            static double accDetect = 0, accSolve = 0, accTotal = 0; static int frames = 0;
-            accDetect += ms(_tDetect - _tStart).count();        // integrate + syncShape + narrowphase
-            accSolve  += ms(_tEnd    - _tDetect).count();       // warm-start + velocity/position PGS
-            accTotal  += ms(_tEnd    - _tStart).count();
-            if (++frames >= 60) {
-                std::cout << "[phys2] N=" << n
-                          << "  detect=" << (accDetect / frames) << "ms"
-                          << "  solve="  << (accSolve  / frames) << "ms"
-                          << "  total="  << (accTotal  / frames) << "ms"
-#ifdef _OPENMP
-                          << "  (" << kThreads << " threads)"
-#endif
-                          << "\n";
-                accDetect = accSolve = accTotal = 0.0; frames = 0;
-            }
+            reportTimings(n,
+                ms(_tDetect - _tStart).count(),    // integrate + syncShape + broadphase build + narrowphase
+                ms(_tEnd    - _tDetect).count(),   // warm-start + velocity/position PGS
+                ms(_tEnd    - _tStart).count());
         }
 
         if (DebugSolver) {
-            // This step's solver shape — `constraints` and `islands` still hold this step's data here.
-            // biggestIsland = the largest contact cluster (the pile). A single island is solved on one
-            // thread, so a high value here is the serial-solve ceiling (islands parallelise ACROSS clusters).
+            // This step's solver + detection shape — `constraints`/`islands` and the detection counters
+            // still hold this step's data here. biggestIsland = the largest contact cluster (the pile);
+            // a single island solves on one thread, so a high value is the serial-solve ceiling.
             size_t biggest = 0;
             for (const auto& isl : islands) biggest = std::max(biggest, isl.second - isl.first);
             static double accConstraints = 0, accIslands = 0; static size_t peakBiggest = 0; static int sframes = 0;
+            static double accDyn = 0, accStat = 0, accCand = 0, accNarrow = 0; static int accRebuilds = 0;
             accConstraints += double(constraints.size());
             accIslands     += double(islands.size());
             peakBiggest = std::max(peakBiggest, biggest);
+            accDyn    += dynCount;        accStat   += statCount;
+            accCand   += double(candTotal); accNarrow += double(narrowTotal);
+            if (staticRebuilt) ++accRebuilds;
             if (++sframes >= 60) {
                 std::cout << "[phys2-solver] islands="   << (accIslands     / sframes)
                           << "  constraints="            << (accConstraints / sframes)
                           << "  biggestIsland(peak)="    << peakBiggest
                           << "\n";
-                accConstraints = accIslands = 0.0; peakBiggest = 0; sframes = 0;
+                // What the broadphase fed the narrowphase, and how productive it was:
+                //   broadCandidates = deduped neighbour indices examined across all dynamic drivers
+                //   narrowTests     = actual narrowPair() calls (after the ownership/j>i filter)
+                //   contacts/test   = contact points produced per test (low ⇒ many near-miss tests;
+                //                     try a smaller cellSize or check pile density)
+                //   staticRebuilds  = times the persistent static grid rebuilt in the last 60 steps (≈0 ideal)
+                std::cout << "[phys2-detect] dyn="        << (accDyn    / sframes)
+                          << "  stat="                    << (accStat   / sframes)
+                          << "  broadCandidates="         << (accCand   / sframes)
+                          << "  narrowTests="             << (accNarrow / sframes)
+                          << "  contacts/test="           << (accNarrow > 0 ? accConstraints / accNarrow : 0.0)
+                          << "  staticRebuilds/60="        << accRebuilds
+                          << "  dynCells="                << grid.cells.size()
+                          << "  statCells="               << grid.staticCells.size()
+                          << "\n";
+                accConstraints = accIslands = 0.0; peakBiggest = 0;
+                accDyn = accStat = accCand = accNarrow = 0.0; accRebuilds = 0; sframes = 0;
             }
         }
 
@@ -404,10 +459,17 @@ public:
                 }
         }
 
-        // 7. Lifecycle timers — FreezeAfter (turn the body static) and TTL (despawn it). SERIAL and
-        //    last: a despawn frees the GameObject (→ ~RigidBodyComponent3D → PhysicsManager::remove),
-        //    which mutates the body list, so it must run after every parallel pass; the actual removal
-        //    is deferred until after this loop so `world` is never read while it shrinks.
+        // 7. Lifecycle timers (FreezeAfter / TTL). Runs on both the full and the all-static fast path.
+        runLifecycle(world, dt);
+    }
+
+private:
+    // Step 7, extracted so the all-static fast path can run it without the detect/solve pipeline.
+    // SERIAL and last: a despawn frees the GameObject (→ ~RigidBodyComponent3D → PhysicsManager::remove),
+    // which mutates the body list, so removal is deferred to after the loop (and after every parallel
+    // pass) — `world` is never read while it shrinks.
+    static void runLifecycle(const std::vector<RigidBodyComponent3D*>& world, float dt) {
+        const size_t n = world.size();
         static std::vector<RigidBodyComponent3D*> dead;
         dead.clear();
         for (size_t i = 0; i < n; ++i) {
@@ -429,7 +491,25 @@ public:
             if (b->owner && b->owner->scene()) b->owner->scene()->removeObject(b->owner->Name);
     }
 
-private:
+    // Averaged phase-timing print (every 60 steps), shared by the full step and the all-static fast
+    // path so the [phys2] line shows up either way — the fast path reports detect=solve=0, leaving
+    // `total` as the residual static + lifecycle cost.
+    static void reportTimings(size_t n, double detectMs, double solveMs, double totalMs) {
+        static double accDetect = 0, accSolve = 0, accTotal = 0; static int frames = 0;
+        accDetect += detectMs; accSolve += solveMs; accTotal += totalMs;
+        if (++frames >= 60) {
+            std::cout << "[phys2] N=" << n
+                      << "  detect=" << (accDetect / frames) << "ms"
+                      << "  solve="  << (accSolve  / frames) << "ms"
+                      << "  total="  << (accTotal  / frames) << "ms"
+#ifdef _OPENMP
+                      << "  (" << omp_get_max_threads() << " threads)"
+#endif
+                      << "\n";
+            accDetect = accSolve = accTotal = 0.0; frames = 0;
+        }
+    }
+
     glm::vec3 m_forceAccumulator{0.0f};
     glm::vec3 m_torqueAccumulator{0.0f};
     float     m_invMass = 1.0f;
@@ -464,6 +544,7 @@ private:
         AngularVelocity = glm::vec3(0.0f);
         m_forceAccumulator = glm::vec3(0.0f);
         m_torqueAccumulator = glm::vec3(0.0f);
+        PhysicsManager::instance().markStaticDirty();   // this body must now enter the persistent static grid
     }
 
     static TimerStart parseStart(const std::string& s) {
@@ -783,8 +864,14 @@ private:
 // Defined here (not in physics_manager.h) because it needs the COMPLETE RigidBodyComponent3D type;
 // the manager header only forward-declares it to avoid an include cycle. The manager owns the list,
 // the body owns the step logic — step() just hands its list to the (still-static) solver.
+inline void PhysicsManager::add(RigidBodyComponent3D* body) {
+    if (!body) return;
+    m_bodies.push_back(body);                                 // append → existing indices unchanged
+    if (body->inverseMass() == 0.0f) m_staticDirty = true;    // a new static must enter the static grid
+}
+
 inline void PhysicsManager::step(float dt) {
-    RigidBodyComponent3D::stepWorld(m_bodies, m_grid, dt);
+    RigidBodyComponent3D::stepWorld(m_bodies, m_grid, m_staticDirty, dt);
 }
 
 REGISTER_COMPONENT(RigidBodyComponent3D, "RigidBody3D")
