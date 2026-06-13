@@ -4,6 +4,7 @@
 #include "Core/Engine/Services/ComponentRegistry.h"
 #include "Core/Engine/Helpers/JsonHelpers.h"
 #include "Core/Engine/Physics/physics_manager.h"   // owns the body list + drives the step
+#include "Core/Engine/Scene.h"                      // owner->scene()->removeObject() for TTL despawn
 #include "Components/Rendering/MeshComponent.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -20,6 +21,8 @@
 #include <omp.h>
 #endif
 
+// current version v3.1
+
 // first iteration: [phys2] N=256  detect=6.01731ms  solve=28.5125ms  total=34.5298ms  (12 threads)
 // second iteration, improved detection: [phys2] N=258  detect=1.91467ms  solve=24.4167ms  total=26.3313ms  (12 threads)
 // third iteration early out: [phys2] N=256  detect=2.35294ms  solve=23.6921ms  total=26.045ms  (12 threads)
@@ -28,6 +31,7 @@
 // with pile: [phys2] N=256  detect=2.08472ms  solve=17.8367ms  total=19.9214ms  (12 threads)
 // fifth iteration with island coloring: [phys2] N=256  detect=2.11326ms  solve=18.0347ms  total=20.148ms  (12 threads)
 // but some time after the island settles: [phys2] N=256  detect=2.17994ms  solve=5.52122ms  total=7.70116ms  (12 threads)
+// six iteration, static body optimisation (pile): [phys2] N=261  detect=1.75468ms  solve=17.4337ms  total=19.1883ms  (12 threads)
 
 // RigidBody 3D (v2) — the rework. Differs from OldRigidBodyComponent3D ("OldRigidBody3D") in two
 // fundamental ways:
@@ -46,28 +50,28 @@
 //      the same loop, coupled to the accumulated normal impulse.
 //
 // This version drops sleep and the authored center of mass (CoM is the shape centroid = origin).
-// The lifecycle-timer fields are PARSED but not yet acted on (behavior comes later).
+// Lifecycle timers ARE acted on (stepWorld step 7): FreezeAfter collapses the body into a passive
+// static, TTL despawns it; both can count from spawn or from the body's first contact.
 //
 // JSON: { "type": "RigidBody3D", "mass": 1.0, "friction": 0.5, "rollingFriction": 0.05,
 //         "restitution": 0.1, "drag": 0.05, "angularDrag": 0.05, "static": false, "useGravity": true,
-//         "gravity": [0,-9.81,0], "simulation": "simple"|"complex",
+//         "gravity": [0,-9.81,0],
 //         "layer": 1, "mask": 4294967295,
 //         "shape": { "kind": "obb", "halfExtents": [0.5,0.5,0.5] },
 //         "initialVelocity": [0,0,0], "initialAngularVelocity": [0,0,0],
-//         "ttl": -1, "ttlStart": "spawn"|"contact",          // PLACED, not implemented yet
-//         "freezeAfter": -1, "freezeStart": "spawn"|"contact" }
+//         "ttl": -1, "ttlStart": "spawn"|"contact",          // <=0 = never despawn
+//         "freezeAfter": -1, "freezeStart": "spawn"|"contact" }   // <=0 = never freeze
 class RigidBodyComponent3D : public SpatialComponent3D {
     MeshComponent* mesh = nullptr;
 
 public:
-    enum class Simulation { Simple, Complex };
     enum class TimerStart { Spawn, Contact };
 
     // Per-frame state dump (awake bodies). Zero overhead when false.
     inline static bool DebugPrint = false;
     // Phase timing: averaged ms for detection vs solve vs total, printed periodically. Lets you see
     // whether the narrowphase (parallel) or the serial PGS solve dominates the physics step.
-    inline static bool DebugTimings = true;
+    inline static bool DebugTimings = false;
     // Solver shape: averaged island/constraint counts + the big island's colour count, printed
     // periodically. Tells you whether a slow solve is "many tiny colour batches" (→ single-region
     // refactor pays off) or genuinely a lot of constraints. Zero overhead when false.
@@ -84,18 +88,17 @@ public:
     float      RollingFriction = 0.05f;       // rolling resistance — damps spin so rollers (spheres) stop
     float      Restitution = 0.1f;            // bounciness [0,1], only above an impact-speed threshold
     float      Drag        = 0.05f;           // linear velocity damping
-    float      AngularDrag = 0.05f;           // angular velocity damping (Complex)
+    float      AngularDrag = 0.05f;           // angular velocity damping
     bool       Static      = false;           // immovable world geometry
     bool       UseGravity  = true;
-    Simulation Mode        = Simulation::Complex;   // v2 defaults to full angular dynamics
     glm::vec3  Gravity{0.0f, -9.81f, 0.0f};
     glm::vec3  Velocity{0.0f};
     glm::vec3  AngularVelocity{0.0f};
 
-    // --- lifecycle timers (placed; behavior implemented later) ---
-    float      TTL         = -1.0f;
-    float      FreezeAfter = -1.0f;
-    TimerStart TtlStart    = TimerStart::Spawn;
+    // --- lifecycle timers (acted on in stepWorld step 7; <=0 disables) ---
+    float      TTL         = -1.0f;   // seconds until despawn (frees the GameObject)
+    float      FreezeAfter = -1.0f;   // seconds until the body turns into a passive static
+    TimerStart TtlStart    = TimerStart::Spawn;   // count from spawn, or from first contact
     TimerStart FreezeStart = TimerStart::Spawn;
 
     // --- force / impulse API ---
@@ -122,8 +125,6 @@ public:
         AngularDrag = j.value("angularDrag", AngularDrag);
         Static      = j.value("static",      Static);
         UseGravity  = j.value("useGravity",  UseGravity);
-        const std::string sim = j.value("simulation", j.value("mode", std::string{"complex"}));
-        Mode = (sim == "simple") ? Simulation::Simple : Simulation::Complex;
         Gravity         = jsonVec3(j.value("gravity",                nlohmann::json{}), Gravity);
         Velocity        = jsonVec3(j.value("initialVelocity",        nlohmann::json{}), Velocity);
         AngularVelocity = jsonVec3(j.value("initialAngularVelocity", nlohmann::json{}), AngularVelocity);
@@ -132,7 +133,7 @@ public:
         if (j.contains("mask"))  Mask  = j["mask"].get<uint32_t>();
         parseShape(j);
 
-        // Timer fields: parsed and stored, but not yet acted on.
+        // Lifecycle timer fields (acted on in stepWorld step 7).
         TTL         = j.value("ttl",         TTL);
         FreezeAfter = j.value("freezeAfter", FreezeAfter);
         TtlStart    = parseStart(j.value("ttlStart",    std::string{"spawn"}));
@@ -212,10 +213,8 @@ public:
             // World inverse inertia from the current orientation (used by the solver this step).
             const glm::mat3 R = glm::mat3_cast(b->orientation());
             b->m_invInertiaWorld = R * b->m_invInertiaLocal * glm::transpose(R);
-            if (b->Mode == Simulation::Complex) {
-                b->AngularVelocity += (b->m_invInertiaWorld * b->m_torqueAccumulator) * dt;
-                b->AngularVelocity *= glm::clamp(1.0f - b->AngularDrag * dt, 0.0f, 1.0f);
-            }
+            b->AngularVelocity += (b->m_invInertiaWorld * b->m_torqueAccumulator) * dt;
+            b->AngularVelocity *= glm::clamp(1.0f - b->AngularDrag * dt, 0.0f, 1.0f);
             b->m_torqueAccumulator = glm::vec3(0.0f);
         }
 
@@ -289,6 +288,7 @@ public:
             if (c.A->m_invMass != 0.0f && c.B->m_invMass != 0.0f)          // dynamic–dynamic edge only
                 ufUnite(ufParent, ufRank, c.A->m_bodyIndex, c.B->m_bodyIndex);
         for (auto& c : constraints) {                                      // tag each contact with its island root (the dynamic side)
+            c.A->m_hasContact = true; c.B->m_hasContact = true;            // latch first-contact for the lifecycle timers
             const int dyn = (c.A->m_invMass != 0.0f) ? c.A->m_bodyIndex : c.B->m_bodyIndex;
             c.island = ufFind(ufParent, dyn);
         }
@@ -326,7 +326,7 @@ public:
             if (b->m_invMass == 0.0f) continue;   // skip static
             auto* tf = b->owner->getComponent<TransformComponent3D>();
             tf->Position += b->Velocity * dt;
-            if (b->Mode == Simulation::Complex) integrateOrientation(tf->Orientation, b->AngularVelocity, dt);
+            integrateOrientation(tf->Orientation, b->AngularVelocity, dt);
         }
 
         // 6. Split-impulse position correction — pushes out the detected overlap using PSEUDO
@@ -343,7 +343,7 @@ public:
             if (b->m_biasVel == glm::vec3(0.0f) && b->m_biasAngVel == glm::vec3(0.0f)) continue;
             auto* tf = b->owner->getComponent<TransformComponent3D>();
             tf->Position += b->m_biasVel * dt;
-            if (b->Mode == Simulation::Complex) integrateOrientation(tf->Orientation, b->m_biasAngVel, dt);
+            integrateOrientation(tf->Orientation, b->m_biasAngVel, dt);
         }
 
         if (DebugTimings) {
@@ -403,6 +403,30 @@ public:
                               << " nc=" << nc << " lambdaN=" << lamN << "\n";
                 }
         }
+
+        // 7. Lifecycle timers — FreezeAfter (turn the body static) and TTL (despawn it). SERIAL and
+        //    last: a despawn frees the GameObject (→ ~RigidBodyComponent3D → PhysicsManager::remove),
+        //    which mutates the body list, so it must run after every parallel pass; the actual removal
+        //    is deferred until after this loop so `world` is never read while it shrinks.
+        static std::vector<RigidBodyComponent3D*> dead;
+        dead.clear();
+        for (size_t i = 0; i < n; ++i) {
+            auto* b = world[i];
+            // FreezeAfter: once the (spawn- or contact-started) timer elapses, become a passive static.
+            // Only meaningful while still dynamic; the guard also stops the timer after freezing.
+            if (b->FreezeAfter > 0.0f && b->m_invMass != 0.0f &&
+                (b->FreezeStart == TimerStart::Spawn || b->m_hasContact)) {
+                b->m_freezeTimer += dt;
+                if (b->m_freezeTimer >= b->FreezeAfter) b->freeze();
+            }
+            // TTL: once the (spawn- or contact-started) timer elapses, mark the body for despawn.
+            if (b->TTL > 0.0f && (b->TtlStart == TimerStart::Spawn || b->m_hasContact)) {
+                b->m_ttlTimer += dt;
+                if (b->m_ttlTimer >= b->TTL) dead.push_back(b);
+            }
+        }
+        for (auto* b : dead)
+            if (b->owner && b->owner->scene()) b->owner->scene()->removeObject(b->owner->Name);
     }
 
 private:
@@ -414,6 +438,11 @@ private:
     glm::vec3 m_biasVel{0.0f};       // split-impulse pseudo linear velocity (position pass only)
     glm::vec3 m_biasAngVel{0.0f};    // split-impulse pseudo angular velocity
 
+    // --- lifecycle timer state (advanced in stepWorld step 7) ---
+    float m_ttlTimer    = 0.0f;      // accumulated ACTIVE time toward TTL (despawn)
+    float m_freezeTimer = 0.0f;      // accumulated ACTIVE time toward FreezeAfter (turn static)
+    bool  m_hasContact  = false;     // latched once the body is in any contact ("contact" timer start)
+
     // Broadphase scratch (filled by stepWorld's grid build, read by the narrowphase pass).
     glm::vec3 m_aabbMin{0.0f}, m_aabbMax{0.0f};
     bool      m_aabbInfinite = false;   // shape has no finite AABB (plane) → in the unbounded list, not the grid
@@ -422,6 +451,20 @@ private:
 
     // CoM is the shape centroid (origin), so the world center of mass is just the position.
     glm::vec3 worldCenter() const { return position(); }
+
+    // FreezeAfter elapsed: collapse the body into a passive static. It keeps its shape and pose and
+    // stays in the grid (others still collide with it), but with zero inverse mass/inertia it no
+    // longer integrates or drives the narrowphase. Velocities/accumulators are cleared so it rests.
+    void freeze() {
+        Static = true;
+        m_invMass = 0.0f;
+        m_invInertiaLocal = glm::mat3(0.0f);
+        m_invInertiaWorld = glm::mat3(0.0f);
+        Velocity = glm::vec3(0.0f);
+        AngularVelocity = glm::vec3(0.0f);
+        m_forceAccumulator = glm::vec3(0.0f);
+        m_torqueAccumulator = glm::vec3(0.0f);
+    }
 
     static TimerStart parseStart(const std::string& s) {
         return s == "contact" ? TimerStart::Contact : TimerStart::Spawn;
@@ -453,9 +496,9 @@ private:
         }
     }
 
-    // Inverse inertia tensor in LOCAL space from shape x mass. Zero for Simple/Static/plane.
+    // Inverse inertia tensor in LOCAL space from shape x mass. Zero for Static/plane.
     glm::mat3 computeInvInertiaLocal() const {
-        if (Mode != Simulation::Complex || m_invMass == 0.0f || !Shape) return glm::mat3(0.0f);
+        if (m_invMass == 0.0f || !Shape) return glm::mat3(0.0f);
         const glm::vec3 sc = scale();
         const float m = Mass;
         switch (Shape->kind()) {
