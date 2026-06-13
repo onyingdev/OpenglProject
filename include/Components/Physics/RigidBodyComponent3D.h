@@ -3,6 +3,7 @@
 #include "Core/Components/ColliderShapes.h"      // shared shape geometry + manifold() + Contact
 #include "Core/Engine/Services/ComponentRegistry.h"
 #include "Core/Engine/Helpers/JsonHelpers.h"
+#include "Core/Engine/Physics/physics_manager.h"   // owns the body list + drives the step
 #include "Components/Rendering/MeshComponent.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -137,22 +138,20 @@ public:
 
         m_invMass = (Static || Mass <= 0.0f) ? 0.0f : 1.0f / Mass; //if static or mass negative = 0, else 1.0f/mass
         m_invInertiaLocal = computeInvInertiaLocal();
-        bodies().push_back(this);
+        PhysicsManager::instance().add(this);   // self-register (manager owns the list now)
     }
 
     ~RigidBodyComponent3D() override {
-        auto& list = bodies();
-        list.erase(std::remove(list.begin(), list.end(), this), list.end());
+        PhysicsManager::instance().remove(this);
     }
 
-    static const std::vector<RigidBodyComponent3D*>& world() { return bodies(); }
+    static const std::vector<RigidBodyComponent3D*>& world() { return PhysicsManager::instance().bodies(); }
 
     // One fixed physics slice for the NEW world. Pipeline:
     //   1. integrate velocities (gravity/forces, drag)   2. sync shapes
     //   3. narrowphase -> contact constraints             4. velocity LCP (PGS: normal + friction)
     //   5. integrate positions                            6. split-impulse position correction
-    static void stepWorld(float dt) {
-        auto& world = bodies();
+    static void stepWorld(const std::vector<RigidBodyComponent3D*>& world, UniformGrid& grid, float dt) {
         const size_t n = world.size();
         if (n == 0) return;
 
@@ -213,31 +212,42 @@ public:
         for (size_t i = 0; i < n; ++i)
             if (world[i]->Shape) world[i]->Shape->setOrientation(world[i]->orientation());
 
-        // 3. Narrowphase — PARALLEL. Each body fills its OWN row with the pairs it owns as the lower
-        //    index (so threads never write shared state); manifold() is const and everything read
-        //    (poses/velocities/inertia/warm-start cache) is stable here. Then a serial concat builds
-        //    the flat list in body order (deterministic regardless of thread scheduling).
+        // 3a. Broadphase build — SERIAL scatter, O(N). Compute each body's world AABB and bin it into
+        //     the grid. Infinite planes go to the unbounded list (a plane can't be celled — its AABB
+        //     spans everything); out-of-range or shapeless bodies are skipped. The AABB is cached on
+        //     the body so the parallel pass below doesn't recompute it. This replaces the old O(N^2)
+        //     all-pairs sweep: bodies that share no cell are never tested.
+        grid.clear();
+        for (size_t i = 0; i < n; ++i) {
+            auto* A = world[i];
+            A->m_inGrid = false;
+            if (!A->Shape) { A->m_aabbInfinite = false; continue; }
+            const AABBox box = A->Shape->worldAABB(A->position(), A->scale());
+            A->m_aabbMin = box.min; A->m_aabbMax = box.max; A->m_aabbInfinite = box.infinite;
+            if (box.infinite) { grid.unbounded.push_back(int(i)); continue; }   // planes: tested vs every finite body
+            if (!grid.inRange(A->position())) continue;                         // range cull (broadphase only for now)
+            grid.insert(int(i), box.min, box.max);
+            A->m_inGrid = true;
+        }
+
+        // 3b. Narrowphase — PARALLEL. Each finite, in-grid body queries its cells for the neighbours it
+        //     OWNS as the lower index (j>i, so every finite–finite pair is built exactly once and
+        //     threads never write shared state), then tests against the unbounded planes. Writes only
+        //     its OWN row; the serial concat below flattens in body order (deterministic).
         #pragma omp parallel for schedule(guided) if(n > kParDetect)
         for (size_t i = 0; i < n; ++i) {
             RigidBodyComponent3D* A = world[i];
             A->m_row.clear();
-            if (!A->Shape) continue;
-            for (size_t k = i + 1; k < n; ++k) {
-                RigidBodyComponent3D* B = world[k];
-                if (!B->Shape) continue;
-                if (A->m_invMass == 0.0f && B->m_invMass == 0.0f) continue;       // static vs static
-                if (!layerMaskOverlap(A->Layer, A->Mask, B->Layer, B->Mask)) continue;
+            if (!A->Shape || A->m_aabbInfinite || !A->m_inGrid) continue;   // planes & culled bodies drive nothing
 
-                // The DYNAMIC body drives the manifold so a box-vs-plane pair takes the box's
-                // per-corner manifold (not the plane's single-point fallback). Normal stays caller->other.
-                RigidBodyComponent3D* caller = (A->m_invMass != 0.0f) ? A : B;
-                RigidBodyComponent3D* other  = (caller == A) ? B : A;
-                Contact pts[8];
-                const int nc = caller->Shape->manifold(*other->Shape,
-                                                       caller->position(), caller->scale(),
-                                                       other->position(),  other->scale(), pts, 8);
-                for (int c = 0; c < nc; ++c) buildConstraint(caller, other, pts[c], c, A->m_row);
-            }
+            thread_local std::vector<int> cand;
+            cand.clear();
+            grid.query(A->m_aabbMin, A->m_aabbMax, cand);
+            std::sort(cand.begin(), cand.end());
+            cand.erase(std::unique(cand.begin(), cand.end()), cand.end());   // dedup multi-cell neighbours
+
+            for (int j : cand) if (size_t(j) > i) narrowPair(A, world[j], A->m_row);   // finite–finite, once
+            for (int p : grid.unbounded)          narrowPair(A, world[p], A->m_row);   // finite–plane (A drives)
         }
         static std::vector<ContactConstraint> constraints;
         constraints.clear();
@@ -355,6 +365,11 @@ private:
     glm::mat3 m_invInertiaWorld{0.0f};
     glm::vec3 m_biasVel{0.0f};       // split-impulse pseudo linear velocity (position pass only)
     glm::vec3 m_biasAngVel{0.0f};    // split-impulse pseudo angular velocity
+
+    // Broadphase scratch (filled by stepWorld's grid build, read by the narrowphase pass).
+    glm::vec3 m_aabbMin{0.0f}, m_aabbMax{0.0f};
+    bool      m_aabbInfinite = false;   // shape has no finite AABB (plane) → in the unbounded list, not the grid
+    bool      m_inGrid       = false;   // finite + in range → inserted into the grid this step
 
     // CoM is the shape centroid (origin), so the world center of mass is just the position.
     glm::vec3 worldCenter() const { return position(); }
@@ -530,6 +545,24 @@ private:
         out.push_back(c);
     }
 
+    // One candidate pair → contacts appended to `row`. Mirrors the old inner-loop body: skip
+    // static-static and non-overlapping layers, let the DYNAMIC body drive the manifold (so
+    // box-vs-plane uses the box's corner manifold), append a constraint per contact point. The
+    // caller guarantees each pair is passed exactly once. Defined after ContactConstraint/buildConstraint
+    // so the std::vector<ContactConstraint>& parameter type is complete.
+    static void narrowPair(RigidBodyComponent3D* A, RigidBodyComponent3D* B, std::vector<ContactConstraint>& row) {
+        if (!B->Shape) return;
+        if (A->m_invMass == 0.0f && B->m_invMass == 0.0f) return;       // static vs static
+        if (!layerMaskOverlap(A->Layer, A->Mask, B->Layer, B->Mask)) return;
+        RigidBodyComponent3D* caller = (A->m_invMass != 0.0f) ? A : B;
+        RigidBodyComponent3D* other  = (caller == A) ? B : A;
+        Contact pts[8];
+        const int nc = caller->Shape->manifold(*other->Shape,
+                                               caller->position(), caller->scale(),
+                                               other->position(),  other->scale(), pts, 8);
+        for (int c = 0; c < nc; ++c) buildConstraint(caller, other, pts[c], c, row);
+    }
+
     // Normal constraint: drive (vn + restitutionBias) -> 0, with the accumulated impulse clamped >= 0.
     static void solveNormal(ContactConstraint& c) {
         const float vn = glm::dot(pointVel(c.B, c.rB) - pointVel(c.A, c.rA), c.n);
@@ -585,11 +618,13 @@ private:
         c.B->m_biasAngVel += c.B->m_invInertiaWorld * glm::cross(c.rB, P);
     }
 
-    // The new physics world: every v2 body (dynamic + static) lives here; the narrowphase sweeps it.
-    static std::vector<RigidBodyComponent3D*>& bodies() {
-        static std::vector<RigidBodyComponent3D*> v;
-        return v;
-    }
 };
+
+// Defined here (not in physics_manager.h) because it needs the COMPLETE RigidBodyComponent3D type;
+// the manager header only forward-declares it to avoid an include cycle. The manager owns the list,
+// the body owns the step logic — step() just hands its list to the (still-static) solver.
+inline void PhysicsManager::step(float dt) {
+    RigidBodyComponent3D::stepWorld(m_bodies, m_grid, dt);
+}
 
 REGISTER_COMPONENT(RigidBodyComponent3D, "RigidBody3D")

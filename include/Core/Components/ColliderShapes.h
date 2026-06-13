@@ -46,6 +46,14 @@ struct Contact {
     glm::vec3 point{0.0f};
 };
 
+// World-space axis-aligned bounds of a shape, for the broadphase grid. `infinite` flags shapes with
+// no finite box (an infinite plane) — those can't be binned into cells (they'd span every one), so
+// the broadphase keeps them in a separate list and tests every finite body against them directly.
+struct AABBox {
+    glm::vec3 min{0.0f}, max{0.0f};
+    bool      infinite = false;
+};
+
 class ColliderShape {
 public:
     virtual ~ColliderShape() = default;
@@ -118,6 +126,12 @@ public:
         out[0] = c;
         return 1;
     }
+
+    // World AABB for the broadphase grid. Default: report infinite (safe fallback — an unrecognized
+    // shape is tested against everything rather than wrongly culled). Concrete shapes override.
+    virtual AABBox worldAABB(const glm::vec3& pos, const glm::vec3& /*scale*/) const {
+        return { pos, pos, true };
+    }
 };
 
 class BoxShape : public ColliderShape {
@@ -127,6 +141,11 @@ public:
     explicit BoxShape(glm::vec3 halfExtents = glm::vec3(0.5f)) : HalfExtents(halfExtents) {}
 
     ShapeKind kind() const override { return ShapeKind::Box; }
+
+    AABBox worldAABB(const glm::vec3& pos, const glm::vec3& scale) const override {
+        const glm::vec3 h = HalfExtents * scale;
+        return { pos - h, pos + h, false };
+    }
 
     bool intersects(const ColliderShape& other,
                     const glm::vec3& selfPos,  const glm::vec3& selfScale,
@@ -233,6 +252,11 @@ public:
     explicit SphereShape(float radius = 0.5f) : Radius(radius) {}
 
     ShapeKind kind() const override { return ShapeKind::Sphere; }
+
+    AABBox worldAABB(const glm::vec3& pos, const glm::vec3& scale) const override {
+        const float r = Radius * scale.x;   // uniform scale only for now (matches collide())
+        return { pos - glm::vec3(r), pos + glm::vec3(r), false };
+    }
 
     bool intersects(const ColliderShape& other,
                     const glm::vec3& selfPos,  const glm::vec3& selfScale,
@@ -389,6 +413,10 @@ public:
         : Normal(normal), Infinite(infinite), HalfExtents(halfExtents), LocalNormal(normal), OneSided(oneSided) {}
 
     ShapeKind kind() const override { return ShapeKind::Plane; }
+
+    // A plane (finite or infinite) is treated as unbounded for the grid: it never gets binned into
+    // cells — the broadphase tests it against every finite body via the unbounded list.
+    AABBox worldAABB(const glm::vec3&, const glm::vec3&) const override { return { glm::vec3(0.0f), glm::vec3(0.0f), true }; }
 
     // Orient the world normal by the owner Transform's rotation (math normalizes it anyway).
     void setOrientation(const glm::quat& q) override { Normal = q * LocalNormal; }
@@ -798,6 +826,15 @@ public:
     ShapeKind kind() const override { return ShapeKind::OBB; }
 
     void setOrientation(const glm::quat& q) override { Orientation = q; }
+
+    // AABB of an oriented box: half-width on each world axis is the sum of the rotated extents'
+    // contributions, |aᵢ·ê| · hᵢ (the same projection collidePlane uses, done per world axis).
+    AABBox worldAABB(const glm::vec3& pos, const glm::vec3& scale) const override {
+        glm::vec3 a[3]; axes(a);
+        const glm::vec3 h = HalfExtents * scale;
+        const glm::vec3 r = glm::abs(a[0]) * h.x + glm::abs(a[1]) * h.y + glm::abs(a[2]) * h.z;
+        return { pos - r, pos + r, false };
+    }
 
     // World axes (unit columns of the rotation matrix).
     void axes(glm::vec3 out[3]) const {

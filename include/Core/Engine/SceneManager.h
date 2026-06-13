@@ -162,6 +162,9 @@ public:
 
     // --- access / queries ---
 
+    //TODO: Change pattern for finders for tryPattern, 
+    //return true if found and read value only if its true
+
     Scene* getScene(const std::string& name) {
         // std::cout << "=== DEBUG: m_scenes (" << m_scenes.size() << " entries) ===\n";
         // for (const auto& [key, entry] : m_scenes) {

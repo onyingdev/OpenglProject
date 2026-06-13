@@ -15,6 +15,7 @@
 #include "Core/Engine/Config/AppConfig.h"       // which root scene boots
 #include "Core/Engine/Config/BuiltinComponents.h" // self-registers every component & script
 #include "Components/Physics/ColliderDebugDraw.h"  // debugDrawColliders() wireframe pass
+#include "Core/Engine/Physics/physics_manager.h"   // drives the v2 physics step
 
 // The application root. Owns the window, renderer, input and the frame loop, and drives
 // the SceneManager. main() shrinks to: construct -> init() -> run().
@@ -130,7 +131,7 @@ private:
         int steps = 0;
         while (m_physicsAccumulator >= kFixedDt && steps < kMaxSubSteps) {
             OldRigidBodyComponent3D::stepWorld(kFixedDt);
-            RigidBodyComponent3D::stepWorld(kFixedDt);
+            PhysicsManager::instance().step(kFixedDt);   // v2 world: manager owns the bodies + drives the step
             m_physicsAccumulator -= kFixedDt;
             ++steps;
         }
