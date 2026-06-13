@@ -14,12 +14,16 @@
 #include <iostream>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
 
 // first iteration: [phys2] N=256  detect=6.01731ms  solve=28.5125ms  total=34.5298ms  (12 threads)
+// second iteration, improved detection: [phys2] N=258  detect=1.91467ms  solve=24.4167ms  total=26.3313ms  (12 threads)
+// third iteration early out: [phys2] N=256  detect=2.35294ms  solve=23.6921ms  total=26.045ms  (12 threads)
+// third but spread out boxes instead of pile: [phys2] N=256  detect=1.10597ms  solve=3.5679ms  total=4.67387ms  (12 threads)
 
 // RigidBody 3D (v2) — the rework. Differs from OldRigidBodyComponent3D ("OldRigidBody3D") in two
 // fundamental ways:
@@ -220,6 +224,7 @@ public:
         grid.clear();
         for (size_t i = 0; i < n; ++i) {
             auto* A = world[i];
+            A->m_bodyIndex = int(i);    // for island union-find later in the step
             A->m_inGrid = false;
             if (!A->Shape) { A->m_aabbInfinite = false; continue; }
             const AABBox box = A->Shape->worldAABB(A->position(), A->scale());
@@ -257,34 +262,44 @@ public:
         }
         const auto _tDetect = std::chrono::high_resolution_clock::now();
 
-        // 3b. Warm start — re-apply each contact's cached impulse so the solve starts near last
-        //     frame's solution (lambdaN reaches the true support force immediately → friction budget).
-        //     SERIAL (mutates shared bodies).
-        for (auto& c : constraints) {
-            const glm::vec3 P = c.lambdaN * c.n + c.lambdaT1 * c.t1 + c.lambdaT2 * c.t2;
-            c.A->applyImpulseAtArm(-P, c.rA);
-            c.B->applyImpulseAtArm( P, c.rB);
+        // --- ISLAND BUILD — union-find over the contacts. Two dynamic bodies linked by a contact
+        //     (directly or transitively) form one island that MUST be solved together. STATICS are
+        //     never union nodes: unioning through them would fuse every pile resting on the same ground
+        //     into one giant island. A static just rides along in whichever islands touch it, and since
+        //     impulses to a static are no-ops (skipped in applyImpulseAtArm / solvePosition), the same
+        //     static appearing in several islands solved on different threads is race-free.
+        static std::vector<int> ufParent, ufRank;
+        ufParent.resize(n); ufRank.assign(n, 0);
+        for (size_t i = 0; i < n; ++i) ufParent[i] = int(i);
+        for (auto& c : constraints)
+            if (c.A->m_invMass != 0.0f && c.B->m_invMass != 0.0f)          // dynamic–dynamic edge only
+                ufUnite(ufParent, ufRank, c.A->m_bodyIndex, c.B->m_bodyIndex);
+        for (auto& c : constraints) {                                      // tag each contact with its island root (the dynamic side)
+            const int dyn = (c.A->m_invMass != 0.0f) ? c.A->m_bodyIndex : c.B->m_bodyIndex;
+            c.island = ufFind(ufParent, dyn);
+        }
+        // Group contacts into contiguous per-island ranges; stable_sort keeps body order within island
+        // (so the solve order — and thus the result — stays deterministic regardless of thread scheduling).
+        std::stable_sort(constraints.begin(), constraints.end(),
+                         [](const ContactConstraint& a, const ContactConstraint& b) { return a.island < b.island; });
+        static std::vector<std::pair<size_t, size_t>> islands;             // [begin,end) ranges into constraints
+        islands.clear();
+        for (size_t s = 0; s < constraints.size(); ) {
+            size_t e = s + 1;
+            while (e < constraints.size() && constraints[e].island == constraints[s].island) ++e;
+            islands.push_back({ s, e });
+            s = e;
         }
 
-        // 4. Velocity LCP — PGS. SERIAL: sequential impulses, accumulate-clamp-apply-delta per
-        //    contact; friction coupled to lambdaN. (A parallel solve would need mass-splitting.)
-        constexpr int kVelIterations = 12;
-        for (int it = 0; it < kVelIterations; ++it)
-            for (auto& c : constraints) { solveNormal(c); solveFriction(c); }
-
-        // Rolling resistance — the PHYSICAL roll-stopper: it damps the spin only on contact, scaled by
-        // the normal impulse, so a rolling ball slows smoothly (sliding friction can't — a pure roll
-        // has zero slip). Use the AVERAGE of the two coefficients, not a geometric mean: that way
-        // raising the ball's rollingFriction controls the stop distance directly, without being capped
-        // by the ground's. (angularDrag also bleeds spin, but it's air-resistance — it acts mid-air
-        // too; prefer rollingFriction for ground rolling and keep angularDrag small.)
-        for (auto& c : constraints) {
-            const float muRoll = 0.5f * (c.A->RollingFriction + c.B->RollingFriction);
-            if (muRoll <= 0.0f) continue;
-            const float budget = muRoll * c.lambdaN;
-            c.A->applyRollingResistance(c.rA, budget);
-            c.B->applyRollingResistance(c.rB, budget);
-        }
+        // 3b+4. Per-island solve (warm start → velocity PGS w/ symmetric sweep + early-out → rolling),
+        //       PARALLEL over islands. Islands share no dynamic body, so threads never race; each island
+        //       early-outs independently, so a settled cluster stops while a big pile keeps iterating.
+        //       Warm-start MOVES inside here: it mutates bodies, so it must run within the same per-island
+        //       partition, not as a flat pre-pass. (One dominant island still runs on a single thread —
+        //       that's where in-island grid-coloring would come next.)
+        #pragma omp parallel for schedule(dynamic) if(islands.size() > 1)
+        for (size_t isl = 0; isl < islands.size(); ++isl)
+            solveIslandVelocity(constraints, islands[isl].first, islands[isl].second);
 
         // Store the converged impulses for next frame's warm start (fresh map drops stale contacts).
         auto& cache = impulseCache();
@@ -303,10 +318,11 @@ public:
 
         // 6. Split-impulse position correction — pushes out the detected overlap using PSEUDO
         //    velocities only, so the real velocity (and thus the resting state) is never disturbed.
-        //    The PGS loop is SERIAL; the final per-body bias integration is parallel.
-        constexpr int kPosIterations = 4;
-        for (int it = 0; it < kPosIterations; ++it)
-            for (auto& c : constraints) solvePosition(c, dt);
+        //    PARALLEL over islands (disjoint bodies, same as the velocity solve); the per-body bias
+        //    integration below is also parallel.
+        #pragma omp parallel for schedule(dynamic) if(islands.size() > 1)
+        for (size_t isl = 0; isl < islands.size(); ++isl)
+            solveIslandPosition(constraints, islands[isl].first, islands[isl].second, dt);
         #pragma omp parallel for schedule(static) if(n > kParBody)
         for (size_t i = 0; i < n; ++i) {
             auto* b = world[i];
@@ -370,6 +386,7 @@ private:
     glm::vec3 m_aabbMin{0.0f}, m_aabbMax{0.0f};
     bool      m_aabbInfinite = false;   // shape has no finite AABB (plane) → in the unbounded list, not the grid
     bool      m_inGrid       = false;   // finite + in range → inserted into the grid this step
+    int       m_bodyIndex    = -1;      // this body's index in the world list (key for island union-find)
 
     // CoM is the shape centroid (origin), so the world center of mass is just the position.
     glm::vec3 worldCenter() const { return position(); }
@@ -432,6 +449,7 @@ private:
     }
 
     void applyImpulseAtArm(const glm::vec3& P, const glm::vec3& r) {
+        if (m_invMass == 0.0f) return;   // static: immovable, and skipping the no-op write keeps the parallel island solve race-free
         Velocity += P * m_invMass;
         AngularVelocity += m_invInertiaWorld * glm::cross(r, P);
     }
@@ -476,6 +494,7 @@ private:
         float lambdaT1 = 0.0f, lambdaT2 = 0.0f;
         float lambdaPos = 0.0f;       // accumulated position-correction impulse (>= 0)
         uint64_t key = 0;             // stable id (bodyA, bodyB, manifold slot) for warm-starting
+        int      island = -1;         // island root (union-find) — contacts are grouped by this for the parallel solve
     };
 
     // Per-body narrowphase scratch: the parallel detection loop fills each body's OWN row (the
@@ -564,14 +583,18 @@ private:
     }
 
     // Normal constraint: drive (vn + restitutionBias) -> 0, with the accumulated impulse clamped >= 0.
-    static void solveNormal(ContactConstraint& c) {
+    // Returns the magnitude of the impulse actually applied (after the clamp) so the solve loop can
+    // detect convergence and early-out.
+    static float solveNormal(ContactConstraint& c) {
         const float vn = glm::dot(pointVel(c.B, c.rB) - pointVel(c.A, c.rA), c.n);
         const float dl = -(vn + c.restitutionBias) * c.normalMass;
         const float old = c.lambdaN;
         c.lambdaN = std::max(0.0f, old + dl);
-        const glm::vec3 P = (c.lambdaN - old) * c.n;
+        const float applied = c.lambdaN - old;          // real change after clamp (n is unit → this is |P|)
+        const glm::vec3 P = applied * c.n;
         c.A->applyImpulseAtArm(-P, c.rA);
         c.B->applyImpulseAtArm( P, c.rB);
+        return std::abs(applied);
     }
 
     // Coulomb friction on both tangents, clamped to the friction CONE: the COMBINED tangent impulse
@@ -579,7 +602,8 @@ private:
     // square ("box") version over-applies friction along the diagonal, so a diagonally-sliding body
     // gets dragged toward a tangent axis — on a plane the tangents are world X/Z, so boxes visibly
     // "snap" to those axes. The cone is isotropic: friction opposes the actual slide direction.
-    static void solveFriction(ContactConstraint& c) {
+    // Returns the magnitude of the tangent impulse delta applied this call (for the solve early-out).
+    static float solveFriction(ContactConstraint& c) {
         const float mu   = std::sqrt(std::max(0.0f, c.A->Friction * c.B->Friction));
         const float maxF = mu * c.lambdaN;
         const glm::vec3 vrel = pointVel(c.B, c.rB) - pointVel(c.A, c.rA);
@@ -594,10 +618,12 @@ private:
             newT1 *= s; newT2 *= s;
         }
 
-        const glm::vec3 P = (newT1 - c.lambdaT1) * c.t1 + (newT2 - c.lambdaT2) * c.t2;
+        const float dT1 = newT1 - c.lambdaT1, dT2 = newT2 - c.lambdaT2;   // t1,t2 orthonormal → |P| = hypot(dT1,dT2)
+        const glm::vec3 P = dT1 * c.t1 + dT2 * c.t2;
         c.lambdaT1 = newT1; c.lambdaT2 = newT2;
         c.A->applyImpulseAtArm(-P, c.rA);
         c.B->applyImpulseAtArm( P, c.rB);
+        return std::sqrt(dT1 * dT1 + dT2 * dT2);
     }
 
     // Split-impulse: push the pair apart along the normal using PSEUDO velocities (never the real
@@ -611,11 +637,70 @@ private:
         const float old = c.lambdaPos;
         c.lambdaPos = std::max(0.0f, old + dl);
         const glm::vec3 P = (c.lambdaPos - old) * c.n;
-        // Apply to the bias (pseudo) velocities only.
-        c.A->m_biasVel    -= P * c.A->m_invMass;
-        c.A->m_biasAngVel -= c.A->m_invInertiaWorld * glm::cross(c.rA, P);
-        c.B->m_biasVel    += P * c.B->m_invMass;
-        c.B->m_biasAngVel += c.B->m_invInertiaWorld * glm::cross(c.rB, P);
+        // Apply to the bias (pseudo) velocities only. Skip statics: no-op writes, and skipping them
+        // keeps the parallel per-island position solve race-free on a shared static.
+        if (c.A->m_invMass != 0.0f) {
+            c.A->m_biasVel    -= P * c.A->m_invMass;
+            c.A->m_biasAngVel -= c.A->m_invInertiaWorld * glm::cross(c.rA, P);
+        }
+        if (c.B->m_invMass != 0.0f) {
+            c.B->m_biasVel    += P * c.B->m_invMass;
+            c.B->m_biasAngVel += c.B->m_invInertiaWorld * glm::cross(c.rB, P);
+        }
+    }
+
+    // ---- island solve helpers (one island = a body-disjoint contact range, safe on its own thread) ----
+
+    // Union-find over body indices: find with path-halving, union by rank.
+    static int ufFind(std::vector<int>& parent, int i) {
+        while (parent[i] != i) { parent[i] = parent[parent[i]]; i = parent[i]; }
+        return i;
+    }
+    static void ufUnite(std::vector<int>& parent, std::vector<int>& rnk, int a, int b) {
+        a = ufFind(parent, a); b = ufFind(parent, b);
+        if (a == b) return;
+        if (rnk[a] < rnk[b]) std::swap(a, b);
+        parent[b] = a;
+        if (rnk[a] == rnk[b]) ++rnk[a];
+    }
+
+    // Solve one island's contacts cs[b..e): warm start → velocity PGS (symmetric sweep + early-out) →
+    // rolling resistance. Body-disjoint from every other island, so this runs lock-free on its thread.
+    static void solveIslandVelocity(std::vector<ContactConstraint>& cs, size_t b, size_t e) {
+        for (size_t i = b; i < e; ++i) {                              // warm start (mutates this island's bodies)
+            auto& c = cs[i];
+            const glm::vec3 P = c.lambdaN * c.n + c.lambdaT1 * c.t1 + c.lambdaT2 * c.t2;
+            c.A->applyImpulseAtArm(-P, c.rA);
+            c.B->applyImpulseAtArm( P, c.rB);
+        }
+        constexpr int   kVelIterations = 12;
+        constexpr float kVelEpsilon    = 1e-5f;
+        const size_t    m = e - b;
+        for (int it = 0; it < kVelIterations; ++it) {
+            float maxDelta = 0.0f;
+            const bool forward = (it & 1) == 0;                        // symmetric sweep
+            for (size_t k = 0; k < m; ++k) {
+                auto& c = cs[b + (forward ? k : (m - 1 - k))];
+                maxDelta = std::max(maxDelta, solveNormal(c));
+                maxDelta = std::max(maxDelta, solveFriction(c));
+            }
+            if (maxDelta < kVelEpsilon) break;                         // converged → stop early
+        }
+        for (size_t i = b; i < e; ++i) {                              // rolling resistance
+            auto& c = cs[i];
+            const float muRoll = 0.5f * (c.A->RollingFriction + c.B->RollingFriction);
+            if (muRoll <= 0.0f) continue;
+            const float budget = muRoll * c.lambdaN;
+            c.A->applyRollingResistance(c.rA, budget);
+            c.B->applyRollingResistance(c.rB, budget);
+        }
+    }
+
+    // Solve one island's split-impulse position correction.
+    static void solveIslandPosition(std::vector<ContactConstraint>& cs, size_t b, size_t e, float dt) {
+        constexpr int kPosIterations = 4;
+        for (int it = 0; it < kPosIterations; ++it)
+            for (size_t i = b; i < e; ++i) solvePosition(cs[i], dt);
     }
 
 };
