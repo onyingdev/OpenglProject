@@ -24,6 +24,10 @@
 // second iteration, improved detection: [phys2] N=258  detect=1.91467ms  solve=24.4167ms  total=26.3313ms  (12 threads)
 // third iteration early out: [phys2] N=256  detect=2.35294ms  solve=23.6921ms  total=26.045ms  (12 threads)
 // third but spread out boxes instead of pile: [phys2] N=256  detect=1.10597ms  solve=3.5679ms  total=4.67387ms  (12 threads)
+// fourth iteration contact islands (spread): [phys2] N=264  detect=1.13651ms  solve=0.872342ms  total=2.00885ms  (12 threads)
+// with pile: [phys2] N=256  detect=2.08472ms  solve=17.8367ms  total=19.9214ms  (12 threads)
+// fifth iteration with island coloring: [phys2] N=256  detect=2.11326ms  solve=18.0347ms  total=20.148ms  (12 threads)
+// but some time after the island settles: [phys2] N=256  detect=2.17994ms  solve=5.52122ms  total=7.70116ms  (12 threads)
 
 // RigidBody 3D (v2) — the rework. Differs from OldRigidBodyComponent3D ("OldRigidBody3D") in two
 // fundamental ways:
@@ -282,24 +286,32 @@ public:
         // (so the solve order — and thus the result — stays deterministic regardless of thread scheduling).
         std::stable_sort(constraints.begin(), constraints.end(),
                          [](const ContactConstraint& a, const ContactConstraint& b) { return a.island < b.island; });
-        static std::vector<std::pair<size_t, size_t>> islands;             // [begin,end) ranges into constraints
+        // Islands with more than this many contacts are too big to leave on one thread (a pile is one
+        // island), so we graph-COLOUR them and solve colour-batches in parallel. Smaller islands stay
+        // whole and parallelise across each other instead. Tune to where colouring beats serial.
+        constexpr size_t kColorThreshold = 512;
+        static std::vector<Island> islands;
         islands.clear();
         for (size_t s = 0; s < constraints.size(); ) {
             size_t e = s + 1;
             while (e < constraints.size() && constraints[e].island == constraints[s].island) ++e;
-            islands.push_back({ s, e });
+            const bool colored = (e - s > kColorThreshold) && colorIsland(constraints, s, e);
+            islands.push_back({ s, e, colored });
             s = e;
         }
 
-        // 3b+4. Per-island solve (warm start → velocity PGS w/ symmetric sweep + early-out → rolling),
-        //       PARALLEL over islands. Islands share no dynamic body, so threads never race; each island
-        //       early-outs independently, so a settled cluster stops while a big pile keeps iterating.
-        //       Warm-start MOVES inside here: it mutates bodies, so it must run within the same per-island
-        //       partition, not as a flat pre-pass. (One dominant island still runs on a single thread —
-        //       that's where in-island grid-coloring would come next.)
+        // 3b+4. Per-island velocity solve (warm start → PGS → rolling), in two phases so OpenMP regions
+        //       never nest:
+        //   Phase A — BIG coloured islands: each runs alone but uses ALL threads internally, parallel
+        //             over colour batches (a colour's contacts share no body → race-free). No early-out;
+        //             a big pile needs every iteration.
+        //   Phase B — the rest: parallel-for ACROSS islands, each solved serially on its own thread
+        //             (symmetric sweep + early-out, the cheap path for settled clusters).
+        for (auto& isl : islands)
+            if (isl.colored) solveIslandColoredVelocity(constraints, isl.begin, isl.end);
         #pragma omp parallel for schedule(dynamic) if(islands.size() > 1)
-        for (size_t isl = 0; isl < islands.size(); ++isl)
-            solveIslandVelocity(constraints, islands[isl].first, islands[isl].second);
+        for (size_t i = 0; i < islands.size(); ++i)
+            if (!islands[i].colored) solveIslandVelocity(constraints, islands[i].begin, islands[i].end);
 
         // Store the converged impulses for next frame's warm start (fresh map drops stale contacts).
         auto& cache = impulseCache();
@@ -320,9 +332,11 @@ public:
         //    velocities only, so the real velocity (and thus the resting state) is never disturbed.
         //    PARALLEL over islands (disjoint bodies, same as the velocity solve); the per-body bias
         //    integration below is also parallel.
+        for (auto& isl : islands)
+            if (isl.colored) solveIslandColoredPosition(constraints, isl.begin, isl.end, dt);
         #pragma omp parallel for schedule(dynamic) if(islands.size() > 1)
-        for (size_t isl = 0; isl < islands.size(); ++isl)
-            solveIslandPosition(constraints, islands[isl].first, islands[isl].second, dt);
+        for (size_t i = 0; i < islands.size(); ++i)
+            if (!islands[i].colored) solveIslandPosition(constraints, islands[i].begin, islands[i].end, dt);
         #pragma omp parallel for schedule(static) if(n > kParBody)
         for (size_t i = 0; i < n; ++i) {
             auto* b = world[i];
@@ -387,6 +401,7 @@ private:
     bool      m_aabbInfinite = false;   // shape has no finite AABB (plane) → in the unbounded list, not the grid
     bool      m_inGrid       = false;   // finite + in range → inserted into the grid this step
     int       m_bodyIndex    = -1;      // this body's index in the world list (key for island union-find)
+    uint64_t  m_colorMask    = 0;       // scratch: colours already used at this body during in-island graph colouring
 
     // CoM is the shape centroid (origin), so the world center of mass is just the position.
     glm::vec3 worldCenter() const { return position(); }
@@ -495,6 +510,7 @@ private:
         float lambdaPos = 0.0f;       // accumulated position-correction impulse (>= 0)
         uint64_t key = 0;             // stable id (bodyA, bodyB, manifold slot) for warm-starting
         int      island = -1;         // island root (union-find) — contacts are grouped by this for the parallel solve
+        int      color  = 0;          // graph-colouring class within a big island (no two same-colour contacts share a body)
     };
 
     // Per-body narrowphase scratch: the parallel detection loop fills each body's OWN row (the
@@ -701,6 +717,91 @@ private:
         constexpr int kPosIterations = 4;
         for (int it = 0; it < kPosIterations; ++it)
             for (size_t i = b; i < e; ++i) solvePosition(cs[i], dt);
+    }
+
+    // ---- in-island graph colouring (parallelises a single big island across threads) ----
+
+    struct Island { size_t begin, end; bool colored; };
+
+    // Greedy-colour the contacts of one island in place: each contact gets the lowest colour not used
+    // at EITHER of its two bodies, so no two same-colour contacts share a body → a colour can be solved
+    // fully in parallel. Then stable_sort by colour so each colour is a contiguous range. Returns false
+    // (→ caller solves the island serially) only if a body would need ≥ 64 colours — pathological, never
+    // for box piles (a box has well under 64 contact points).
+    static bool colorIsland(std::vector<ContactConstraint>& cs, size_t b, size_t e) {
+        for (size_t i = b; i < e; ++i) { cs[i].A->m_colorMask = 0; cs[i].B->m_colorMask = 0; }
+        for (size_t i = b; i < e; ++i) {
+            auto& c = cs[i];
+            const uint64_t used = c.A->m_colorMask | c.B->m_colorMask;
+            if (~used == 0ull) return false;                       // 64 colours exhausted at a shared body
+            const int color = __builtin_ctzll(~used);              // lowest free colour
+            c.A->m_colorMask |= (1ull << color);
+            c.B->m_colorMask |= (1ull << color);
+            c.color = color;
+        }
+        std::stable_sort(cs.begin() + b, cs.begin() + e,
+                         [](const ContactConstraint& a, const ContactConstraint& d) { return a.color < d.color; });
+        return true;
+    }
+
+    // Find the contiguous colour-group ranges within a colour-sorted island [b,e).
+    static void colorGroups(const std::vector<ContactConstraint>& cs, size_t b, size_t e,
+                            std::vector<std::pair<size_t, size_t>>& out) {
+        out.clear();
+        for (size_t s = b; s < e; ) {
+            size_t g = s + 1;
+            while (g < e && cs[g].color == cs[s].color) ++g;
+            out.push_back({ s, g });
+            s = g;
+        }
+    }
+
+    // Big-island velocity solve: warm start → kVel velocity iterations → rolling, each pass run
+    // colour-by-colour with a colour's contacts solved in parallel (disjoint bodies → race-free).
+    // The implicit barrier at each omp-for end sequences the colours; no early-out (a big pile needs
+    // every iteration). Called from the main thread, so its parallel regions are top-level, not nested.
+    static void solveIslandColoredVelocity(std::vector<ContactConstraint>& cs, size_t b, size_t e) {
+        std::vector<std::pair<size_t, size_t>> groups;
+        colorGroups(cs, b, e, groups);
+
+        for (auto& gr : groups) {                                  // warm start (colours sequential; a body recurs across colours)
+            #pragma omp parallel for schedule(static)
+            for (size_t i = gr.first; i < gr.second; ++i) {
+                auto& c = cs[i];
+                const glm::vec3 P = c.lambdaN * c.n + c.lambdaT1 * c.t1 + c.lambdaT2 * c.t2;
+                c.A->applyImpulseAtArm(-P, c.rA);
+                c.B->applyImpulseAtArm( P, c.rB);
+            }
+        }
+        constexpr int kVelIterations = 12;
+        for (int it = 0; it < kVelIterations; ++it)
+            for (auto& gr : groups) {
+                #pragma omp parallel for schedule(static)
+                for (size_t i = gr.first; i < gr.second; ++i) { solveNormal(cs[i]); solveFriction(cs[i]); }
+            }
+        for (auto& gr : groups) {                                  // rolling resistance
+            #pragma omp parallel for schedule(static)
+            for (size_t i = gr.first; i < gr.second; ++i) {
+                auto& c = cs[i];
+                const float muRoll = 0.5f * (c.A->RollingFriction + c.B->RollingFriction);
+                if (muRoll <= 0.0f) continue;
+                const float budget = muRoll * c.lambdaN;
+                c.A->applyRollingResistance(c.rA, budget);
+                c.B->applyRollingResistance(c.rB, budget);
+            }
+        }
+    }
+
+    // Big-island split-impulse position correction, colour-batched in parallel like the velocity solve.
+    static void solveIslandColoredPosition(std::vector<ContactConstraint>& cs, size_t b, size_t e, float dt) {
+        std::vector<std::pair<size_t, size_t>> groups;
+        colorGroups(cs, b, e, groups);
+        constexpr int kPosIterations = 4;
+        for (int it = 0; it < kPosIterations; ++it)
+            for (auto& gr : groups) {
+                #pragma omp parallel for schedule(static)
+                for (size_t i = gr.first; i < gr.second; ++i) solvePosition(cs[i], dt);
+            }
     }
 
 };
