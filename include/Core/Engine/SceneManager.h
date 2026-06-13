@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include "Core/Engine/Scene.h"
+#include "Render/ModelCache.h"                        // cleared on scene unload (hot-reload freshness)
 #include "Core/Engine/Services/SceneLoader.h"
 #include "Core/Engine/Services/GameObjectLoader.h"   // loose/root objects from "objects" in the manifest
 #include "Core/Engine/Services/LoadContext.h"
@@ -118,6 +119,9 @@ public:
     void unloadScenes() {
         for (auto& [name, e] : m_scenes) e.scene->unload();
         m_scenes.clear();
+        // Drop cached models too: bounds memory across reloads and lets a hot-reload re-import an
+        // edited .obj. Safe — models still referenced by a live (loose) MeshComponent survive.
+        ModelCache::clear();
     }
 
     // Free EVERYTHING (scenes + loose objects). Call at shutdown while the GL context
