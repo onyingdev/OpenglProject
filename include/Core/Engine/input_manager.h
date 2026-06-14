@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <glad/glad.h>
 #include <glfw3.h>
+#include "Core/Engine/Services/InputListener.h"   // Window forwards raw events here
 
 // A single buffered key press: which action, and when (glfwGetTime seconds). `consumed` marks it as
 // already taken by a ConsumeBuffered/ConsumeSequence so it won't fire again. The buffer is time-based,
@@ -17,7 +18,8 @@ struct BufferedInput {
 
 //input manager class only handles inputs and mouse. Does not handle logic.
 // we can use input manager by itself but not Input Component.
-class InputManager {
+// Receives raw cursor/key events from Window (which owns the GLFW callbacks) via IInputListener.
+class InputManager : public IInputListener {
 public:
     // Pass the window in so the manager can tie itself to it
     InputManager(GLFWwindow* window);
@@ -64,11 +66,11 @@ public:
     // Call this at the end of every frame to stop the camera from spinning, and to prune the buffer.
     void ResetFrame();
 
-private:
-    // The GLFW callbacks must be static, but they use the UserPointer to reach the class instance.
-    static void MouseCallback(GLFWwindow* window, double xpos, double ypos);
-    static void KeyCallback(GLFWwindow* window, int key, int scancode, int action, int mods);
+    // IInputListener — Window calls these from its GLFW callbacks (main thread, during glfwPollEvents).
+    void onCursorPos(double xpos, double ypos) override;   // accumulate mouse delta
+    void onKey(int key, int action) override;              // buffer GLFW_PRESS edges
 
+private:
     // Buffer window for an action (override else default), in seconds.
     double bufferTimeFor(const std::string& actionName) const;
     // Drop entries that can no longer be live (older than the largest window) + cap the deque size.

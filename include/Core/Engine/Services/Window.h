@@ -4,6 +4,7 @@
 #include <string>
 #include <iostream>
 #include "Core/Engine/Config/EngineSettings.h"
+#include "Core/Engine/Services/InputListener.h"   // Window owns the GLFW callbacks, forwards to this
 
 // GLFW window + platform wrapper. Keeps ALL GLFW out of the rest of the engine and is
 // backend-aware so the same class serves OpenGL today and Vulkan/other later:
@@ -44,8 +45,13 @@ public:
         if (s.resize == ResizeMode::KeepAspect)
             glfwSetWindowAspectRatio(m_window, s.width, s.height);
 
+        // Window is the SOLE owner of the one user-pointer GLFW gives per window, and of every GLFW
+        // callback. Raw cursor/key events are forwarded to a registered listener (the InputManager) —
+        // see setInputListener. This is what prevents the user-pointer from being contended.
         glfwSetWindowUserPointer(m_window, this);
         glfwSetFramebufferSizeCallback(m_window, framebufferSizeCallback);
+        glfwSetCursorPosCallback(m_window, cursorPosCallback);
+        glfwSetKeyCallback(m_window, keyCallback);
 
         if (backend == RenderBackend::OpenGL) {
             glfwMakeContextCurrent(m_window);
@@ -63,6 +69,9 @@ public:
 
     bool        valid()  const { return m_window != nullptr; }
     GLFWwindow* handle() const { return m_window; }   // for InputManager / Vulkan surface
+
+    // Register who receives forwarded cursor/key events (the InputManager). Null = events are dropped.
+    void setInputListener(IInputListener* listener) { m_input = listener; }
 
     bool shouldClose() const { return glfwWindowShouldClose(m_window); }
     void requestClose()      { glfwSetWindowShouldClose(m_window, true); }
@@ -90,14 +99,26 @@ public:
     }
 
 private:
-    GLFWwindow*   m_window  = nullptr;
-    RenderBackend m_backend = RenderBackend::OpenGL;
-    int           m_width = 0, m_height = 0;
+    GLFWwindow*    m_window  = nullptr;
+    RenderBackend  m_backend = RenderBackend::OpenGL;
+    int            m_width = 0, m_height = 0;
+    IInputListener* m_input = nullptr;   // forwarded cursor/key events; set via setInputListener
 
     static void framebufferSizeCallback(GLFWwindow* w, int width, int height) {
         auto* self = static_cast<Window*>(glfwGetWindowUserPointer(w));
         if (!self) return;
         self->m_width  = width;
         self->m_height = (height == 0) ? 1 : height;
+    }
+
+    // Forward raw cursor/key events to the listener. The user-pointer is always a Window* now, so these
+    // casts are sound (this is the bug fix: InputManager no longer overwrites the pointer).
+    static void cursorPosCallback(GLFWwindow* w, double xpos, double ypos) {
+        auto* self = static_cast<Window*>(glfwGetWindowUserPointer(w));
+        if (self && self->m_input) self->m_input->onCursorPos(xpos, ypos);
+    }
+    static void keyCallback(GLFWwindow* w, int key, int /*scancode*/, int action, int /*mods*/) {
+        auto* self = static_cast<Window*>(glfwGetWindowUserPointer(w));
+        if (self && self->m_input) self->m_input->onKey(key, action);
     }
 };

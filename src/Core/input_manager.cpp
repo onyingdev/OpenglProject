@@ -5,13 +5,8 @@
 InputManager::InputManager(GLFWwindow* window)
     : m_Window(window), firstMouse(true), mouseOffsetX(0.0f), mouseOffsetY(0.0f)
 {
-    glfwSetWindowUserPointer(m_Window, this);
-
-    // Tell GLFW to use our static class methods for the mouse + keyboard.
-    glfwSetCursorPosCallback(m_Window, MouseCallback);
-    // Event-driven key capture feeds the input buffer (frame-rate independent — every transition GLFW
-    // queues is delivered, even several within one poll).
-    glfwSetKeyCallback(m_Window, KeyCallback);
+    // Window owns the GLFW window user-pointer and all GLFW callbacks; it forwards cursor/key events to
+    // us via IInputListener (see Window::setInputListener). We only keep the handle for glfwGetKey polling.
 }
 
 void InputManager::BindAction(const std::string& actionName, int glfwKey) {
@@ -145,43 +140,37 @@ void InputManager::ResetFrame() {
     pruneBuffer(glfwGetTime());   // bound the buffer's memory; liveness is still checked per query
 }
 
-void InputManager::MouseCallback(GLFWwindow* window, double xposIn, double yposIn) {
-    // Retrieve the C++ instance we tied to the window earlier
-    InputManager* manager = static_cast<InputManager*>(glfwGetWindowUserPointer(window));
-    if (!manager) return;
-
-    // FIX 2: Explicitly cast to float immediately to prevent truncation stepping
+// Forwarded by Window from glfwSetCursorPosCallback (main thread, during glfwPollEvents).
+void InputManager::onCursorPos(double xposIn, double yposIn) {
+    // Explicitly cast to float immediately to prevent truncation stepping
     float xpos = static_cast<float>(xposIn);
     float ypos = static_cast<float>(yposIn);
 
-    if (manager->firstMouse) {
-        manager->lastX = xpos;
-        manager->lastY = ypos;
-        manager->firstMouse = false;
+    if (firstMouse) {
+        lastX = xpos;
+        lastY = ypos;
+        firstMouse = false;
     }
 
-    // Accumulate: glfwPollEvents() fires this callback once per queued cursor
-    // event, often many times per frame. Using '=' would keep only the last
-    // sub-step and discard the rest; '+=' sums them into the full frame delta.
-    manager->mouseOffsetX += xpos - manager->lastX;
-    manager->mouseOffsetY += manager->lastY - ypos; // Reversed since Y goes bottom to top
+    // Accumulate: glfwPollEvents() fires this once per queued cursor event, often many times per frame.
+    // Using '=' would keep only the last sub-step; '+=' sums them into the full frame delta.
+    mouseOffsetX += xpos - lastX;
+    mouseOffsetY += lastY - ypos; // Reversed since Y goes bottom to top
 
-    manager->lastX = xpos;
-    manager->lastY = ypos;
+    lastX = xpos;
+    lastY = ypos;
 }
 
-// Event-driven key capture: on each rising edge (GLFW_PRESS), push a time-stamped entry for every action
-// bound to that key. REPEAT (OS auto-repeat) and RELEASE are ignored — the buffer is about discrete
-// presses. Runs during glfwPollEvents on the main thread.
-void InputManager::KeyCallback(GLFWwindow* window, int key, int /*scancode*/, int action, int /*mods*/) {
+// Forwarded by Window from glfwSetKeyCallback. On each rising edge (GLFW_PRESS), push a time-stamped
+// entry for every action bound to that key. REPEAT (OS auto-repeat) and RELEASE are ignored — the buffer
+// is about discrete presses. Runs during glfwPollEvents on the main thread.
+void InputManager::onKey(int key, int action) {
     if (action != GLFW_PRESS) return;
-    InputManager* manager = static_cast<InputManager*>(glfwGetWindowUserPointer(window));
-    if (!manager) return;
 
-    auto it = manager->m_KeyToActions.find(key);
-    if (it == manager->m_KeyToActions.end()) return;
+    auto it = m_KeyToActions.find(key);
+    if (it == m_KeyToActions.end()) return;
 
     const double now = glfwGetTime();
     for (const std::string& act : it->second)
-        manager->m_buffer.push_back(BufferedInput{ act, now, false });
+        m_buffer.push_back(BufferedInput{ act, now, false });
 }

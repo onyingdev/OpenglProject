@@ -68,6 +68,7 @@ public:
         stbi_set_flip_vertically_on_load(true);
 
         m_input = std::make_unique<InputManager>(m_window->handle());
+        m_window->setInputListener(m_input.get());   // Window owns the GLFW callbacks, forwards to here
         InputBindings::loadInto(*m_input, m_inputConfigPath);
         m_inputWatcher = std::make_unique<InputBindings::Watcher>(m_inputConfigPath);
         m_loadCtx.input = m_input.get();
