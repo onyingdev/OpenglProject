@@ -20,6 +20,21 @@ enum class WindowMode { Windowed, Fullscreen, Borderless };
 //                image never gets stretched into an odd shape (no camera misalignment) TODO: fix internal game size not changing.
 enum class ResizeMode { Free, Locked, KeepAspect };
 
+// Frame-profiler toggles (consumed by Profiler at startup). Off by default — flip in render.json to
+// print per-stage CPU/GPU timings without a rebuild, mirroring render.debugColliders.
+struct ProfilerSettings {
+    bool cpu         = false;   // chrono per-stage CPU/submission timing
+    bool gpu         = false;   // GL_TIMESTAMP GPU timing
+    bool detail      = false;   // also record the finer renderer subsections
+    int  reportEvery = 60;      // frames per averaged print
+
+    // Physics step self-profiling (RigidBodyComponent3D statics), grouped under "profiler.physics".
+    // Defaults match the in-code defaults so behavior is unchanged when the block is absent.
+    bool physTimings = true;    // [phys2] detect/solve/total line
+    bool physSolver  = false;   // [phys2-solver]/[phys2-detect] island + detection breakdown
+    bool physPrint   = false;   // per-body awake-state dump
+};
+
 // Platform/window configuration (consumed by Window).
 struct WindowSettings {
     int         width  = 1920;
@@ -40,9 +55,10 @@ struct WindowSettings {
 //     "render": { "internalWidth":1920, "internalHeight":1080,
 //                 "antialiasing":"msaa", "msaaSamples":2 } }
 struct EngineSettings {
-    RenderBackend  backend = RenderBackend::OpenGL;
-    WindowSettings window;
-    RenderSettings render;   // internal resolution + AA (consumed by IRenderer)
+    RenderBackend   backend = RenderBackend::OpenGL;
+    WindowSettings  window;
+    RenderSettings  render;    // internal resolution + AA (consumed by IRenderer)
+    ProfilerSettings profiler; // per-stage frame timing toggles (consumed by Profiler)
 
     // Load defaults from `path`; missing keys keep the built-in defaults above. If
     // `overridePath` is given and exists, it is overlaid on top (player settings win).
@@ -89,6 +105,21 @@ private:
             s.render.msaaSamples    = r.value("msaaSamples",     s.render.msaaSamples);
             s.render.debugColliders = r.value("debugColliders",  s.render.debugColliders);
             if (r.contains("antialiasing")) s.render.aa = parseAA(r["antialiasing"].get<std::string>(), s.render.aa);
+        }
+
+        if (j.contains("profiler") && j["profiler"].is_object()) {
+            const auto& p = j["profiler"];
+            s.profiler.cpu         = p.value("cpu",         s.profiler.cpu);
+            s.profiler.gpu         = p.value("gpu",         s.profiler.gpu);
+            s.profiler.detail      = p.value("detail",      s.profiler.detail);
+            s.profiler.reportEvery = p.value("reportEvery", s.profiler.reportEvery);
+
+            if (p.contains("physics") && p["physics"].is_object()) {
+                const auto& ph = p["physics"];
+                s.profiler.physTimings = ph.value("timings", s.profiler.physTimings);
+                s.profiler.physSolver  = ph.value("solver",  s.profiler.physSolver);
+                s.profiler.physPrint   = ph.value("print",   s.profiler.physPrint);
+            }
         }
     }
 

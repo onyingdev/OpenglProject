@@ -1,5 +1,6 @@
 #include "Render/GL/OpenGLRenderer.h"
 #include "Render/API/IModel.h"   // complete type needed to call IModel::Draw
+#include "Core/Engine/Profiling/Profiler.h"   // GPU timer-query subsections (gpu.frame/flush/resolve/present)
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 #include <vector>
@@ -282,6 +283,10 @@ void OpenGLRenderer::uploadLights(Shader& sh) {
 void OpenGLRenderer::beginScene(const CameraView& cam) {
     m_camera = cam;
 
+    // Coarse GPU span: opened here, closed at the end of endScene(). Explicit (not RAII) because it
+    // crosses functions; GL_TIMESTAMP counters nest, so the flush/resolve/present subsections fit inside.
+    Profiler::instance().gpuBegin("gpu.frame");
+
     glBindFramebuffer(GL_FRAMEBUFFER, m_sceneFbo);
     glViewport(0, 0, m_settings.renderWidth, m_settings.renderHeight);
     glEnable(GL_DEPTH_TEST);
@@ -340,6 +345,9 @@ void OpenGLRenderer::flushOpaqueBatches() {
     m_batchesFlushed = true;
     if (m_batches.empty()) return;
 
+    PROFILE_GPU_DETAIL("gpu.flush");   // GPU time for the instanced draws
+    PROFILE_CPU_DETAIL("cpu.flush");   // CPU time to upload matrices + issue the draw calls
+
     m_litInstanced->use();
     for (auto& [model, matrices] : m_batches)
         model->DrawInstanced(*m_litInstanced, matrices.data(), (int)matrices.size());
@@ -391,14 +399,17 @@ void OpenGLRenderer::endScene() {
     const int rh = m_settings.renderHeight;
 
     // Resolve MSAA into the single-sample resolve FBO (no-op when AA is off).
+    { PROFILE_GPU_DETAIL("gpu.resolve");
     if (m_multisampled) {
         glBindFramebuffer(GL_READ_FRAMEBUFFER, m_sceneFbo);
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_resolveFbo);
         glBlitFramebuffer(0, 0, rw, rh, 0, 0, rw, rh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
     }
+    }
 
     // Present: draw the resolved texture into the letterbox/pillarbox region of the
     // window (default framebuffer). The viewport handles the scaling.
+    { PROFILE_GPU_DETAIL("gpu.present");
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDisable(GL_DEPTH_TEST);
     glViewport(0, 0, m_fbWidth, m_fbHeight);
@@ -435,4 +446,7 @@ void OpenGLRenderer::endScene() {
     glBindVertexArray(m_quadVao);
     glDrawArrays(GL_TRIANGLES, 0, 6);
     glBindVertexArray(0);
+    }   // end gpu.present
+
+    Profiler::instance().gpuEnd("gpu.frame");   // close the coarse span opened in beginScene
 }

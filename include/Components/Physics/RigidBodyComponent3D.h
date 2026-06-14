@@ -73,7 +73,7 @@ public:
     inline static bool DebugPrint = false;
     // Phase timing: averaged ms for detection vs solve vs total, printed periodically. Lets you see
     // whether the narrowphase (parallel) or the serial PGS solve dominates the physics step.
-    inline static bool DebugTimings = true;
+    inline static bool DebugTimings = false;
     // Solver shape: averaged island/constraint counts + the big island's colour count, printed
     // periodically. Tells you whether a slow solve is "many tiny colour batches" (→ single-region
     // refactor pays off) or genuinely a lot of constraints. Zero overhead when false.

@@ -16,7 +16,9 @@
 #include "Core/Engine/Config/AppConfig.h"       // which root scene boots
 #include "Core/Engine/Config/BuiltinComponents.h" // self-registers every component & script
 #include "Components/Physics/ColliderDebugDraw.h"  // debugDrawColliders() wireframe pass
+#include "Components/Physics/RigidBodyComponent3D.h" // DebugTimings/DebugSolver/DebugPrint statics
 #include "Core/Engine/Physics/physics_manager.h"   // drives the v2 physics step
+#include "Core/Engine/Profiling/Profiler.h"        // per-stage frame timing (CPU + GPU, toggled by config)
 
 // The application root. Owns the window, renderer, input and the frame loop, and drives
 // the SceneManager. main() shrinks to: construct -> init() -> run().
@@ -41,6 +43,17 @@ public:
     bool init() {
         m_settings = EngineSettings::load(m_engineConfigPath);
         m_debugColliders = m_settings.render.debugColliders;   // initial state (key toggles at runtime)
+
+        // Profiler toggles are data-driven (render.json), so timing can be turned on without a rebuild.
+        Profiler::CpuEnabled    = m_settings.profiler.cpu;
+        Profiler::GpuEnabled    = m_settings.profiler.gpu;
+        Profiler::DetailEnabled = m_settings.profiler.detail;
+        Profiler::ReportEvery   = m_settings.profiler.reportEvery;
+
+        // Physics step self-profiling (its own [phys2] prints), driven from the same config block.
+        RigidBodyComponent3D::DebugTimings = m_settings.profiler.physTimings;
+        RigidBodyComponent3D::DebugSolver  = m_settings.profiler.physSolver;
+        RigidBodyComponent3D::DebugPrint   = m_settings.profiler.physPrint;
 
         // Window first (it owns the GL context the renderer needs).
         m_window = std::make_unique<Window>(m_settings.window, m_settings.backend);
@@ -123,11 +136,14 @@ private:
         if (!camera) { m_window->pollEvents(); return; }
 
         // --- update ---
+        { PROFILE_CPU("update");
         m_scenes.update(m_deltaTime);          // scripts (variable dt) gather forces via AddForce/AddImpulse
+        }
 
         // Physics on a fixed timestep: accumulate real dt and step in constant slices so
         // integration/resolution stay stable regardless of framerate. Leftover carries to
         // the next frame; kMaxSubSteps caps catch-up to avoid a spiral of death.
+        { PROFILE_CPU("physics");   // wall-time of the substep loop; [phys2] still prints its own breakdown
         m_physicsAccumulator += m_deltaTime;
         int steps = 0;
         while (m_physicsAccumulator >= kFixedDt && steps < kMaxSubSteps) {
@@ -137,8 +153,11 @@ private:
             ++steps;
         }
         if (steps == kMaxSubSteps) m_physicsAccumulator = 0.0f;   // drop backlog if we fell behind
+        }
 
+        { PROFILE_CPU("hurtbox");
         HurtBoxComponent3D::tickWorld();       // gameplay triggers once/frame on post-physics positions
+        }
 
         // --- camera for this frame ---
         auto* cam = camera->getComponent<CameraComponent>();
@@ -152,19 +171,23 @@ private:
 
         // --- lights (sun + point + cone, all data-driven) ---
         LightSet lights;
+        { PROFILE_CPU("collectLights");
         m_scenes.collectLights(lights);
+        }
 
         // --- render ---
         m_renderer->onResize(m_window->width(), m_window->height());
-        m_renderer->beginScene(cv);
-        m_renderer->setLights(lights);
-        m_scenes.draw(*m_renderer);
-        if (m_debugColliders) debugDrawColliders(*m_renderer);   // collider/hurtbox wireframes
-        m_renderer->endScene();
+        { PROFILE_CPU("beginScene"); m_renderer->beginScene(cv); }
+        { PROFILE_CPU("setLights");  m_renderer->setLights(lights); }
+        { PROFILE_CPU("draw");       m_scenes.draw(*m_renderer); }
+        { PROFILE_CPU("debugDraw");  if (m_debugColliders) debugDrawColliders(*m_renderer); }  // collider/hurtbox wireframes
+        { PROFILE_CPU("endScene");   m_renderer->endScene(); }
 
         m_input->ResetFrame();
-        m_window->present();
+        { PROFILE_CPU("present"); m_window->present(); }
         m_window->pollEvents();
+
+        Profiler::instance().endFrame();   // resolve GPU queries + averaged report (no-op when disabled)
     }
 
     // Free GPU-owning objects while the GL context is alive, in order: scene/loose objects
@@ -172,6 +195,7 @@ private:
     void shutdown() {
         m_scenes.unloadAll();   // Mesh/Model dtors glDelete* while GL is alive
         ModelCache::clear();    // drop the cache's model refs (frees any GL still owned) while GL is alive
+        Profiler::instance().shutdownGL();   // glDeleteQueries while the context is alive
         m_renderer.reset();     // renderer FBOs/shaders/quad
         m_window.reset();       // ~Window -> glfwTerminate (after GL objects are gone)
     }

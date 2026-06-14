@@ -16,5 +16,16 @@
     "antialiasing": "fxaa",
     "msaaSamples": 2,
     "debugColliders": false
+  },
+  "profiler": {
+    "cpu": false,
+    "gpu": true,
+    "detail": true,
+    "reportEvery": 60,
+    "physics": {
+      "timings": false,
+      "solver": false,
+      "print": false
+    }
   }
 }
