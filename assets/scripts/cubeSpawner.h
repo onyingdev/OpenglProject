@@ -72,9 +72,11 @@ public:
         camTf = owner->getComponent<TransformComponent3D>();
         if (!camTf) throw MissingComponentException("CubeSpawner", "TransformComponent3D");
 
-        // Fires every frame the spawn action is held — a continuous stream of cubes (hold-to-spam),
-        // handy for stress-testing large counts. Use BindReleased instead for one-per-press.
-        in->BindReleased(spawnAction, [this](float) { if (Enabled) spawn(); });
+        // Spawn once per physical press, frame-rate independent, via the input buffer (honors
+        // SpawnCube's buffer window in input.json). Tap = one cube; HOLDING does not spam (only the
+        // press edge counts). For continuous hold-to-spam stress tests use BindPressed instead;
+        // for fire-on-release use BindReleased.
+        in->BindBuffered(spawnAction, [this](float) { if (Enabled) spawn(); });
     }
 
 private:

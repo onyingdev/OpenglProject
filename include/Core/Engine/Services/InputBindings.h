@@ -73,13 +73,35 @@ namespace InputBindings {
             return false;
         }
 
-        input.ClearActions();   // parse succeeded — safe to replace the binding set
+        input.ClearActions();   // parse succeeded — safe to replace the binding set (also resets buffers)
+
+        // Global default buffer window (ms -> seconds). Applied to any action without its own "buffer".
+        const double defaultMs = j.value("bufferDefaultMs", 120.0);
+        input.SetDefaultBufferTime(defaultMs / 1000.0);
+
         for (auto it = actions.begin(); it != actions.end(); ++it) {
-            if (!it.value().is_string()) {
-                std::cerr << "[InputBindings] action \"" << it.key() << "\" must map to a key name string\n";
+            if (it.key() == "bufferDefaultMs") continue;   // a config knob, not an action (bare-map form)
+
+            // Each action is either "Key" (string, default window) or { "key": "Key", "buffer": ms }.
+            std::string keyName;
+            double bufferMs = -1.0;   // <0 -> use the default window
+            if (it.value().is_string()) {
+                keyName = it.value().get<std::string>();
+            } else if (it.value().is_object()) {
+                const json& o = it.value();
+                keyName = o.value("key", std::string{});
+                if (o.contains("buffer") && o["buffer"].is_number())
+                    bufferMs = o["buffer"].get<double>();
+            } else {
+                std::cerr << "[InputBindings] action \"" << it.key()
+                          << "\" must map to a key name or { key, buffer } object\n";
                 continue;
             }
-            const std::string keyName = it.value().get<std::string>();
+
+            if (keyName.empty()) {
+                std::cerr << "[InputBindings] action \"" << it.key() << "\" has no key\n";
+                continue;
+            }
             const int key = keyFromName(keyName);
             if (key == GLFW_KEY_UNKNOWN) {
                 std::cerr << "[InputBindings] unknown key \"" << keyName
@@ -87,6 +109,7 @@ namespace InputBindings {
                 continue;
             }
             input.BindAction(it.key(), key);
+            if (bufferMs >= 0.0) input.SetBufferTime(it.key(), bufferMs / 1000.0);
         }
         return true;
     }

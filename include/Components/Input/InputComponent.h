@@ -38,6 +38,13 @@ public:
         m_ReleasedHandlers.push_back({action, std::move(handler)});
     }
 
+    // Fires once per physical press, frame-rate independent, via the InputManager buffer (consumes it).
+    // Use this for discrete actions (jump, attack, spawn) instead of BindPressed, which fires every frame
+    // the key is held. The action's buffer window means a press slightly early still counts.
+    void BindBuffered(const std::string& action, ActionHandler handler) {
+        m_BufferedHandlers.push_back({action, std::move(handler)});
+    }
+
     // Fires every frame with the mouse delta since last frame.
     void BindMouseLook(MouseLookHandler handler) {
         m_MouseLookHandler = std::move(handler);
@@ -51,6 +58,9 @@ public:
         for (const auto& [action, handler] : m_ReleasedHandlers) {
             if (m_Input->IsActionReleased(action)) handler(dt);
         }
+        for (const auto& [action, handler] : m_BufferedHandlers) {
+            if (m_Input->ConsumeBuffered(action)) handler(dt);   // once per buffered press
+        }
         //add more if necessary
         if (m_MouseLookHandler) {
             m_MouseLookHandler(m_Input->GetMouseOffsetX(), m_Input->GetMouseOffsetY());
@@ -63,6 +73,7 @@ private:
     InputManager* m_Input = nullptr;
     std::vector<std::pair<std::string, ActionHandler>> m_PressedHandlers;
     std::vector<std::pair<std::string, ActionHandler>> m_ReleasedHandlers;
+    std::vector<std::pair<std::string, ActionHandler>> m_BufferedHandlers;
     MouseLookHandler m_MouseLookHandler;
 };
 
