@@ -11,6 +11,7 @@
 #include "Components/Physics/RigidBodyComponent3D.h" // optional launch velocity
 #include <glm/glm.hpp>
 #include <nlohmann/json.hpp>
+#include <fstream>
 #include <vector>
 #include <string>
 
@@ -39,6 +40,12 @@ class CubeSpawner : public Script {
     TransformComponent3D* camTf = nullptr; // camera transform: position + facing
     int spawnCount = 0;                    // makes each spawned object's name unique
 
+    // Prefab JSON parsed ONCE on first spawn and reused for every spawn after — avoids a disk read +
+    // JSON parse per spawn. (The model it references is shared too, via ModelCache, so a spawn just
+    // builds a GameObject + registers a body.)
+    nlohmann::json m_prefabJson;
+    bool m_prefabReady = false;
+
 public:
     std::vector<GameObject*> spawnedCubes; // borrowed; the scene owns the objects
 
@@ -65,7 +72,8 @@ public:
         camTf = owner->getComponent<TransformComponent3D>();
         if (!camTf) throw MissingComponentException("CubeSpawner", "TransformComponent3D");
 
-        // Fire once per key press (on the release edge), not every frame held.
+        // Fires every frame the spawn action is held — a continuous stream of cubes (hold-to-spam),
+        // handy for stress-testing large counts. Use BindReleased instead for one-per-press.
         in->BindReleased(spawnAction, [this](float) { if (Enabled) spawn(); });
     }
 
@@ -78,13 +86,29 @@ private:
             return;
         }
 
-        // Build the prefab. Inject the live InputManager so prefabs that carry their
-        // own Input component still wire up (the rigid box doesn't, but it's free).
+        // Parse the prefab JSON once, then reuse it for every spawn (no per-spawn disk read/parse).
+        if (!m_prefabReady) {
+            std::ifstream f(cubePrefab);
+            if (!f) {
+                std::cerr << "[CubeSpawner] cannot open prefab " << cubePrefab << "\n";
+                return;
+            }
+            try {
+                f >> m_prefabJson;
+            } catch (const std::exception& e) {
+                std::cerr << "[CubeSpawner] JSON parse error in " << cubePrefab << ": " << e.what() << "\n";
+                return;
+            }
+            m_prefabReady = true;
+        }
+
+        // Build the prefab from the cached JSON. Inject the live InputManager so prefabs that carry
+        // their own Input component still wire up (the rigid box doesn't, but it's free).
         LoadContext ctx;
         ctx.input = im;
-        std::unique_ptr<GameObject> obj = GameObjectLoader::fromFile(cubePrefab, ctx);
+        std::unique_ptr<GameObject> obj = GameObjectLoader::fromJson(m_prefabJson, ctx);
         if (!obj) {
-            std::cerr << "[CubeSpawner] failed to load prefab " << cubePrefab << "\n";
+            std::cerr << "[CubeSpawner] failed to build prefab " << cubePrefab << "\n";
             return;
         }
 
@@ -105,8 +129,7 @@ private:
         GameObject* raw = scene->addObject(std::move(obj));
         raw->start();
 
-        // Optional throw: give the body a forward velocity through the physics API
-        // (wakes it and respects the sleep system).
+        // Optional throw: give the body a forward velocity through the physics API.
         if (launchSpeed > 0.0f) {
             if (auto* rb = raw->getComponent<RigidBodyComponent3D>())
                 rb->SetVelocity(camTf->forward() * launchSpeed);

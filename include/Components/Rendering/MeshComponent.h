@@ -5,6 +5,7 @@
 #include "Render/API/IModel.h"
 #include "Render/API/RenderTypes.h"
 #include "Render/model.h"          // concrete GL Model, used only at construction
+#include "Render/ModelCache.h"     // share one GPU upload per model path (spawns, scene duplicates)
 #include <glm/gtc/matrix_transform.hpp>
 #include <nlohmann/json.hpp>
 #include <memory>
@@ -29,9 +30,10 @@ public:
 
     MeshComponent() = default;
     explicit MeshComponent(std::shared_ptr<IModel> model) : ModelRef(std::move(model)) {}
-    // Convenience: load a model from disk. For multiple instances of the same model,
-    // prefer constructing one shared_ptr<IModel> externally and passing it in to avoid duplicate GPU uploads.
-    // flipUVs: forward to Model — set true for models authored with the LearnOpenGL UV convention.
+    // Convenience: load a FRESH, un-shared model from disk (the direct-load path). For shared
+    // instances prefer the cache — deserialize() below goes through ModelCache so repeated loads of
+    // the same path reuse one GPU upload; this ctor is kept for callers that deliberately want a
+    // separate Model instance. flipUVs: set true for models authored with the LearnOpenGL UV convention.
     explicit MeshComponent(const std::string& path, bool flipUVs = false)
         : ModelRef(std::make_shared<Model>(path, false, flipUVs)) {}
 
@@ -40,7 +42,7 @@ public:
     void deserialize(const nlohmann::json& j, LoadContext&) override {
         const std::string model = j.value("model", std::string{});
         const bool flip = j.value("flipUVs", false);
-        if (!model.empty()) ModelRef = std::make_shared<Model>(model, false, flip);
+        if (!model.empty()) ModelRef = ModelCache::get(model, false, flip);   // shared upload per path
 
         Material   = (j.value("material", std::string{"lit"}) == "unlit")
                          ? MaterialKind::Unlit : MaterialKind::Lit;

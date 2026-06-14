@@ -4,6 +4,7 @@
 #include <iostream>
 
 #include "Render/model.h"                       // stbi_set_flip_vertically_on_load
+#include "Render/ModelCache.h"                  // shared model cache — cleared at shutdown (GL alive)
 #include "Render/GL/OpenGLRenderer.h"           // concrete backend + IRenderer + render types
 #include "Core/Engine/input_manager.h"
 #include "Core/Engine/SceneManager.h"
@@ -170,6 +171,7 @@ private:
     // -> renderer -> window (which terminates GLFW). Idempotent so the dtor can call it too.
     void shutdown() {
         m_scenes.unloadAll();   // Mesh/Model dtors glDelete* while GL is alive
+        ModelCache::clear();    // drop the cache's model refs (frees any GL still owned) while GL is alive
         m_renderer.reset();     // renderer FBOs/shaders/quad
         m_window.reset();       // ~Window -> glfwTerminate (after GL objects are gone)
     }

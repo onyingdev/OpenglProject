@@ -1,0 +1,8 @@
+https://people.engr.tamu.edu/sueda/courses/CSC471/2016S/demos/khongton/index.html
+https://antongerdelan.net/opengl/cubemaps.html
+https://therealmjp.github.io/posts/sss-intro/
+https://medium.com/@simon.nordon/unity-architecture-gameobject-component-pattern-34a76a9eacfb
+https://www.4a-games.com.mt/4a-dna/in-depth-technical-dive-into-metro-exodus-pc-enhanced-edition
+https://www.youtube.com/watch?v=byP6cA71Cgw
+https://www.youtube.com/watch?v=9IULfQH7E90
+https://www.havok.com/blog/how-havoks-constraint-solver-works-pgs-baumgarte/

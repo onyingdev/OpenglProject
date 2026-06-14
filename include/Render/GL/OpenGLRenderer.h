@@ -1,6 +1,8 @@
 #pragma once
 #include <glad/glad.h>
 #include <memory>
+#include <vector>
+#include <unordered_map>
 #include "Render/API/IRenderer.h"
 #include "Render/shader_s.h"
 
@@ -34,6 +36,10 @@ private:
     void buildQuad();       // fullscreen present quad (created once)
     void buildDebugGeometry();  // wire-cube + wire-sphere + dynamic line buffers (created once)
 
+    void uploadCamera(Shader& sh);   // push view/projection/viewPos to a program
+    void uploadLights(Shader& sh);   // push the frame's light set to a program
+    void flushOpaqueBatches();       // draw all deferred lit meshes instanced (idempotent per frame)
+
     GLADloadproc   m_loader   = nullptr;
     bool           m_glLoaded = false;
     RenderSettings m_settings;
@@ -58,11 +64,17 @@ private:
     GLuint m_lineVao = 0,       m_lineVbo = 0;   // dynamic: two verts re-uploaded per drawLine
 
     // Built-in shaders (owned by the GL backend).
-    std::unique_ptr<Shader> m_lit;    // advanced_lighting
-    std::unique_ptr<Shader> m_unlit;  // light_s
-    std::unique_ptr<Shader> m_post;   // msaa_post (fullscreen present, no post-AA)
-    std::unique_ptr<Shader> m_fxaa;   // fxaa_s (present pass with FXAA edge filter)
+    std::unique_ptr<Shader> m_lit;          // advanced_lighting (single draw; model via uniform)
+    std::unique_ptr<Shader> m_litInstanced; // advanced_lighting_instanced (model via instance attribute)
+    std::unique_ptr<Shader> m_unlit;        // light_s
+    std::unique_ptr<Shader> m_post;         // msaa_post (fullscreen present, no post-AA)
+    std::unique_ptr<Shader> m_fxaa;         // fxaa_s (present pass with FXAA edge filter)
 
     CameraView m_camera;
     LightSet   m_lights;
+
+    // Deferred opaque-lit submissions, grouped by model so each group draws in ONE instanced call.
+    // Filled by submit(), flushed (once) by flushOpaqueBatches() before debug draw / present.
+    std::unordered_map<IModel*, std::vector<glm::mat4>> m_batches;
+    bool m_batchesFlushed = false;
 };
