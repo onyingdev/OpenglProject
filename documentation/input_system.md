@@ -100,8 +100,34 @@ for (const BufferedInput& e : im->Buffer()) {
     // e.action, e.time (seconds), e.consumed
 }
 ```
-`ConsumeSequence` is a basic greedy matcher; for charge moves, motion inputs, or branching combos, read
-`Buffer()` directly. (Combos live in scripts, not the engine.)
+
+**Custom-timed sequences** — when the *gap between* inputs should pick the combo, use a
+`CustomTimedSequence`: a list of `TimedStep`s (each with its own `[minGap, maxGap]` from the previous
+press, in seconds — ignored on the first step) plus an interrupt policy.
+```cpp
+// A->B fast = X; A->B fast then a SLOW A = Y. Check the longer/more specific sequence FIRST so a shorter
+// prefix doesn't consume the presses out from under it.
+CustomTimedSequence Y { { {"A"}, {"B", 0.0, 0.15}, {"A", 0.3, 0.8} } };   // 3rd A must be slow
+CustomTimedSequence X { { {"A"}, {"B", 0.0, 0.15} } };
+if      (im->ConsumeSequence(Y)) doY();
+else if (im->ConsumeSequence(X)) doX();
+```
+The `minGap` on Y's third step is what stops a *fast* third A from matching Y.
+
+**Interrupt policy** — controls whether OTHER inputs landing between steps cancel an in-progress match:
+- `SequenceInterrupt::None` (default) — interspersed inputs are ignored; the ordered actions + timing
+  still trigger.
+- `SequenceInterrupt::Any` — any action that isn't the next expected step cancels the match.
+- `SequenceInterrupt::Except` — only the actions in `interrupters` cancel it; everything else is ignored.
+```cpp
+CustomTimedSequence fireball {
+    { {"Down"}, {"Forward", 0.0, 0.2}, {"Punch", 0.0, 0.2} },
+    SequenceInterrupt::Except, { "Block" }    // only Block cancels it mid-input; stray inputs don't
+};
+if (im->ConsumeSequence(fireball)) doFireball();
+```
+`ConsumeSequence` is a greedy matcher; for charge moves, motion inputs, or branching trees, read
+`Buffer()` directly. (Sequence logic lives in scripts, not the engine.)
 
 ### Tuning at runtime
 ```cpp
@@ -138,3 +164,36 @@ in->BindBuffered("SpawnCube", [this](float){ if (Enabled) spawn(); });
 
 Correct as written. The only gotcha: if you want the old continuous hold-to-spam (for stress-testing
 1000s of cubes), use `BindPressed` instead — `BindBuffered` deliberately fires once per press.
+
+---
+
+## Buffered state (timed gameplay states)
+
+A separate but adjacent tool: `BufferedStateComponent` (`type: "BufferedState"`) holds named states that
+**auto-revert to a default after a TTL** — invulnerability after a hit, a timed buff, a stance. Not part
+of the InputManager; a per-entity component you read from scripts. Timers are `dt`-based (frame-rate
+independent). Values are strings (covers flags *and* multi-value states); `SetFlag`/`IsFlag` are the
+boolean shortcut.
+
+```json
+{ "type": "BufferedState",
+  "states": [
+    { "name": "invulnerable", "default": "false", "ttl": 0.5 },
+    { "name": "buff",         "default": "none",  "ttl": 5.0 }
+  ] }
+```
+
+```cpp
+auto* st = owner->getComponent<BufferedStateComponent>();
+
+st->SetFlag("invulnerable");            // "true" for the configured 0.5s, then auto-reverts to "false"
+if (st->IsFlag("invulnerable")) return; // e.g. ignore damage while invulnerable
+
+st->Set("buff", "strength", 5.0);       // reverts to "none" after 5s (ttl override; omit to use configured)
+std::string b = st->Get("buff");        // "strength" ... then "none"
+st->Reset("buff");                      // force back to default now
+```
+
+API: `Set(name,value[,ttl])` · `Get` · `Is(name,value)` · `Reset` · `SetFlag(name[,ttl])` · `IsFlag` ·
+`Define(name,default,ttl)` (runtime-declared state). A `ttl` of 0 means "no auto-revert" (manual only);
+setting a state back to its default clears the timer.

@@ -16,6 +16,31 @@ struct BufferedInput {
     bool        consumed = false;
 };
 
+// One step of a CustomTimedSequence: the action plus the allowed gap (seconds) from the PREVIOUS matched
+// step. The gap window lets timing distinguish sequences (a fast vs. a slow follow-up). minGap/maxGap are
+// ignored for the first step. Defaults = "any gap".
+struct TimedStep {
+    std::string action;
+    double      minGap = 0.0;
+    double      maxGap = 1e9;
+};
+
+// How a sequence reacts to OTHER inputs that land in the buffer between its steps.
+enum class SequenceInterrupt {
+    None,    // interspersed inputs never break the match (the ordered actions+timing still trigger)
+    Any,     // any action that isn't the next expected step cancels the in-progress match
+    Except   // only the listed `interrupters` cancel it; every other interloper is ignored
+};
+
+// A sequence with per-step time gaps + an interrupt policy — fully self-describing. Pass to
+// ConsumeSequence. Build the longer/more-specific sequence and check it first so a shorter prefix
+// doesn't consume the presses out from under it.
+struct CustomTimedSequence {
+    std::vector<TimedStep>   steps;
+    SequenceInterrupt        interrupt = SequenceInterrupt::None;
+    std::vector<std::string> interrupters;   // actions that cancel the match when interrupt == Except
+};
+
 //input manager class only handles inputs and mouse. Does not handle logic.
 // we can use input manager by itself but not Input Component.
 // Receives raw cursor/key events from Window (which owns the GLFW callbacks) via IInputListener.
@@ -51,6 +76,11 @@ public:
     // within `maxGapSeconds` of the previous. On a full match, consume the matched presses and return
     // true. (For anything more bespoke, read Buffer() directly.)
     bool ConsumeSequence(const std::vector<std::string>& sequence, double maxGapSeconds);
+
+    // Custom-timed variant: per-step [minGap, maxGap] windows + an interrupt policy (whether other inputs
+    // landing between steps cancel the match). On a full match, consume the matched presses and return
+    // true. Check more specific / longer sequences first so a shorter prefix doesn't consume them.
+    bool ConsumeSequence(const CustomTimedSequence& seq);
 
     // Raw read access to the chronological buffer (oldest -> newest) for custom script logic.
     const std::deque<BufferedInput>& Buffer() const { return m_buffer; }

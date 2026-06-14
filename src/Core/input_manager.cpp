@@ -116,6 +116,59 @@ bool InputManager::ConsumeSequence(const std::vector<std::string>& sequence, dou
     return true;
 }
 
+// Custom-timed variant: per-step [minGap, maxGap] windows + an interrupt policy. Greedy scan over the
+// live buffer. An "interloper" (an entry that isn't the next expected step) either cancels the
+// in-progress match (Any, or Except + listed) or is ignored (None, or Except non-listed). A cancel or a
+// bad gap restarts the match, and the offending entry may re-seed a fresh attempt at step 0.
+bool InputManager::ConsumeSequence(const CustomTimedSequence& seq) {
+    const std::vector<TimedStep>& steps = seq.steps;
+    if (steps.empty()) return false;
+    const double now = glfwGetTime();
+
+    std::vector<std::deque<BufferedInput>::iterator> matched;
+    size_t step = 0;
+    double prevTime = 0.0;
+
+    for (auto it = m_buffer.begin(); it != m_buffer.end() && step < steps.size(); ++it) {
+        if (it->consumed) continue;
+        if (now - it->time > bufferTimeFor(it->action)) continue;   // stale entry, ignore
+
+        if (it->action != steps[step].action) {
+            // Interloper. Only meaningful mid-match (step > 0). Does the policy cancel on it?
+            bool cancels = false;
+            if (step > 0) {
+                if (seq.interrupt == SequenceInterrupt::Any) cancels = true;
+                else if (seq.interrupt == SequenceInterrupt::Except)
+                    cancels = std::find(seq.interrupters.begin(), seq.interrupters.end(), it->action)
+                              != seq.interrupters.end();
+            }
+            if (!cancels) continue;          // ignored
+            matched.clear();                 // cancelled -> restart
+            step = 0;
+            if (it->action != steps[0].action) continue;   // this entry can't re-seed a new start
+            // else: matches steps[0] -> fall through and seed step 0 (gap check skipped at step 0)
+        }
+
+        // it->action == steps[step].action here (step may be 0 after a restart).
+        if (step > 0) {
+            const double gap = it->time - prevTime;
+            if (gap < steps[step].minGap || gap > steps[step].maxGap) {
+                matched.clear();
+                step = 0;
+                if (it->action != steps[0].action) continue;
+            }
+        }
+
+        matched.push_back(it);
+        prevTime = it->time;
+        ++step;
+    }
+
+    if (step < steps.size()) return false;
+    for (auto& it : matched) it->consumed = true;
+    return true;
+}
+
 void InputManager::pruneBuffer(double now) {
     // Drop entries older than the largest configured window (they can never be live), and cap size.
     double maxWindow = m_defaultBufferTime;
