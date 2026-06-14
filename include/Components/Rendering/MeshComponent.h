@@ -6,6 +6,7 @@
 #include "Render/API/RenderTypes.h"
 #include "Render/model.h"          // concrete GL Model, used only at construction
 #include "Render/ModelCache.h"     // share one GPU upload per model path (spawns, scene duplicates)
+#include "Render/Assets/AssetManager.h" // async (threaded) loading: request() + ModelHandle
 #include <glm/gtc/matrix_transform.hpp>
 #include <nlohmann/json.hpp>
 #include <memory>
@@ -41,12 +42,28 @@ public:
     //         "material": "lit"|"unlit", "color": [r,g,b] }
     void deserialize(const nlohmann::json& j, LoadContext&) override {
         const std::string model = j.value("model", std::string{});
-        const bool flip = j.value("flipUVs", false);
-        if (!model.empty()) ModelRef = ModelCache::get(model, false, flip);   // shared upload per path
+        const bool flip  = j.value("flipUVs", false);
+        // "async": parse on a worker thread and pop the mesh in once uploaded — no load-time hitch.
+        // Default false keeps the old blocking load, so existing scenes are unchanged. Prefer true for
+        // heavy models / runtime spawns; the object simply renders nothing until the upload completes.
+        const bool async = j.value("async", false);
+        if (!model.empty()) {
+            if (async) m_pending = AssetManager::instance().request(model, false, flip);
+            else       ModelRef  = ModelCache::get(model, false, flip);   // shared upload per path
+        }
 
         Material   = (j.value("material", std::string{"lit"}) == "unlit")
                          ? MaterialKind::Unlit : MaterialKind::Lit;
         UnlitColor = jsonVec3(j.value("color", nlohmann::json{}), UnlitColor);
+    }
+
+    // Promote a finished async load into the live model. Cheap no-op for synchronously-loaded meshes
+    // (m_pending is null) and after the first promotion. renderItem() draws nothing until then.
+    void update(float) override {
+        if (!ModelRef && m_pending && m_pending->ready) {
+            ModelRef = m_pending->model;
+            m_pending.reset();
+        }
     }
 
     // World transform for this mesh. Rotation comes from the quaternion authority
@@ -74,6 +91,11 @@ public:
         item.unlitColor  = UnlitColor;
         return item;
     }
+
+private:
+    // In-flight async load: set by deserialize when "async": true, cleared once update() promotes it
+    // into ModelRef. Null for synchronously-loaded meshes.
+    std::shared_ptr<ModelHandle> m_pending;
 };
 
 REGISTER_COMPONENT(MeshComponent, "Mesh")

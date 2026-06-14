@@ -14,6 +14,7 @@
 #include "Render/mesh.h"
 #include "Render/API/IShader.h"
 #include "Render/API/IModel.h"
+#include "Render/Assets/ModelData.h"   // backend-agnostic CPU asset data (parse output)
 
 #include <string>
 #include <fstream>
@@ -21,11 +22,15 @@
 #include <iostream>
 #include <map>
 #include <vector>
+#include <cstring>
+#include <utility>
 using namespace std;
 
-unsigned int TextureFromFile(const char *path, const string &directory, bool gamma = false);
-
 // OpenGL implementation of IModel: loads via Assimp and owns its meshes + textures.
+//
+// Loading is split into two stages: parse() reads + decodes a file into a backend-agnostic ModelData
+// touching NO GL (so it can run on a worker thread), and uploadFrom() turns that ModelData into GPU
+// meshes/textures on the render thread. The sync Model(path) ctor just runs both back-to-back.
 class Model : public IModel
 {
 public:
@@ -40,11 +45,14 @@ public:
     // flipUVs: vertically flip UVs at load. Set true for models authored with the
     // LearnOpenGL/UE convention (e.g. backpack); leave false otherwise. Combine with
     // stbi_set_flip_vertically_on_load to choose the correct net orientation.
+    // Sync load: parse on the calling thread, then upload here. Same signature/behavior as before —
+    // the delegating ctor just routes through the new two-stage path.
     Model(string const &path, bool gamma = false, bool flipUVs = false)
-        : gammaCorrection(gamma), flipUVs(flipUVs)
-    {
-        loadModel(path);
-    }
+        : Model(parse(path, gamma, flipUVs)) {}
+
+    // Async-friendly load: upload an already-parsed ModelData. MUST run on the render (GL) thread.
+    // Phase 2's AssetManager calls parse() on a worker, then constructs the Model through this ctor.
+    explicit Model(ModelData &&data) { uploadFrom(std::move(data)); }
 
     // Mesh is move-only and Model owns GPU texture IDs, so block copies and define moves.
     Model(const Model&) = delete;
@@ -102,63 +110,94 @@ private:
         }
     }
 
-    // loads a model with supported ASSIMP extensions from file and stores the resulting meshes in the meshes vector.
-    void loadModel(string const &path)
+    // ---- GPU upload stage (render/GL thread only) ----
+    // Turn a parsed ModelData into GPU meshes + textures. Uploads the de-duplicated texture pool once,
+    // then builds each Mesh, resolving its texture indices to the uploaded GL handles.
+    void uploadFrom(ModelData &&data)
     {
-        // read file via ASSIMP
+        directory       = std::move(data.directory);
+        gammaCorrection = data.gammaCorrection;
+        flipUVs         = data.flipUVs;
+        if (!data.valid) return;   // parse failed: leave an empty model (Draw is a no-op)
+
+        // Upload each decoded texture once; keep a parallel pool of GPU handles to resolve per-mesh.
+        vector<Texture> pool;
+        pool.reserve(data.textures.size());
+        for (const TextureData &td : data.textures)
+        {
+            Texture t;
+            t.id   = uploadTexture(td);
+            t.type = td.type;
+            t.path = td.path;
+            pool.push_back(t);
+            textures_loaded.push_back(t);   // model-wide dedup record (kept for parity / future reuse)
+        }
+
+        // Build each mesh, mapping its texture indices to the uploaded handles.
+        meshes.reserve(data.meshes.size());
+        for (MeshData &m : data.meshes)
+        {
+            vector<Texture> meshTextures;
+            meshTextures.reserve(m.textureIndices.size());
+            for (int idx : m.textureIndices)
+                if (idx >= 0 && idx < (int)pool.size()) meshTextures.push_back(pool[idx]);
+            meshes.emplace_back(std::move(m.vertices), std::move(m.indices), std::move(meshTextures));
+        }
+    }
+
+public:
+    // ---- CPU parse stage (no GL — safe to run on a worker thread) ----
+    // Read + decode a model from disk into backend-agnostic ModelData: Assimp for geometry, stb_image
+    // for texture pixels. Touches no graphics API. The result is uploaded later via Model(ModelData&&).
+    static ModelData parse(string const &path, bool gamma = false, bool flipUVs = false)
+    {
+        ModelData model;
+        model.gammaCorrection = gamma;
+        model.flipUVs         = flipUVs;
+
         Assimp::Importer importer;
         unsigned int flags = aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_CalcTangentSpace;
         if (flipUVs) flags |= aiProcess_FlipUVs;
-        const aiScene* scene = importer.ReadFile(path, flags);
-        if(!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode) // if is Not Zero
+        const aiScene *scene = importer.ReadFile(path, flags);
+        if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
         {
             cout << "ERROR::ASSIMP:: " << importer.GetErrorString() << endl;
-            return;
+            return model;   // model.valid stays false
         }
-        // retrieve the directory path of the filepath, TODO: change pathing method for searching other folders
-        directory = path.substr(0, path.find_last_of('/'));
-
-        // process ASSIMP's root node recursively
-        processNode(scene->mRootNode, scene);
+        // TODO: change pathing method for searching other folders
+        model.directory = path.substr(0, path.find_last_of('/'));
+        processNode(scene->mRootNode, scene, model);
+        model.valid = true;
+        return model;
     }
 
-    // processes a node in a recursive fashion. Processes each individual mesh located at the node and repeats this process on its children nodes (if any).
-    void processNode(aiNode *node, const aiScene *scene)
+private:
+    // recursively walk the node tree, appending each mesh's MeshData to `model`.
+    static void processNode(aiNode *node, const aiScene *scene, ModelData &model)
     {
-        // process each mesh located at the current node
-        for(unsigned int i = 0; i < node->mNumMeshes; i++)
+        for (unsigned int i = 0; i < node->mNumMeshes; i++)
         {
-            // the node object only contains indices to index the actual objects in the scene.
-            // the scene contains all the data, node is just to keep stuff organized (like relations between nodes).
-            aiMesh* mesh = scene->mMeshes[node->mMeshes[i]];
-            meshes.push_back(processMesh(mesh, scene));
+            aiMesh *mesh = scene->mMeshes[node->mMeshes[i]];
+            model.meshes.push_back(processMesh(mesh, scene, model));
         }
-        // after we've processed all of the meshes (if any) we then recursively process each of the children nodes
-        for(unsigned int i = 0; i < node->mNumChildren; i++)
-        {
-            processNode(node->mChildren[i], scene);
-        }
-
+        for (unsigned int i = 0; i < node->mNumChildren; i++)
+            processNode(node->mChildren[i], scene, model);
     }
 
-    Mesh processMesh(aiMesh *mesh, const aiScene *scene)
+    static MeshData processMesh(aiMesh *mesh, const aiScene *scene, ModelData &model)
     {
-        // data to fill
-        vector<Vertex> vertices;
-        vector<unsigned int> indices;
-        vector<Texture> textures;
+        MeshData out;
+        out.vertices.reserve(mesh->mNumVertices);
 
         // walk through each of the mesh's vertices
-        for(unsigned int i = 0; i < mesh->mNumVertices; i++)
+        for (unsigned int i = 0; i < mesh->mNumVertices; i++)
         {
-            Vertex vertex;
-            glm::vec3 vector; // we declare a placeholder vector since assimp uses its own vector class that doesn't directly convert to glm's vec3 class so we transfer the data to this placeholder glm::vec3 first.
-            // positions
+            Vertex vertex{};   // zero-inits bone ids/weights (unused until skinning)
+            glm::vec3 vector;  // assimp's vec3 doesn't convert to glm directly; stage through this
             vector.x = mesh->mVertices[i].x;
             vector.y = mesh->mVertices[i].y;
             vector.z = mesh->mVertices[i].z;
             vertex.Position = vector;
-            // normals
             if (mesh->HasNormals())
             {
                 vector.x = mesh->mNormals[i].x;
@@ -166,21 +205,17 @@ private:
                 vector.z = mesh->mNormals[i].z;
                 vertex.Normal = vector;
             }
-            // texture coordinates
-            if(mesh->mTextureCoords[0]) // does the mesh contain texture coordinates?
+            if (mesh->mTextureCoords[0])   // does the mesh contain texture coordinates?
             {
                 glm::vec2 vec;
-                // a vertex can contain up to 8 different texture coordinates. We thus make the assumption that we won't
-                // use models where a vertex can have multiple texture coordinates so we always take the first set (0).
+                // assume one UV set (0); a vertex could hold up to 8.
                 vec.x = mesh->mTextureCoords[0][i].x;
                 vec.y = mesh->mTextureCoords[0][i].y;
                 vertex.TexCoords = vec;
-                // tangent
                 vector.x = mesh->mTangents[i].x;
                 vector.y = mesh->mTangents[i].y;
                 vector.z = mesh->mTangents[i].z;
                 vertex.Tangent = vector;
-                // bitangent
                 vector.x = mesh->mBitangents[i].x;
                 vector.y = mesh->mBitangents[i].y;
                 vector.z = mesh->mBitangents[i].z;
@@ -189,134 +224,125 @@ private:
             else
                 vertex.TexCoords = glm::vec2(0.0f, 0.0f);
 
-            vertices.push_back(vertex);
+            out.vertices.push_back(vertex);
         }
-        // now wak through each of the mesh's faces (a face is a mesh its triangle) and retrieve the corresponding vertex indices.
-        for(unsigned int i = 0; i < mesh->mNumFaces; i++)
+        // each face is a triangle (post-Triangulate); gather its indices
+        for (unsigned int i = 0; i < mesh->mNumFaces; i++)
         {
             aiFace face = mesh->mFaces[i];
-            // retrieve all indices of the face and store them in the indices vector
-            for(unsigned int j = 0; j < face.mNumIndices; j++)
-                indices.push_back(face.mIndices[j]);
+            for (unsigned int j = 0; j < face.mNumIndices; j++)
+                out.indices.push_back(face.mIndices[j]);
         }
-        // process materials
-        aiMaterial* material = scene->mMaterials[mesh->mMaterialIndex];
-        // we assume a convention for sampler names in the shaders. Each diffuse texture should be named
-        // as 'texture_diffuseN' where N is a sequential number ranging from 1 to MAX_SAMPLER_NUMBER.
-        // Same applies to other texture as the following list summarizes:
-        // diffuse: texture_diffuseN
-        // specular: texture_specularN
-        // normal: texture_normalN
 
-        // 1. diffuse / base color (glTF and FBX expose base color under aiTextureType_BASE_COLOR)
-        vector<Texture> diffuseMaps = loadMaterialTextures(material, aiTextureType_DIFFUSE, "texture_diffuse");
-        if (diffuseMaps.empty())
-            diffuseMaps = loadMaterialTextures(material, aiTextureType_BASE_COLOR, "texture_diffuse");
-        textures.insert(textures.end(), diffuseMaps.begin(), diffuseMaps.end());
-        // 2. specular maps
-        vector<Texture> specularMaps = loadMaterialTextures(material, aiTextureType_SPECULAR, "texture_specular");
-        textures.insert(textures.end(), specularMaps.begin(), specularMaps.end());
-        // 3. normal maps (NORMALS for glTF/FBX; OBJ's map_Bump arrives as HEIGHT, fall back to it)
-        vector<Texture> normalMaps = loadMaterialTextures(material, aiTextureType_NORMALS, "texture_normal");
-        if (normalMaps.empty())
-            normalMaps = loadMaterialTextures(material, aiTextureType_HEIGHT, "texture_normal");
-        textures.insert(textures.end(), normalMaps.begin(), normalMaps.end());
-        // 4. height / displacement maps
-        vector<Texture> heightMaps = loadMaterialTextures(material, aiTextureType_DISPLACEMENT, "texture_height");
-        textures.insert(textures.end(), heightMaps.begin(), heightMaps.end());
+        // materials -> texture pool indices. Sampler-name convention: texture_diffuseN / _specularN /
+        // _normalN / _heightN (N assigned at bind time in Mesh::bindTextures).
+        aiMaterial *material = scene->mMaterials[mesh->mMaterialIndex];
 
-        // return a mesh object created from the extracted mesh data
-        return Mesh(vertices, indices, textures);
+        // 1. diffuse / base color (glTF & FBX expose base color under BASE_COLOR)
+        vector<int> diffuse = loadMaterialTextures(material, aiTextureType_DIFFUSE, "texture_diffuse", model);
+        if (diffuse.empty())
+            diffuse = loadMaterialTextures(material, aiTextureType_BASE_COLOR, "texture_diffuse", model);
+        out.textureIndices.insert(out.textureIndices.end(), diffuse.begin(), diffuse.end());
+        // 2. specular
+        vector<int> specular = loadMaterialTextures(material, aiTextureType_SPECULAR, "texture_specular", model);
+        out.textureIndices.insert(out.textureIndices.end(), specular.begin(), specular.end());
+        // 3. normal (NORMALS for glTF/FBX; OBJ's map_Bump arrives as HEIGHT, fall back to it)
+        vector<int> normal = loadMaterialTextures(material, aiTextureType_NORMALS, "texture_normal", model);
+        if (normal.empty())
+            normal = loadMaterialTextures(material, aiTextureType_HEIGHT, "texture_normal", model);
+        out.textureIndices.insert(out.textureIndices.end(), normal.begin(), normal.end());
+        // 4. height / displacement
+        vector<int> height = loadMaterialTextures(material, aiTextureType_DISPLACEMENT, "texture_height", model);
+        out.textureIndices.insert(out.textureIndices.end(), height.begin(), height.end());
+
+        return out;
     }
 
-    // checks all material textures of a given type and loads the textures if they're not loaded yet.
-    // the required info is returned as a Texture struct.
-    vector<Texture> loadMaterialTextures(aiMaterial *mat, aiTextureType type, string typeName)
+    // Decode each texture of `type` into model.textures (de-duped by path) and return their indices.
+    static vector<int> loadMaterialTextures(aiMaterial *mat, aiTextureType type, string typeName, ModelData &model)
     {
-        vector<Texture> textures;
-        for(unsigned int i = 0; i < mat->GetTextureCount(type); i++)
+        vector<int> indices;
+        for (unsigned int i = 0; i < mat->GetTextureCount(type); i++)
         {
             aiString str;
             mat->GetTexture(type, i, &str);
-            // check if texture was loaded before and if so, continue to next iteration: skip loading a new texture
-            bool skip = false;
-            for(unsigned int j = 0; j < textures_loaded.size(); j++)
-            {
-                if(std::strcmp(textures_loaded[j].path.data(), str.C_Str()) == 0)
-                {
-                    textures.push_back(textures_loaded[j]);
-                    skip = true; // a texture with the same filepath has already been loaded, continue to next one. (optimization)
-                    break;
-                }
-            }
-            if(!skip)
-            {   // if texture hasn't been loaded already, load it
-                Texture texture;
-                texture.id = TextureFromFile(str.C_Str(), this->directory);
-                texture.type = typeName;
-                texture.path = str.C_Str();
-                textures.push_back(texture);
-                textures_loaded.push_back(texture);  // store it as texture loaded for entire model, to ensure we won't unnecessary load duplicate textures.
-            }
+            // already decoded into the pool? reuse its index (avoids decoding the same file twice).
+            int found = -1;
+            for (unsigned int j = 0; j < model.textures.size(); j++)
+                if (std::strcmp(model.textures[j].path.c_str(), str.C_Str()) == 0) { found = (int)j; break; }
+            if (found >= 0) { indices.push_back(found); continue; }
+
+            TextureData td = decodeTexture(str.C_Str(), model.directory);
+            td.type = typeName;
+            td.path = str.C_Str();
+            model.textures.push_back(std::move(td));
+            indices.push_back((int)model.textures.size() - 1);
         }
-        return textures;
+        return indices;
+    }
+
+    // CPU-only: decode an image file into pixels. Empty pixels => decode failed (upload uses fallback).
+    static TextureData decodeTexture(const char *path, const string &directory)
+    {
+        TextureData td;
+        string filename = directory + '/' + string(path);
+        int width, height, nrComponents;
+        unsigned char *data = stbi_load(filename.c_str(), &width, &height, &nrComponents, 0);
+        if (data)
+        {
+            td.width = width; td.height = height; td.channels = nrComponents;
+            td.pixels.assign(data, data + (size_t)width * height * nrComponents);
+            stbi_image_free(data);
+        }
+        else
+        {
+            std::cout << "Texture failed to load at path: " << filename << std::endl;
+            // leave td.pixels empty -> uploadTexture substitutes the magenta fallback
+        }
+        return td;
+    }
+
+    // GL upload of one decoded texture (render thread). Mirrors the old TextureFromFile GL half:
+    // grayscale swizzle for 1/2-channel images, mipmaps + repeat, and a magenta 1x1 fallback.
+    static unsigned int uploadTexture(const TextureData &td)
+    {
+        unsigned int textureID;
+        glGenTextures(1, &textureID);
+        glBindTexture(GL_TEXTURE_2D, textureID);
+
+        if (!td.pixels.empty())
+        {
+            GLenum format = GL_RGB;
+            if (td.channels == 1) {
+                format = GL_RED;
+                GLint swizzle[4] = { GL_RED, GL_RED, GL_RED, GL_ONE };
+                glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, swizzle);
+            } else if (td.channels == 2) {
+                format = GL_RG;
+                GLint swizzle[4] = { GL_RED, GL_RED, GL_RED, GL_GREEN };
+                glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, swizzle);
+            } else if (td.channels == 4) {
+                format = GL_RGBA;
+            }
+
+            glTexImage2D(GL_TEXTURE_2D, 0, format, td.width, td.height, 0, format, GL_UNSIGNED_BYTE, td.pixels.data());
+            glGenerateMipmap(GL_TEXTURE_2D);
+
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        }
+        else
+        {
+            // Magenta 1x1 fallback so missing textures are visually obvious.
+            const unsigned char magenta[4] = { 255, 0, 255, 255 };
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, magenta);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        }
+
+        return textureID;
     }
 };
-
-
-// inline: this free function is defined in a header included by multiple TUs
-// (main.cpp, GameObjectLoader.cpp, ...). Without inline the linker sees one
-// definition per TU and fails with "multiple definition of TextureFromFile".
-inline unsigned int TextureFromFile(const char *path, const string &directory, bool gamma)
-{
-    string filename = string(path);
-    filename = directory + '/' + filename;
-
-    unsigned int textureID;
-    glGenTextures(1, &textureID);
-    glBindTexture(GL_TEXTURE_2D, textureID);
-
-    int width, height, nrComponents;
-    unsigned char *data = stbi_load(filename.c_str(), &width, &height, &nrComponents, 0);
-    if (data)
-    {
-        GLenum format = GL_RGB;
-        // For 1- and 2-channel images, swizzle on read so a shader sampling .rgb sees grayscale,
-        // not a pure-red image. Without this, any grayscale PNG used as a diffuse map renders red.
-        if (nrComponents == 1) {
-            format = GL_RED;
-            GLint swizzle[4] = { GL_RED, GL_RED, GL_RED, GL_ONE };
-            glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, swizzle);
-        } else if (nrComponents == 2) {
-            format = GL_RG;
-            GLint swizzle[4] = { GL_RED, GL_RED, GL_RED, GL_GREEN };
-            glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_RGBA, swizzle);
-        } else if (nrComponents == 3) {
-            format = GL_RGB;
-        } else if (nrComponents == 4) {
-            format = GL_RGBA;
-        }
-
-        glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, data);
-        glGenerateMipmap(GL_TEXTURE_2D);
-
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-        stbi_image_free(data);
-    }
-    else
-    {
-        // Magenta 1x1 fallback so missing textures are visually obvious (pink, not driver-dependent red/black).
-        std::cout << "Texture failed to load at path: " << filename << std::endl;
-        const unsigned char magenta[4] = { 255, 0, 255, 255 };
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, magenta);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    }
-
-    return textureID;
-}
 #endif

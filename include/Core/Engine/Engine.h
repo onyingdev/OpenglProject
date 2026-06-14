@@ -5,6 +5,7 @@
 
 #include "Render/model.h"                       // stbi_set_flip_vertically_on_load
 #include "Render/ModelCache.h"                  // shared model cache — cleared at shutdown (GL alive)
+#include "Render/Assets/AssetManager.h"         // async loader: per-frame upload pump + worker teardown
 #include "Render/GL/OpenGLRenderer.h"           // concrete backend + IRenderer + render types
 #include "Core/Engine/input_manager.h"
 #include "Core/Engine/SceneManager.h"
@@ -159,6 +160,12 @@ private:
         HurtBoxComponent3D::tickWorld();       // gameplay triggers once/frame on post-physics positions
         }
 
+        // Upload models that finished parsing on the loader threads (GL work — must be on this thread).
+        // Time-budgeted so a big batch spreads across frames; newly uploaded models render this frame.
+        { PROFILE_CPU("assetPump");
+        AssetManager::instance().pump();
+        }
+
         // --- camera for this frame ---
         auto* cam = camera->getComponent<CameraComponent>();
         const RenderSettings& rs = m_renderer->settings();
@@ -194,7 +201,7 @@ private:
     // -> renderer -> window (which terminates GLFW). Idempotent so the dtor can call it too.
     void shutdown() {
         m_scenes.unloadAll();   // Mesh/Model dtors glDelete* while GL is alive
-        ModelCache::clear();    // drop the cache's model refs (frees any GL still owned) while GL is alive
+        AssetManager::instance().shutdown();  // join loader threads + drop cached models while GL alive
         Profiler::instance().shutdownGL();   // glDeleteQueries while the context is alive
         m_renderer.reset();     // renderer FBOs/shaders/quad
         m_window.reset();       // ~Window -> glfwTerminate (after GL objects are gone)
