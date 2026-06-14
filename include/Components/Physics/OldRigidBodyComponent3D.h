@@ -15,6 +15,8 @@
 #include <omp.h>
 #endif
 
+// DEPRECATED CLASS USE RigidBodyComponent3D
+
 // RigidBody 3D. A spatial component backed by a Collider (its surface), a Mesh, a mass and
 // (optionally) angular dynamics. Two per-body simulation modes:
 //   - Simple  (default): LINEAR only — gravity, drag, forces/impulses, contact resolution at
@@ -126,6 +128,7 @@ public:
 
     void start() override {
         SpatialComponent3D::start();
+        std::cout << "[WARNING]: Deprecated component, use RigidBodyComponent3D" << std::endl;
         mesh = owner->getComponent<MeshComponent>();
         if (!mesh) ComponentWarning::missing("OldRigidBodyComponent3D", "MeshComponent");
         collider = owner->getComponent<ColliderComponent3D>();
