@@ -80,11 +80,10 @@ public:
         return h;
     }
 
-    // --- Per-frame upload pump (main / GL thread). Uploads parsed models within a time budget so a big
-    //     batch is spread across frames instead of stalling one. Always uploads at least one if ready. ---
-    void pump(double budgetMs = 2.0) {
-        using clock = std::chrono::high_resolution_clock;
-        const auto start = clock::now();
+    // --- Per-frame upload pump (main / GL thread). Streams each model's GPU upload across frames within
+    //     a per-frame BYTE budget, so even one huge mesh never spikes a single frame. ---
+    void pump() {
+        // 1. Admit newly-parsed models as streamed uploads (allocates GPU buffers, no data copy).
         for (;;) {
             Result r;
             {
@@ -93,15 +92,25 @@ public:
                 r = std::move(m_doneQueue.front());
                 m_doneQueue.pop();
             }
-            std::shared_ptr<IModel> model = std::make_shared<Model>(std::move(r.data));  // GL upload
-            m_cache[r.key] = model;
-            if (auto fit = m_inFlight.find(r.key); fit != m_inFlight.end()) {
-                fit->second->model = model;
-                fit->second->ready = true;
-                m_inFlight.erase(fit);
+            m_active.push_back(ActiveUpload{ Model::createStreamed(std::move(r.data)), r.key });
+        }
+
+        // 2. Advance active uploads within the byte budget. A completed model is cached + its handle
+        //    resolved; the rest carry over to the next frame.
+        size_t budget = kUploadBudgetBytes;
+        for (size_t i = 0; i < m_active.size() && budget > 0; ) {
+            if (m_active[i].model->uploadStep(budget)) {
+                std::shared_ptr<IModel> model = m_active[i].model;
+                m_cache[m_active[i].key] = model;
+                if (auto fit = m_inFlight.find(m_active[i].key); fit != m_inFlight.end()) {
+                    fit->second->model = model;
+                    fit->second->ready = true;
+                    m_inFlight.erase(fit);
+                }
+                m_active.erase(m_active.begin() + i);   // shift down; don't advance i
+            } else {
+                ++i;
             }
-            if (std::chrono::duration<double, std::milli>(clock::now() - start).count() >= budgetMs)
-                break;
         }
     }
 
@@ -113,13 +122,19 @@ public:
     void shutdown() {
         stopWorkers();
         { std::lock_guard<std::mutex> lk(m_doneMutex); std::queue<Result> empty; m_doneQueue.swap(empty); }
+        m_active.clear();   // in-progress streamed uploads hold GL objects — drop while context is alive
         clearCache();
         m_inFlight.clear();
     }
 
 private:
-    struct Job    { std::string key, path; bool gamma, flip; };
-    struct Result { std::string key; ModelData data; };
+    struct Job          { std::string key, path; bool gamma, flip; };
+    struct Result       { std::string key; ModelData data; };
+    struct ActiveUpload { std::shared_ptr<Model> model; std::string key; };   // mid-stream GPU upload
+
+    // Per-frame streamed-upload byte budget. ~4 MB/frame keeps the upload well under a frame at high
+    // FPS while still finishing a 250k-tri (~14 MB) model in a handful of frames.
+    static constexpr size_t kUploadBudgetBytes = 4 * 1024 * 1024;
 
     static std::string makeKey(const std::string& path, bool gamma, bool flip) {
         return path + (gamma ? "|g1" : "|g0") + (flip ? "|f1" : "|f0");
@@ -166,6 +181,7 @@ private:
     // Main-thread-only state (no locking — see threading contract above).
     std::unordered_map<std::string, std::shared_ptr<IModel>>     m_cache;     // ready, uploaded models
     std::unordered_map<std::string, std::shared_ptr<ModelHandle>> m_inFlight; // pending async loads
+    std::vector<ActiveUpload>                                     m_active;    // mid-stream GPU uploads
 
     // Cross-thread queues (each guarded by its mutex).
     std::queue<Job>    m_reqQueue;  std::mutex m_reqMutex;  std::condition_variable m_reqCv;

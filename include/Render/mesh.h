@@ -10,6 +10,8 @@
 #include "Render/API/IMesh.h"
 #include "Render/Assets/ModelData.h"   // Vertex (+ MAX_BONE_INFLUENCE) — shared with the loader
 
+#include <algorithm>
+#include <cstddef>
 #include <string>
 #include <vector>
 using namespace std;
@@ -22,6 +24,10 @@ struct Texture {
     string path;
 };
 
+// Tag for the streamed Mesh constructor: allocate the GPU buffers now, upload the geometry later in
+// chunks (see Mesh::uploadGeometryStep + AssetManager's streamed upload pump).
+struct MeshStreamTag {};
+
 // OpenGL implementation of IMesh. Owns the VAO/VBO/EBO for one mesh.
 class Mesh : public IMesh {
 public:
@@ -31,15 +37,24 @@ public:
     vector<Texture>      textures;
     unsigned int VAO = 0;
 
-    // constructor
+    // constructor — full (synchronous) upload. Move the vectors in (they're already owned rvalues from
+    // the loader); copying them here was a wasted multi-MB memcpy on the upload frame.
     Mesh(vector<Vertex> vertices, vector<unsigned int> indices, vector<Texture> textures)
     {
-        this->vertices = vertices;
-        this->indices = indices;
-        this->textures = textures;
+        this->vertices = std::move(vertices);
+        this->indices  = std::move(indices);
+        this->textures = std::move(textures);
 
         // now that we have all the required data, set the vertex buffers and its attribute pointers.
         setupMesh();
+    }
+
+    // Streamed constructor — allocate VBO/EBO sized for the geometry but DON'T upload yet; the data is
+    // fed later via uploadGeometryStep() across frames. `textures` stays empty until the owning Model
+    // finishes uploading its texture pool and assigns them. Used by the async streamed-upload path.
+    Mesh(size_t vertexCount, size_t indexCount, MeshStreamTag)
+    {
+        setupMeshStreamed(vertexCount, indexCount);
     }
 
     // Move-only: a Mesh owns its VAO/VBO/EBO. Copying would duplicate the handles and
@@ -50,7 +65,9 @@ public:
 
     Mesh(Mesh&& o) noexcept
         : vertices(std::move(o.vertices)), indices(std::move(o.indices)),
-          textures(std::move(o.textures)), VAO(o.VAO), VBO(o.VBO), EBO(o.EBO), instanceVBO(o.instanceVBO)
+          textures(std::move(o.textures)), VAO(o.VAO), VBO(o.VBO), EBO(o.EBO), instanceVBO(o.instanceVBO),
+          m_indexCount(o.m_indexCount), m_vboBytes(o.m_vboBytes), m_eboBytes(o.m_eboBytes),
+          m_vboCursor(o.m_vboCursor), m_eboCursor(o.m_eboCursor)
     {
         o.VAO = o.VBO = o.EBO = o.instanceVBO = 0;
     }
@@ -62,10 +79,39 @@ public:
             indices  = std::move(o.indices);
             textures = std::move(o.textures);
             VAO = o.VAO; VBO = o.VBO; EBO = o.EBO; instanceVBO = o.instanceVBO;
+            m_indexCount = o.m_indexCount;
+            m_vboBytes = o.m_vboBytes; m_eboBytes = o.m_eboBytes;
+            m_vboCursor = o.m_vboCursor; m_eboCursor = o.m_eboCursor;
             o.VAO = o.VBO = o.EBO = o.instanceVBO = 0;
         }
         return *this;
     }
+
+    // --- streamed geometry upload (async path) ----------------------------------------------------
+    // Upload up to `budgetBytes` of geometry from the supplied source pointers (the owning Model's
+    // retained ModelData), VBO first then EBO, via glBufferSubData. Returns bytes consumed. Call each
+    // frame until geometryDone(). Does NOT touch the mesh VAO binding (safe to call from the pump).
+    size_t uploadGeometryStep(const Vertex* vsrc, const unsigned int* isrc, size_t budgetBytes)
+    {
+        size_t consumed = 0;
+        if (m_vboCursor < m_vboBytes) {
+            const size_t chunk = std::min(budgetBytes, m_vboBytes - m_vboCursor);
+            glBindBuffer(GL_ARRAY_BUFFER, VBO);
+            glBufferSubData(GL_ARRAY_BUFFER, (GLintptr)m_vboCursor, (GLsizeiptr)chunk,
+                            reinterpret_cast<const unsigned char*>(vsrc) + m_vboCursor);
+            m_vboCursor += chunk; consumed += chunk;
+            if (consumed >= budgetBytes) return consumed;
+        }
+        if (m_eboCursor < m_eboBytes) {
+            const size_t chunk = std::min(budgetBytes - consumed, m_eboBytes - m_eboCursor);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+            glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, (GLintptr)m_eboCursor, (GLsizeiptr)chunk,
+                            reinterpret_cast<const unsigned char*>(isrc) + m_eboCursor);
+            m_eboCursor += chunk; consumed += chunk;
+        }
+        return consumed;
+    }
+    bool geometryDone() const { return m_vboCursor >= m_vboBytes && m_eboCursor >= m_eboBytes; }
 
     // Frees the GPU buffers. Must run while the GL context is alive (scene unload /
     // shutdown both happen before the window is torn down).
@@ -79,7 +125,7 @@ public:
     {
         bindTextures(shader);
         glBindVertexArray(VAO);
-        glDrawElements(GL_TRIANGLES, static_cast<unsigned int>(indices.size()), GL_UNSIGNED_INT, 0);
+        glDrawElements(GL_TRIANGLES, m_indexCount, GL_UNSIGNED_INT, 0);
         glBindVertexArray(0);
         glActiveTexture(GL_TEXTURE0);   // restore default texture unit
     }
@@ -110,8 +156,7 @@ public:
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)count * (GLsizeiptr)sizeof(glm::mat4), mats, GL_DYNAMIC_DRAW);
 
         bindTextures(shader);
-        glDrawElementsInstanced(GL_TRIANGLES, static_cast<unsigned int>(indices.size()),
-                                GL_UNSIGNED_INT, 0, count);
+        glDrawElementsInstanced(GL_TRIANGLES, m_indexCount, GL_UNSIGNED_INT, 0, count);
         glBindVertexArray(0);
         glActiveTexture(GL_TEXTURE0);
     }
@@ -120,6 +165,10 @@ private:
     // render data
     unsigned int VBO = 0, EBO = 0;
     unsigned int instanceVBO = 0;   // per-instance model matrices (lazily created on first DrawInstanced)
+    unsigned int m_indexCount = 0;  // element count for draws (decoupled from the `indices` vector)
+    // Streamed-upload progress (bytes). Unused/zero for fully-uploaded (sync) meshes.
+    size_t m_vboBytes = 0, m_eboBytes = 0;
+    size_t m_vboCursor = 0, m_eboCursor = 0;
 
     // Bind this mesh's textures to sequential units and point the matching samplers at them.
     // Shared by Draw and DrawInstanced (uniform-sampler names are cached in the Shader now).
@@ -161,49 +210,69 @@ private:
         VAO = VBO = EBO = instanceVBO = 0;
     }
 
-    // initializes all the buffer objects/arrays
+    // initializes all the buffer objects/arrays and uploads the full geometry (synchronous path)
     void setupMesh()
     {
-        // create buffers/arrays
         glGenVertexArrays(1, &VAO);
         glGenBuffers(1, &VBO);
         glGenBuffers(1, &EBO);
 
         glBindVertexArray(VAO);
-        // load data into vertex buffers
+        // load data into vertex buffers. A struct's memory layout is sequential, so a pointer to the
+        // first Vertex translates directly to a tightly-packed float/int array.
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
-        // A great thing about structs is that their memory layout is sequential for all its items.
-        // The effect is that we can simply pass a pointer to the struct and it translates perfectly to a glm::vec3/2 array which
-        // again translates to 3/2 floats which translates to a byte array.
-        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), &vertices[0], GL_STATIC_DRAW);  
+        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), &vertices[0], GL_STATIC_DRAW);
 
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), &indices[0], GL_STATIC_DRAW);
 
-        // set the vertex attribute pointers
-        // vertex Positions
-        glEnableVertexAttribArray(0);	
+        configureAttribs();
+        glBindVertexArray(0);
+        m_indexCount = static_cast<unsigned int>(indices.size());
+    }
+
+    // Streamed path: create the VAO/VBO/EBO and RESERVE storage (glBufferData with null data) sized for
+    // the geometry, wire the attribs, but upload nothing yet — uploadGeometryStep() fills it in chunks.
+    void setupMeshStreamed(size_t vertexCount, size_t indexCount)
+    {
+        m_vboBytes = vertexCount * sizeof(Vertex);
+        m_eboBytes = indexCount * sizeof(unsigned int);
+
+        glGenVertexArrays(1, &VAO);
+        glGenBuffers(1, &VBO);
+        glGenBuffers(1, &EBO);
+
+        glBindVertexArray(VAO);
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)m_vboBytes, nullptr, GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)m_eboBytes, nullptr, GL_STATIC_DRAW);
+
+        configureAttribs();
+        glBindVertexArray(0);
+        m_indexCount = static_cast<unsigned int>(indexCount);
+        m_vboCursor = m_eboCursor = 0;
+    }
+
+    // Wire the vertex attribute pointers into the currently-bound VAO (reads from VBO). Shared by the
+    // full and streamed setup so the layout stays in one place.
+    void configureAttribs()
+    {
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);   // attribs capture the currently-bound array buffer
+        glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)0);
-        // vertex normals
-        glEnableVertexAttribArray(1);	
+        glEnableVertexAttribArray(1);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Normal));
-        // vertex texture coords
-        glEnableVertexAttribArray(2);	
+        glEnableVertexAttribArray(2);
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, TexCoords));
-        // vertex tangent
         glEnableVertexAttribArray(3);
         glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Tangent));
-        // vertex bitangent
         glEnableVertexAttribArray(4);
         glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, Bitangent));
-		// ids
-		glEnableVertexAttribArray(5);
-		glVertexAttribIPointer(5, 4, GL_INT, sizeof(Vertex), (void*)offsetof(Vertex, m_BoneIDs));
-
-		// weights
-		glEnableVertexAttribArray(6);
-		glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, m_Weights));
-        glBindVertexArray(0);
+        glEnableVertexAttribArray(5);
+        glVertexAttribIPointer(5, 4, GL_INT, sizeof(Vertex), (void*)offsetof(Vertex, m_BoneIDs));
+        glEnableVertexAttribArray(6);
+        glVertexAttribPointer(6, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, m_Weights));
     }
 };
 #endif

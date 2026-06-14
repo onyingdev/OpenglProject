@@ -54,6 +54,57 @@ public:
     // Phase 2's AssetManager calls parse() on a worker, then constructs the Model through this ctor.
     explicit Model(ModelData &&data) { uploadFrom(std::move(data)); }
 
+    // Streamed load: allocate the GPU buffers now (sized from `data`) but upload the geometry/textures
+    // incrementally via uploadStep() across frames — avoids the single-frame upload spike for a heavy
+    // model. The model is NOT drawable until uploadStep() reports done (its handle stays not-ready).
+    struct StreamTag {};
+    Model(ModelData &&data, StreamTag) { beginStreamed(std::move(data)); }
+
+    static std::shared_ptr<Model> createStreamed(ModelData &&data) {
+        return std::make_shared<Model>(std::move(data), StreamTag{});
+    }
+
+    // Advance the streamed upload by up to `budget` bytes (decremented by what's consumed). Returns
+    // true once geometry + textures are fully uploaded and the model is drawable; a non-streamed or
+    // finished model returns true immediately. Render (GL) thread only.
+    bool uploadStep(size_t &budget)
+    {
+        if (!m_streaming) return true;
+
+        // Phase 1: geometry chunks, spread across this model's meshes within the budget.
+        for (size_t i = 0; i < meshes.size() && budget > 0; ++i) {
+            if (meshes[i].geometryDone()) continue;
+            const size_t used = meshes[i].uploadGeometryStep(
+                m_data.meshes[i].vertices.data(), m_data.meshes[i].indices.data(), budget);
+            budget = (used >= budget) ? 0 : budget - used;
+        }
+        for (const Mesh &m : meshes) if (!m.geometryDone()) return false;
+
+        // Phase 2: textures — one per step (a glTexImage2D is atomic), charged against the budget.
+        while (m_texCursor < m_data.textures.size() && budget > 0) {
+            const TextureData &td = m_data.textures[m_texCursor];
+            Texture t; t.id = uploadTexture(td); t.type = td.type; t.path = td.path;
+            m_texPool.push_back(t);
+            textures_loaded.push_back(t);
+            const size_t cost = td.pixels.empty() ? size_t(1) : td.pixels.size();
+            budget = (cost >= budget) ? 0 : budget - cost;
+            ++m_texCursor;
+        }
+        if (m_texCursor < m_data.textures.size()) return false;
+
+        // Phase 3: finalize — resolve each mesh's texture handles from the pool, free the CPU data.
+        for (size_t i = 0; i < meshes.size(); ++i) {
+            vector<Texture> meshTextures;
+            meshTextures.reserve(m_data.meshes[i].textureIndices.size());
+            for (int idx : m_data.meshes[i].textureIndices)
+                if (idx >= 0 && idx < (int)m_texPool.size()) meshTextures.push_back(m_texPool[idx]);
+            meshes[i].textures = std::move(meshTextures);
+        }
+        m_data = ModelData{};   // free CPU geometry + pixels (RAM win over the retained sync path)
+        m_streaming = false;
+        return true;
+    }
+
     // Mesh is move-only and Model owns GPU texture IDs, so block copies and define moves.
     Model(const Model&) = delete;
     Model& operator=(const Model&) = delete;
@@ -63,9 +114,14 @@ public:
           meshes(std::move(other.meshes)),
           directory(std::move(other.directory)),
           gammaCorrection(other.gammaCorrection),
-          flipUVs(other.flipUVs)
+          flipUVs(other.flipUVs),
+          m_streaming(other.m_streaming),
+          m_data(std::move(other.m_data)),
+          m_texPool(std::move(other.m_texPool)),
+          m_texCursor(other.m_texCursor)
     {
         other.textures_loaded.clear(); // moved-from vector is valid but unspecified; make sure dtor sees nothing to free.
+        other.m_streaming = false;
     }
 
     Model& operator=(Model&& other) noexcept
@@ -77,7 +133,12 @@ public:
             directory       = std::move(other.directory);
             gammaCorrection = other.gammaCorrection;
             flipUVs         = other.flipUVs;
+            m_streaming     = other.m_streaming;
+            m_data          = std::move(other.m_data);
+            m_texPool       = std::move(other.m_texPool);
+            m_texCursor     = other.m_texCursor;
             other.textures_loaded.clear();
+            other.m_streaming = false;
         }
         return *this;
     }
@@ -102,12 +163,36 @@ public:
     }
 
 private:
+    // ---- streamed-upload state (set by beginStreamed, consumed/cleared by uploadStep) ----
+    bool            m_streaming = false;
+    ModelData       m_data;       // retained parse output, streamed to the GPU then freed
+    vector<Texture> m_texPool;    // GPU handles built incrementally during streamed texture upload
+    size_t          m_texCursor = 0;
+
     void releaseTextures()
     {
         for (auto& tex : textures_loaded) {
             if (tex.id) glDeleteTextures(1, &tex.id);
             tex.id = 0;
         }
+    }
+
+    // Allocate the GPU buffers for a streamed upload (no data yet) and retain the source. The actual
+    // geometry/texture upload happens later, in chunks, via uploadStep().
+    void beginStreamed(ModelData &&data)
+    {
+        m_data          = std::move(data);
+        directory       = m_data.directory;
+        gammaCorrection = m_data.gammaCorrection;
+        flipUVs         = m_data.flipUVs;
+        if (!m_data.valid) { m_streaming = false; return; }   // parse failed: empty model
+
+        m_streaming = true;
+        meshes.reserve(m_data.meshes.size());
+        for (const MeshData &md : m_data.meshes)
+            meshes.emplace_back(md.vertices.size(), md.indices.size(), MeshStreamTag{});
+        m_texPool.reserve(m_data.textures.size());
+        m_texCursor = 0;
     }
 
     // ---- GPU upload stage (render/GL thread only) ----

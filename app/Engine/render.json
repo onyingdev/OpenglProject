@@ -19,8 +19,8 @@
   },
   "profiler": {
     "cpu": false,
-    "gpu": true,
-    "detail": true,
+    "gpu": false,
+    "detail": false,
     "reportEvery": 60,
     "physics": {
       "timings": false,
