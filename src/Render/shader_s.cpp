@@ -80,54 +80,66 @@ Shader::Shader(const char* vertexPath, const char* fragmentPath)
     glDeleteShader(fragment);
 }
 
-void Shader::use() 
-{ 
-    glUseProgram(ID); 
+void Shader::use()
+{
+    glUseProgram(ID);
+}
+
+// Cached uniform location: query the driver once per name, then reuse. glGetUniformLocation is a slow
+// string lookup; calling it on every setX (per object, per frame) was a real cost at high object
+// counts. -1 (not found) is cached too — glUniform with -1 is a silent no-op, matching prior behavior.
+int Shader::loc(const std::string& name) const
+{
+    auto it = m_locCache.find(name);
+    if (it != m_locCache.end()) return it->second;
+    const int location = glGetUniformLocation(ID, name.c_str());
+    m_locCache.emplace(name, location);
+    return location;
 }
 
 void Shader::setBool(const std::string &name, bool value) const
-{         
-    glUniform1i(glGetUniformLocation(ID, name.c_str()), (int)value); 
+{
+    glUniform1i(loc(name), (int)value);
 }
 
 void Shader::setInt(const std::string &name, int value) const
-{ 
-    glUniform1i(glGetUniformLocation(ID, name.c_str()), value); 
+{
+    glUniform1i(loc(name), value);
 }
 
 void Shader::setFloat(const std::string &name, float value) const
-{ 
-    glUniform1f(glGetUniformLocation(ID, name.c_str()), value); 
-} 
+{
+    glUniform1f(loc(name), value);
+}
 
 void Shader::setVec4(const std::string &name, float x, float y, float z, float w) const
 {
-    glUniform4f(glGetUniformLocation(ID, name.c_str()), x, y, z, w);
+    glUniform4f(loc(name), x, y, z, w);
 }
 
 void Shader::setVec2(const std::string &name, float x, float y) const
 {
-    glUniform2f(glGetUniformLocation(ID, name.c_str()), x, y);
+    glUniform2f(loc(name), x, y);
 }
 
 void Shader::setVec3(const std::string &name, float x, float y, float z) const
 {
-    glUniform3f(glGetUniformLocation(ID, name.c_str()), x, y, z);
+    glUniform3f(loc(name), x, y, z);
 }
 
 void Shader::setMat2(const std::string &name, const glm::mat2 &mat) const
 {
-    glUniformMatrix2fv(glGetUniformLocation(ID, name.c_str()), 1, GL_FALSE, &mat[0][0]);
+    glUniformMatrix2fv(loc(name), 1, GL_FALSE, &mat[0][0]);
 }
 
 void Shader::setMat3(const std::string &name, const glm::mat3 &mat) const
 {
-    glUniformMatrix3fv(glGetUniformLocation(ID, name.c_str()), 1, GL_FALSE, &mat[0][0]);
+    glUniformMatrix3fv(loc(name), 1, GL_FALSE, &mat[0][0]);
 }
 
 void Shader::setMat4(const std::string &name, const glm::mat4 &mat) const
 {
-    glUniformMatrix4fv(glGetUniformLocation(ID, name.c_str()), 1, GL_FALSE, &mat[0][0]);
+    glUniformMatrix4fv(loc(name), 1, GL_FALSE, &mat[0][0]);
 }
 
 // utility function for checking shader compilation/linking errors.

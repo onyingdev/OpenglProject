@@ -6,7 +6,7 @@
     "title": "OpenGL",
     "mode": "windowed",
     "resize": "locked",
-    "vsync": true,
+    "vsync": false,
     "glMajor": 3,
     "glMinor": 3
   },

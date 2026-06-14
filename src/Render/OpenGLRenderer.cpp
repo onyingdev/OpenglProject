@@ -36,6 +36,9 @@ bool OpenGLRenderer::init(int fbW, int fbH) {
 
     // Built-in shaders (the GL backend owns them; RenderItems pick a material, not a shader).
     m_lit   = std::make_unique<Shader>("assets/shaders/advanced_lighting.vs", "assets/shaders/advanced_lighting.fs");
+    // Same lighting fragment shader, but the vertex stage reads the model matrix from a per-instance
+    // attribute, so many identical models draw in one glDrawElementsInstanced instead of one call each.
+    m_litInstanced = std::make_unique<Shader>("assets/shaders/advanced_lighting_instanced.vs", "assets/shaders/advanced_lighting.fs");
     m_unlit = std::make_unique<Shader>("assets/shaders/light_s.vs",           "assets/shaders/light_s.fs");
     m_post  = std::make_unique<Shader>("assets/shaders/msaa_post.vs",         "assets/shaders/msaa_post.fs");
     m_post->use();
@@ -219,6 +222,63 @@ void OpenGLRenderer::onResize(int w, int h) {
     m_fbHeight = (h == 0) ? 1 : h;   // present pass uses this for the letterbox rect
 }
 
+void OpenGLRenderer::uploadCamera(Shader& sh) {
+    sh.use();
+    sh.setMat4("view", m_camera.view);
+    sh.setMat4("projection", m_camera.projection);
+    sh.setVec3("viewPos", m_camera.position.x, m_camera.position.y, m_camera.position.z);
+    sh.setFloat("shininess", 32.0f);   // viewPos/shininess are no-ops on the unlit shader (cached -1)
+}
+
+void OpenGLRenderer::uploadLights(Shader& sh) {
+    sh.use();
+
+    // Directional "sun".
+    sh.setVec3("dirLight.direction", m_lights.dir.direction.x, m_lights.dir.direction.y, m_lights.dir.direction.z);
+    sh.setVec3("dirLight.ambient",   m_lights.dir.ambient.x,   m_lights.dir.ambient.y,   m_lights.dir.ambient.z);
+    sh.setVec3("dirLight.diffuse",   m_lights.dir.diffuse.x,   m_lights.dir.diffuse.y,   m_lights.dir.diffuse.z);
+    sh.setVec3("dirLight.specular",  m_lights.dir.specular.x,  m_lights.dir.specular.y,  m_lights.dir.specular.z);
+
+    // Point lights: compact only the ENABLED ones to the front of the array and tell the shader how
+    // many there are (numPointLights), so its loop skips the rest. Capped at the shader's array size.
+    const int MAX_POINT_LIGHTS = 4;
+    int np = 0;
+    for (const PointLight& pl : m_lights.points) {
+        if (!pl.enabled || np >= MAX_POINT_LIGHTS) continue;
+        const std::string p = "pointLights[" + std::to_string(np) + "].";
+        sh.setVec3 (p + "position",  pl.position.x, pl.position.y, pl.position.z);
+        sh.setFloat(p + "constant",  pl.constant);
+        sh.setFloat(p + "linear",    pl.linear);
+        sh.setFloat(p + "quadratic", pl.quadratic);
+        sh.setFloat(p + "attenuation", pl.attenuation);
+        sh.setVec3 (p + "ambient",   pl.ambient.x,  pl.ambient.y,  pl.ambient.z);
+        sh.setVec3 (p + "diffuse",   pl.diffuse.x,  pl.diffuse.y,  pl.diffuse.z);
+        sh.setVec3 (p + "specular",  pl.specular.x, pl.specular.y, pl.specular.z);
+        ++np;
+    }
+    sh.setInt("numPointLights", np);
+
+    // Spot/cone lights (the camera flashlight is just one of them): same compaction.
+    const int MAX_SPOT_LIGHTS = 4;
+    int ns = 0;
+    for (const SpotLight& s : m_lights.spots) {
+        if (!s.enabled || ns >= MAX_SPOT_LIGHTS) continue;
+        const std::string sp = "spotLights[" + std::to_string(ns) + "].";
+        sh.setVec3 (sp + "position",    s.position.x,  s.position.y,  s.position.z);
+        sh.setVec3 (sp + "direction",   s.direction.x, s.direction.y, s.direction.z);
+        sh.setFloat(sp + "cutOff",      s.cutOff);
+        sh.setFloat(sp + "outerCutOff", s.outerCutOff);
+        sh.setFloat(sp + "constant",    s.constant);
+        sh.setFloat(sp + "linear",      s.linear);
+        sh.setFloat(sp + "quadratic",   s.quadratic);
+        sh.setVec3 (sp + "ambient",     0.0f, 0.0f, 0.0f);
+        sh.setVec3 (sp + "diffuse",     s.diffuse.x,  s.diffuse.y,  s.diffuse.z);
+        sh.setVec3 (sp + "specular",    s.specular.x, s.specular.y, s.specular.z);
+        ++ns;
+    }
+    sh.setInt("numSpotLights", ns);
+}
+
 void OpenGLRenderer::beginScene(const CameraView& cam) {
     m_camera = cam;
 
@@ -228,72 +288,34 @@ void OpenGLRenderer::beginScene(const CameraView& cam) {
     glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // Push camera matrices to both built-in shaders up front.
-    m_lit->use();
-    m_lit->setMat4("view", cam.view);
-    m_lit->setMat4("projection", cam.projection);
-    m_lit->setVec3("viewPos", cam.position.x, cam.position.y, cam.position.z);
-    m_lit->setFloat("shininess", 32.0f);
+    // New frame of deferred lit submissions.
+    m_batches.clear();
+    m_batchesFlushed = false;
 
-    m_unlit->use();
-    m_unlit->setMat4("view", cam.view);
-    m_unlit->setMat4("projection", cam.projection);
+    // Push camera matrices to every program that draws scene geometry up front. Both lit programs
+    // need them because lit meshes now go through the instanced program; m_lit stays for wireframe.
+    uploadCamera(*m_lit);
+    uploadCamera(*m_litInstanced);
+    uploadCamera(*m_unlit);
 }
 
 void OpenGLRenderer::setLights(const LightSet& lights) {
     m_lights = lights;
-    m_lit->use();
-
-    // Directional "sun".
-    m_lit->setVec3("dirLight.direction", lights.dir.direction.x, lights.dir.direction.y, lights.dir.direction.z);
-    m_lit->setVec3("dirLight.ambient",   lights.dir.ambient.x,   lights.dir.ambient.y,   lights.dir.ambient.z);
-    m_lit->setVec3("dirLight.diffuse",   lights.dir.diffuse.x,   lights.dir.diffuse.y,   lights.dir.diffuse.z);
-    m_lit->setVec3("dirLight.specular",  lights.dir.specular.x,  lights.dir.specular.y,  lights.dir.specular.z);
-
-    // Point lights: compact only the ENABLED ones to the front of the array and tell
-    // the shader how many there are (numPointLights), so its loop skips everything
-    // else. Capped at the shader's array size.
-    const int MAX_POINT_LIGHTS = 4;
-    int np = 0;
-    for (const PointLight& pl : lights.points) {
-        if (!pl.enabled || np >= MAX_POINT_LIGHTS) continue;
-        const std::string p = "pointLights[" + std::to_string(np) + "].";
-        m_lit->setVec3 (p + "position",  pl.position.x, pl.position.y, pl.position.z);
-        m_lit->setFloat(p + "constant",  pl.constant);
-        m_lit->setFloat(p + "linear",    pl.linear);
-        m_lit->setFloat(p + "quadratic", pl.quadratic);
-        m_lit->setFloat(p + "attenuation", pl.attenuation);
-        m_lit->setVec3 (p + "ambient",   pl.ambient.x,  pl.ambient.y,  pl.ambient.z);
-        m_lit->setVec3 (p + "diffuse",   pl.diffuse.x,  pl.diffuse.y,  pl.diffuse.z);
-        m_lit->setVec3 (p + "specular",  pl.specular.x, pl.specular.y, pl.specular.z);
-        ++np;
-    }
-    m_lit->setInt("numPointLights", np);
-
-    // Spot/cone lights (the camera flashlight is just one of them): same compaction.
-    // Only enabled lights are uploaded, so there are no zero slots to guard against.
-    const int MAX_SPOT_LIGHTS = 4;
-    int ns = 0;
-    for (const SpotLight& s : lights.spots) {
-        if (!s.enabled || ns >= MAX_SPOT_LIGHTS) continue;
-        const std::string sp = "spotLights[" + std::to_string(ns) + "].";
-        m_lit->setVec3 (sp + "position",    s.position.x,  s.position.y,  s.position.z);
-        m_lit->setVec3 (sp + "direction",   s.direction.x, s.direction.y, s.direction.z);
-        m_lit->setFloat(sp + "cutOff",      s.cutOff);
-        m_lit->setFloat(sp + "outerCutOff", s.outerCutOff);
-        m_lit->setFloat(sp + "constant",    s.constant);
-        m_lit->setFloat(sp + "linear",      s.linear);
-        m_lit->setFloat(sp + "quadratic",   s.quadratic);
-        m_lit->setVec3 (sp + "ambient",     0.0f, 0.0f, 0.0f);
-        m_lit->setVec3 (sp + "diffuse",     s.diffuse.x,  s.diffuse.y,  s.diffuse.z);
-        m_lit->setVec3 (sp + "specular",    s.specular.x, s.specular.y, s.specular.z);
-        ++ns;
-    }
-    m_lit->setInt("numSpotLights", ns);
+    // Both lit programs shade with the same fragment shader, so both need the light set.
+    uploadLights(*m_lit);
+    uploadLights(*m_litInstanced);
 }
 
 void OpenGLRenderer::submit(const RenderItem& item) {
     if (!item.model) return;
+
+    // Opaque lit meshes are DEFERRED and grouped by model, then drawn instanced in flushOpaqueBatches()
+    // — one glDrawElementsInstanced per model instead of one draw call per object. Unlit (lamps) and
+    // wireframe items are rare and stay on the immediate path below.
+    if (item.material == MaterialKind::Lit && !item.wireframe) {
+        m_batches[item.model].push_back(item.modelMatrix);
+        return;
+    }
 
     Shader* sh = (item.material == MaterialKind::Lit) ? m_lit.get() : m_unlit.get();
     sh->use();
@@ -310,11 +332,25 @@ void OpenGLRenderer::submit(const RenderItem& item) {
     }
 }
 
+// Draw all deferred lit meshes, one instanced call per distinct model. Idempotent per frame: the first
+// of (debug draw / endScene) flushes, the rest are no-ops — so meshes always land before debug
+// wireframes and the present pass, preserving draw order (all opaque + depth-tested anyway).
+void OpenGLRenderer::flushOpaqueBatches() {
+    if (m_batchesFlushed) return;
+    m_batchesFlushed = true;
+    if (m_batches.empty()) return;
+
+    m_litInstanced->use();
+    for (auto& [model, matrices] : m_batches)
+        model->DrawInstanced(*m_litInstanced, matrices.data(), (int)matrices.size());
+}
+
 // --- debug primitives ---------------------------------------------------------
 // All three draw flat-colored GL_LINES with the unlit shader. view/projection were
 // uploaded to m_unlit in beginScene(); we only set model + lightColor here.
 
 void OpenGLRenderer::drawWireBox(const glm::mat4& transform, const glm::vec3& color) {
+    flushOpaqueBatches();   // meshes first, then gizmos on top
     m_unlit->use();
     m_unlit->setMat4("model", transform);
     m_unlit->setVec3("lightColor", color.x, color.y, color.z);
@@ -324,6 +360,7 @@ void OpenGLRenderer::drawWireBox(const glm::mat4& transform, const glm::vec3& co
 }
 
 void OpenGLRenderer::drawWireSphere(const glm::vec3& center, float radius, const glm::vec3& color) {
+    flushOpaqueBatches();
     const glm::mat4 model = glm::translate(glm::mat4(1.0f), center)
                           * glm::scale(glm::mat4(1.0f), glm::vec3(radius));
     m_unlit->use();
@@ -335,6 +372,7 @@ void OpenGLRenderer::drawWireSphere(const glm::vec3& center, float radius, const
 }
 
 void OpenGLRenderer::drawLine(const glm::vec3& a, const glm::vec3& b, const glm::vec3& color) {
+    flushOpaqueBatches();
     const float verts[6] = { a.x, a.y, a.z, b.x, b.y, b.z };
     m_unlit->use();
     m_unlit->setMat4("model", glm::mat4(1.0f));   // endpoints are already world-space
@@ -347,6 +385,8 @@ void OpenGLRenderer::drawLine(const glm::vec3& a, const glm::vec3& b, const glm:
 }
 
 void OpenGLRenderer::endScene() {
+    flushOpaqueBatches();   // draw any deferred meshes not already flushed by a debug-draw call
+
     const int rw = m_settings.renderWidth;
     const int rh = m_settings.renderHeight;
 

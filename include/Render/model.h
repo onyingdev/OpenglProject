@@ -86,6 +86,13 @@ public:
             meshes[i].Draw(shader);
     }
 
+    // Draw `count` copies of every mesh in one instanced call each (see Mesh::DrawInstanced).
+    void DrawInstanced(IShader &shader, const glm::mat4* instances, int count) override
+    {
+        for(unsigned int i = 0; i < meshes.size(); i++)
+            meshes[i].DrawInstanced(shader, instances, count);
+    }
+
 private:
     void releaseTextures()
     {

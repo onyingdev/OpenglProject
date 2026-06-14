@@ -10,6 +10,7 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include <unordered_map>
 
 // OpenGL implementation of IShader. Owns a GL program object (ID).
 class Shader : public IShader
@@ -35,6 +36,13 @@ class Shader : public IShader
 
     private:
     void checkCompileErrors(GLuint shader, std::string type);
+
+    // Uniform-location cache. glGetUniformLocation is a slow string→driver query; calling it on every
+    // setX (per object, per frame) was a real cost at high object counts. Look each name up once and
+    // reuse. Cached even when -1 (not found): a glUniform with location -1 is a silent no-op, matching
+    // the previous behavior. mutable because the setX accessors are const.
+    mutable std::unordered_map<std::string, int> m_locCache;
+    int loc(const std::string& name) const;
 };
 
 #endif

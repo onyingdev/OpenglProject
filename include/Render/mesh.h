@@ -66,9 +66,9 @@ public:
 
     Mesh(Mesh&& o) noexcept
         : vertices(std::move(o.vertices)), indices(std::move(o.indices)),
-          textures(std::move(o.textures)), VAO(o.VAO), VBO(o.VBO), EBO(o.EBO)
+          textures(std::move(o.textures)), VAO(o.VAO), VBO(o.VBO), EBO(o.EBO), instanceVBO(o.instanceVBO)
     {
-        o.VAO = o.VBO = o.EBO = 0;
+        o.VAO = o.VBO = o.EBO = o.instanceVBO = 0;
     }
     Mesh& operator=(Mesh&& o) noexcept
     {
@@ -77,8 +77,8 @@ public:
             vertices = std::move(o.vertices);
             indices  = std::move(o.indices);
             textures = std::move(o.textures);
-            VAO = o.VAO; VBO = o.VBO; EBO = o.EBO;
-            o.VAO = o.VBO = o.EBO = 0;
+            VAO = o.VAO; VBO = o.VBO; EBO = o.EBO; instanceVBO = o.instanceVBO;
+            o.VAO = o.VBO = o.EBO = o.instanceVBO = 0;
         }
         return *this;
     }
@@ -90,10 +90,57 @@ public:
         release();
     }
 
-    // render the mesh
+    // render the mesh (single instance, model matrix supplied via the shader's `model` uniform)
     void Draw(IShader &shader) override
     {
-        // bind appropriate textures
+        bindTextures(shader);
+        glBindVertexArray(VAO);
+        glDrawElements(GL_TRIANGLES, static_cast<unsigned int>(indices.size()), GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+        glActiveTexture(GL_TEXTURE0);   // restore default texture unit
+    }
+
+    // Render `count` copies in ONE call. Each copy's model matrix comes from `mats`, uploaded to a
+    // per-instance buffer wired to attribute locations 7-10 (a mat4, divisor 1). The geometry VAO is
+    // shared across all instances; only this buffer differs per frame. Pair with an instanced shader
+    // that reads the model matrix from that attribute instead of a uniform.
+    void DrawInstanced(IShader &shader, const glm::mat4* mats, int count)
+    {
+        if (count <= 0) return;
+        glBindVertexArray(VAO);
+
+        if (instanceVBO == 0) {
+            // First use: create the instance buffer and wire the mat4 attribute (4 vec4 columns)
+            // into THIS VAO once. Divisor 1 = advance per instance, not per vertex.
+            glGenBuffers(1, &instanceVBO);
+            glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+            for (unsigned int c = 0; c < 4; ++c) {
+                glEnableVertexAttribArray(7 + c);
+                glVertexAttribPointer(7 + c, 4, GL_FLOAT, GL_FALSE, sizeof(glm::mat4),
+                                      (void*)(c * sizeof(glm::vec4)));
+                glVertexAttribDivisor(7 + c, 1);
+            }
+        }
+
+        glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)count * (GLsizeiptr)sizeof(glm::mat4), mats, GL_DYNAMIC_DRAW);
+
+        bindTextures(shader);
+        glDrawElementsInstanced(GL_TRIANGLES, static_cast<unsigned int>(indices.size()),
+                                GL_UNSIGNED_INT, 0, count);
+        glBindVertexArray(0);
+        glActiveTexture(GL_TEXTURE0);
+    }
+
+private:
+    // render data
+    unsigned int VBO = 0, EBO = 0;
+    unsigned int instanceVBO = 0;   // per-instance model matrices (lazily created on first DrawInstanced)
+
+    // Bind this mesh's textures to sequential units and point the matching samplers at them.
+    // Shared by Draw and DrawInstanced (uniform-sampler names are cached in the Shader now).
+    void bindTextures(IShader &shader)
+    {
         unsigned int diffuseNr  = 1;
         unsigned int specularNr = 1;
         unsigned int normalNr   = 1;
@@ -119,26 +166,15 @@ public:
             // and finally bind the texture
             glBindTexture(GL_TEXTURE_2D, textures[i].id);
         }
-        
-        // draw mesh
-        glBindVertexArray(VAO);
-        glDrawElements(GL_TRIANGLES, static_cast<unsigned int>(indices.size()), GL_UNSIGNED_INT, 0);
-        glBindVertexArray(0);
-
-        // always good practice to set everything back to defaults once configured.
-        glActiveTexture(GL_TEXTURE0);
     }
-
-private:
-    // render data
-    unsigned int VBO = 0, EBO = 0;
 
     void release()
     {
         if (EBO) glDeleteBuffers(1, &EBO);
         if (VBO) glDeleteBuffers(1, &VBO);
+        if (instanceVBO) glDeleteBuffers(1, &instanceVBO);
         if (VAO) glDeleteVertexArrays(1, &VAO);
-        VAO = VBO = EBO = 0;
+        VAO = VBO = EBO = instanceVBO = 0;
     }
 
     // initializes all the buffer objects/arrays
