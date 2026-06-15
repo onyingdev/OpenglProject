@@ -80,4 +80,8 @@ void main() {
     vec2 fragCoord = TexCoords * iResolution;
     FragColor = fxaa(screenTexture, fragCoord, iResolution,
                      v_rgbNW, v_rgbNE, v_rgbSW, v_rgbSE, v_rgbM);
+
+    // Final present pass: scene was lit in LINEAR space, so re-encode to sRGB gamma for display. FXAA
+    // resolves on the linear buffer (edge luma is still monotonic), then we gamma-encode the result.
+    FragColor.rgb = pow(FragColor.rgb, vec3(1.0 / 2.2));
 }

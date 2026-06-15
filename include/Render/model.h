@@ -15,6 +15,7 @@
 #include "Render/API/IShader.h"
 #include "Render/API/IModel.h"
 #include "Render/Assets/ModelData.h"   // backend-agnostic CPU asset data (parse output)
+#include "Render/Assets/GltfLoader.h"  // dedicated glTF 2.0 importer (.gltf/.glb dispatch)
 
 #include <string>
 #include <fstream>
@@ -23,6 +24,7 @@
 #include <map>
 #include <vector>
 #include <cstring>
+#include <cctype>
 #include <utility>
 using namespace std;
 
@@ -37,6 +39,7 @@ public:
     // model data
     vector<Texture> textures_loaded;	// stores all the textures loaded so far, optimization to make sure textures aren't loaded more than once.
     vector<Mesh>    meshes;
+    vector<Material> materials;          // PBR factors per material (carried for the future PBR shader)
     string directory;
     bool gammaCorrection;
     bool flipUVs = false;
@@ -112,6 +115,7 @@ public:
     Model(Model&& other) noexcept
         : textures_loaded(std::move(other.textures_loaded)),
           meshes(std::move(other.meshes)),
+          materials(std::move(other.materials)),
           directory(std::move(other.directory)),
           gammaCorrection(other.gammaCorrection),
           flipUVs(other.flipUVs),
@@ -130,6 +134,7 @@ public:
             releaseTextures();
             textures_loaded = std::move(other.textures_loaded);
             meshes          = std::move(other.meshes);
+            materials       = std::move(other.materials);
             directory       = std::move(other.directory);
             gammaCorrection = other.gammaCorrection;
             flipUVs         = other.flipUVs;
@@ -185,6 +190,7 @@ private:
         directory       = m_data.directory;
         gammaCorrection = m_data.gammaCorrection;
         flipUVs         = m_data.flipUVs;
+        materials       = std::move(m_data.materials);   // streaming never touches these; lift them out
         if (!m_data.valid) { m_streaming = false; return; }   // parse failed: empty model
 
         m_streaming = true;
@@ -203,6 +209,7 @@ private:
         directory       = std::move(data.directory);
         gammaCorrection = data.gammaCorrection;
         flipUVs         = data.flipUVs;
+        materials       = std::move(data.materials);
         if (!data.valid) return;   // parse failed: leave an empty model (Draw is a no-op)
 
         // Upload each decoded texture once; keep a parallel pool of GPU handles to resolve per-mesh.
@@ -236,6 +243,15 @@ public:
     // for texture pixels. Touches no graphics API. The result is uploaded later via Model(ModelData&&).
     static ModelData parse(string const &path, bool gamma = false, bool flipUVs = false)
     {
+        // glTF goes through the dedicated Khronos-spec importer; everything else stays on Assimp.
+        if (hasExtension(path, "gltf") || hasExtension(path, "glb"))
+        {
+            ModelData model = GltfLoader::load(path);
+            model.gammaCorrection = gamma;   // recorded for parity; color space is now per-texture
+            model.flipUVs         = flipUVs; // glTF authoring is top-left origin; not applied to UVs
+            return model;
+        }
+
         ModelData model;
         model.gammaCorrection = gamma;
         model.flipUVs         = flipUVs;
@@ -257,6 +273,16 @@ public:
     }
 
 private:
+    // Case-insensitive check that `path` ends in ".<ext>" (ext given without the dot).
+    static bool hasExtension(const std::string &path, const char *ext)
+    {
+        const size_t dot = path.find_last_of('.');
+        if (dot == std::string::npos) return false;
+        std::string have = path.substr(dot + 1);
+        for (char &c : have) c = (char)std::tolower((unsigned char)c);
+        return have == ext;
+    }
+
     // recursively walk the node tree, appending each mesh's MeshData to `model`.
     static void processNode(aiNode *node, const aiScene *scene, ModelData &model)
     {
@@ -320,31 +346,44 @@ private:
         }
 
         // materials -> texture pool indices. Sampler-name convention: texture_diffuseN / _specularN /
-        // _normalN / _heightN (N assigned at bind time in Mesh::bindTextures).
+        // _normalN / _heightN / _metallic_roughnessN / _occlusionN / _emissiveN (N assigned at bind time
+        // in Mesh::bindTextures). Color textures (base color, emissive) are tagged sRGB so the GPU
+        // linearizes them; data maps (specular/normal/height/metallic-roughness/occlusion) stay linear.
         aiMaterial *material = scene->mMaterials[mesh->mMaterialIndex];
 
-        // 1. diffuse / base color (glTF & FBX expose base color under BASE_COLOR)
-        vector<int> diffuse = loadMaterialTextures(material, aiTextureType_DIFFUSE, "texture_diffuse", model);
+        // 1. diffuse / base color (glTF & FBX expose base color under BASE_COLOR) — sRGB color
+        vector<int> diffuse = loadMaterialTextures(material, aiTextureType_DIFFUSE, "texture_diffuse", ColorSpace::sRGB, model);
         if (diffuse.empty())
-            diffuse = loadMaterialTextures(material, aiTextureType_BASE_COLOR, "texture_diffuse", model);
+            diffuse = loadMaterialTextures(material, aiTextureType_BASE_COLOR, "texture_diffuse", ColorSpace::sRGB, model);
         out.textureIndices.insert(out.textureIndices.end(), diffuse.begin(), diffuse.end());
-        // 2. specular
-        vector<int> specular = loadMaterialTextures(material, aiTextureType_SPECULAR, "texture_specular", model);
+        // 2. specular (treated as a linear reflectance mask by the Blinn-Phong shader)
+        vector<int> specular = loadMaterialTextures(material, aiTextureType_SPECULAR, "texture_specular", ColorSpace::Linear, model);
         out.textureIndices.insert(out.textureIndices.end(), specular.begin(), specular.end());
-        // 3. normal (NORMALS for glTF/FBX; OBJ's map_Bump arrives as HEIGHT, fall back to it)
-        vector<int> normal = loadMaterialTextures(material, aiTextureType_NORMALS, "texture_normal", model);
+        // 3. normal (NORMALS for glTF/FBX; OBJ's map_Bump arrives as HEIGHT, fall back to it) — linear
+        vector<int> normal = loadMaterialTextures(material, aiTextureType_NORMALS, "texture_normal", ColorSpace::Linear, model);
         if (normal.empty())
-            normal = loadMaterialTextures(material, aiTextureType_HEIGHT, "texture_normal", model);
+            normal = loadMaterialTextures(material, aiTextureType_HEIGHT, "texture_normal", ColorSpace::Linear, model);
         out.textureIndices.insert(out.textureIndices.end(), normal.begin(), normal.end());
-        // 4. height / displacement
-        vector<int> height = loadMaterialTextures(material, aiTextureType_DISPLACEMENT, "texture_height", model);
+        // 4. height / displacement — linear
+        vector<int> height = loadMaterialTextures(material, aiTextureType_DISPLACEMENT, "texture_height", ColorSpace::Linear, model);
         out.textureIndices.insert(out.textureIndices.end(), height.begin(), height.end());
+        // 5. PBR data maps (FBX/OBJ-PBR) — metallic-roughness + occlusion are linear data
+        vector<int> mr = loadMaterialTextures(material, aiTextureType_METALNESS, "texture_metallic_roughness", ColorSpace::Linear, model);
+        if (mr.empty())
+            mr = loadMaterialTextures(material, aiTextureType_DIFFUSE_ROUGHNESS, "texture_metallic_roughness", ColorSpace::Linear, model);
+        out.textureIndices.insert(out.textureIndices.end(), mr.begin(), mr.end());
+        vector<int> occlusion = loadMaterialTextures(material, aiTextureType_AMBIENT_OCCLUSION, "texture_occlusion", ColorSpace::Linear, model);
+        out.textureIndices.insert(out.textureIndices.end(), occlusion.begin(), occlusion.end());
+        // 6. emissive — sRGB color
+        vector<int> emissive = loadMaterialTextures(material, aiTextureType_EMISSIVE, "texture_emissive", ColorSpace::sRGB, model);
+        out.textureIndices.insert(out.textureIndices.end(), emissive.begin(), emissive.end());
 
         return out;
     }
 
     // Decode each texture of `type` into model.textures (de-duped by path) and return their indices.
-    static vector<int> loadMaterialTextures(aiMaterial *mat, aiTextureType type, string typeName, ModelData &model)
+    // `cs` tags the decoded texture's color space so the GPU upload picks an sRGB or linear format.
+    static vector<int> loadMaterialTextures(aiMaterial *mat, aiTextureType type, string typeName, ColorSpace cs, ModelData &model)
     {
         vector<int> indices;
         for (unsigned int i = 0; i < mat->GetTextureCount(type); i++)
@@ -358,8 +397,9 @@ private:
             if (found >= 0) { indices.push_back(found); continue; }
 
             TextureData td = decodeTexture(str.C_Str(), model.directory);
-            td.type = typeName;
-            td.path = str.C_Str();
+            td.type       = typeName;
+            td.path       = str.C_Str();
+            td.colorSpace = cs;
             model.textures.push_back(std::move(td));
             indices.push_back((int)model.textures.size() - 1);
         }
@@ -410,7 +450,14 @@ private:
                 format = GL_RGBA;
             }
 
-            glTexImage2D(GL_TEXTURE_2D, 0, format, td.width, td.height, 0, format, GL_UNSIGNED_BYTE, td.pixels.data());
+            // Internal format == data format for linear (data) textures; for sRGB color textures the GPU
+            // must store/linearize in sRGB. sRGB only applies to 3/4-channel color maps; 1/2-channel maps
+            // are always data (roughness/AO/etc.) and stay linear regardless of the tag.
+            GLint internalFormat = (GLint)format;
+            if (td.colorSpace == ColorSpace::sRGB && td.channels >= 3)
+                internalFormat = (td.channels == 4) ? GL_SRGB8_ALPHA8 : GL_SRGB8;
+
+            glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, td.width, td.height, 0, format, GL_UNSIGNED_BYTE, td.pixels.data());
             glGenerateMipmap(GL_TEXTURE_2D);
 
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);

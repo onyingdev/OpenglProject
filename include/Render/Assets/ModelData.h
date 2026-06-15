@@ -2,6 +2,7 @@
 #include <glm/glm.hpp>
 #include <string>
 #include <vector>
+#include "Render/Assets/Material.h"   // PBR material model carried alongside the geometry/textures
 
 // Backend-agnostic, CPU-side asset data — the intermediate between the loader and any GPU backend.
 //
@@ -27,9 +28,15 @@ struct Vertex {
     float m_Weights[MAX_BONE_INFLUENCE];
 };
 
+// Color space the pixels are authored in — decides the GL *internal* format at upload. Base color and
+// emissive maps hold sRGB-encoded color (the GPU must linearize on sample); normal/metallic/roughness/
+// occlusion maps hold raw linear data and must NOT be linearized.
+enum class ColorSpace { Linear, sRGB };
+
 // A decoded texture before any GPU upload: raw pixels + dimensions. `pixels` empty => decode failed,
 // and the backend should substitute its missing-texture fallback. `type` is the sampler-name family
-// ("texture_diffuse"/"texture_specular"/...); `path` keys de-duplication within a model.
+// ("texture_diffuse"/"texture_specular"/"texture_metallic_roughness"/...); `path` keys de-duplication
+// within a model; `colorSpace` selects sRGB vs linear internal format at upload.
 struct TextureData {
     std::vector<unsigned char> pixels;
     int width    = 0;
@@ -37,13 +44,17 @@ struct TextureData {
     int channels = 0;
     std::string type;
     std::string path;
+    ColorSpace  colorSpace = ColorSpace::Linear;
 };
 
-// One mesh: geometry + indices into the owning ModelData's shared texture pool.
+// One mesh: geometry + indices into the owning ModelData's shared texture pool. `materialIndex` points
+// into ModelData::materials (-1 = none) for the PBR factors; the per-mesh `textureIndices` remain the
+// list bound by the (current) Blinn-Phong path.
 struct MeshData {
     std::vector<Vertex>       vertices;
     std::vector<unsigned int> indices;
     std::vector<int>          textureIndices;   // -> ModelData::textures
+    int                       materialIndex = -1;   // -> ModelData::materials
 };
 
 // A whole model as parsed from disk: every mesh, plus a de-duplicated texture pool the meshes index
@@ -51,6 +62,7 @@ struct MeshData {
 struct ModelData {
     std::vector<MeshData>    meshes;
     std::vector<TextureData> textures;
+    std::vector<Material>    materials;   // PBR factors; MeshData::materialIndex points in here
     std::string directory;
     bool gammaCorrection = false;
     bool flipUVs         = false;

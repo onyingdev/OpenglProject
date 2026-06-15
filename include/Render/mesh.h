@@ -174,10 +174,16 @@ private:
     // Shared by Draw and DrawInstanced (uniform-sampler names are cached in the Shader now).
     void bindTextures(IShader &shader)
     {
+        // Per-family counters give each texture its sampler suffix (the N in texture_diffuseN). The PBR
+        // families (metallic_roughness/occlusion/emissive) are bound here too so they're ready for the
+        // future PBR shader; setInt on a sampler the current shader doesn't declare is a cached no-op.
         unsigned int diffuseNr  = 1;
         unsigned int specularNr = 1;
         unsigned int normalNr   = 1;
         unsigned int heightNr   = 1;
+        unsigned int mrNr        = 1;
+        unsigned int occlusionNr = 1;
+        unsigned int emissiveNr  = 1;
         for(unsigned int i = 0; i < textures.size(); i++)
         {
             glActiveTexture(GL_TEXTURE0 + i); // active proper texture unit before binding
@@ -190,8 +196,14 @@ private:
                 number = std::to_string(specularNr++); // transfer unsigned int to string
             else if(name == "texture_normal")
                 number = std::to_string(normalNr++); // transfer unsigned int to string
-             else if(name == "texture_height")
+            else if(name == "texture_height")
                 number = std::to_string(heightNr++); // transfer unsigned int to string
+            else if(name == "texture_metallic_roughness")
+                number = std::to_string(mrNr++);
+            else if(name == "texture_occlusion")
+                number = std::to_string(occlusionNr++);
+            else if(name == "texture_emissive")
+                number = std::to_string(emissiveNr++);
 
             // now set the sampler to the correct texture unit (via the interface,
             // no direct access to a backend-specific program handle)
