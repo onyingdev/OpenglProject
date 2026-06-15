@@ -71,6 +71,7 @@ public:
 
     void start() override {
         SpatialComponent3D::start();
+        std::cout << "[WARNING]: Deprecated component, use RigidBodyComponent3D->static" << std::endl;
         if (!Shape) std::cerr << "Warning: ColliderComponent3D on " << owner->Name << " has no shape.\n";
         AllColliders().push_back(this);
     }

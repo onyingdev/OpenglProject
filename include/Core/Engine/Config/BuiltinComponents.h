@@ -25,6 +25,7 @@
 #include "Components/Physics/OldRigidBodyComponent3D.h"
 #include "Components/Physics/RigidBodyComponent3D.h"
 #include "Components/Gameplay/CharacterComponent3D.h"
+#include "Components/Gameplay/BufferedStateComponent.h"
 
 // --- Game scripts ---
 #include "assets/scripts/characterController.h"

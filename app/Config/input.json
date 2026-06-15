@@ -1,4 +1,5 @@
 {
+  "bufferDefaultMs": 120,
   "actions": {
     "Quit": "Escape",
     "MoveForward": "W",
@@ -12,6 +13,6 @@
     "ToggleFlashlight": "F",
     "ReloadScenes": "R",
     "ToggleColliders": "F1",
-    "SpawnCube": "Space"
+    "SpawnCube": { "key": "Space", "buffer": 150 }
   }
 }
