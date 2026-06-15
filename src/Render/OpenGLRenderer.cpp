@@ -7,9 +7,10 @@
 #include <iostream>
 #include <string>
 
-// Colors authored in the JSON scene (light ambient/diffuse/specular, unlit object + debug-gizmo color)
-// are display-space sRGB. The PBR/lit pass now works in LINEAR space and the present pass re-encodes the
-// gamma, so these inputs must be linearized first or the scene would shift after the output encode.
+// Display-space sRGB colors that must be linearized before the linear lit pass (the present pass
+// re-encodes gamma). Used for the UNLIT object + debug-gizmo colors. Light radiance is NOT run through
+// this: a light's color/intensity is authored as linear radiance, and sRGB-decoding it would crush
+// sub-1 intensities (e.g. a 0.30 "sun" -> 0.07) and make the scene far too dark under PBR's albedo/π.
 namespace {
     inline float srgbChannelToLinear(float c) { c = (c < 0.0f) ? 0.0f : c; return (float)std::pow(c, 2.2f); }
     inline glm::vec3 srgbToLinear(const glm::vec3& c) {
@@ -245,14 +246,11 @@ void OpenGLRenderer::uploadCamera(Shader& sh) {
 void OpenGLRenderer::uploadLights(Shader& sh) {
     sh.use();
 
-    // Directional "sun". Direction is geometric (left as-is); the color terms are linearized.
-    const glm::vec3 dAmbient  = srgbToLinear(m_lights.dir.ambient);
-    const glm::vec3 dDiffuse  = srgbToLinear(m_lights.dir.diffuse);
-    const glm::vec3 dSpecular = srgbToLinear(m_lights.dir.specular);
+    // Directional "sun" — radiance is authored linear, uploaded as-is.
     sh.setVec3("dirLight.direction", m_lights.dir.direction.x, m_lights.dir.direction.y, m_lights.dir.direction.z);
-    sh.setVec3("dirLight.ambient",   dAmbient.x,  dAmbient.y,  dAmbient.z);
-    sh.setVec3("dirLight.diffuse",   dDiffuse.x,  dDiffuse.y,  dDiffuse.z);
-    sh.setVec3("dirLight.specular",  dSpecular.x, dSpecular.y, dSpecular.z);
+    sh.setVec3("dirLight.ambient",   m_lights.dir.ambient.x,   m_lights.dir.ambient.y,   m_lights.dir.ambient.z);
+    sh.setVec3("dirLight.diffuse",   m_lights.dir.diffuse.x,   m_lights.dir.diffuse.y,   m_lights.dir.diffuse.z);
+    sh.setVec3("dirLight.specular",  m_lights.dir.specular.x,  m_lights.dir.specular.y,  m_lights.dir.specular.z);
 
     // Point lights: compact only the ENABLED ones to the front of the array and tell the shader how
     // many there are (numPointLights), so its loop skips the rest. Capped at the shader's array size.
@@ -261,17 +259,14 @@ void OpenGLRenderer::uploadLights(Shader& sh) {
     for (const PointLight& pl : m_lights.points) {
         if (!pl.enabled || np >= MAX_POINT_LIGHTS) continue;
         const std::string p = "pointLights[" + std::to_string(np) + "].";
-        const glm::vec3 a = srgbToLinear(pl.ambient);
-        const glm::vec3 d = srgbToLinear(pl.diffuse);
-        const glm::vec3 s = srgbToLinear(pl.specular);
         sh.setVec3 (p + "position",  pl.position.x, pl.position.y, pl.position.z);
         sh.setFloat(p + "constant",  pl.constant);
         sh.setFloat(p + "linear",    pl.linear);
         sh.setFloat(p + "quadratic", pl.quadratic);
         sh.setFloat(p + "attenuation", pl.attenuation);
-        sh.setVec3 (p + "ambient",   a.x, a.y, a.z);
-        sh.setVec3 (p + "diffuse",   d.x, d.y, d.z);
-        sh.setVec3 (p + "specular",  s.x, s.y, s.z);
+        sh.setVec3 (p + "ambient",   pl.ambient.x,  pl.ambient.y,  pl.ambient.z);
+        sh.setVec3 (p + "diffuse",   pl.diffuse.x,  pl.diffuse.y,  pl.diffuse.z);
+        sh.setVec3 (p + "specular",  pl.specular.x, pl.specular.y, pl.specular.z);
         ++np;
     }
     sh.setInt("numPointLights", np);
@@ -282,8 +277,6 @@ void OpenGLRenderer::uploadLights(Shader& sh) {
     for (const SpotLight& s : m_lights.spots) {
         if (!s.enabled || ns >= MAX_SPOT_LIGHTS) continue;
         const std::string sp = "spotLights[" + std::to_string(ns) + "].";
-        const glm::vec3 sd = srgbToLinear(s.diffuse);
-        const glm::vec3 ss = srgbToLinear(s.specular);
         sh.setVec3 (sp + "position",    s.position.x,  s.position.y,  s.position.z);
         sh.setVec3 (sp + "direction",   s.direction.x, s.direction.y, s.direction.z);
         sh.setFloat(sp + "cutOff",      s.cutOff);
@@ -292,8 +285,8 @@ void OpenGLRenderer::uploadLights(Shader& sh) {
         sh.setFloat(sp + "linear",      s.linear);
         sh.setFloat(sp + "quadratic",   s.quadratic);
         sh.setVec3 (sp + "ambient",     0.0f, 0.0f, 0.0f);
-        sh.setVec3 (sp + "diffuse",     sd.x, sd.y, sd.z);
-        sh.setVec3 (sp + "specular",    ss.x, ss.y, ss.z);
+        sh.setVec3 (sp + "diffuse",     s.diffuse.x,  s.diffuse.y,  s.diffuse.z);
+        sh.setVec3 (sp + "specular",    s.specular.x, s.specular.y, s.specular.z);
         ++ns;
     }
     sh.setInt("numSpotLights", ns);

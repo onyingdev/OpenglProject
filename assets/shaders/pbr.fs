@@ -70,11 +70,18 @@ uniform int numSpotLights;
 
 vec3 getNormal()
 {
+    vec3 N = normalize(Normal);
+    // Re-orthonormalize the tangent against N (Gram-Schmidt). If there's no usable tangent frame
+    // (asset without tangents/UVs -> Tangent ~ 0, or tangent parallel to N), skip normal mapping and
+    // use the geometric normal — otherwise normalize() of a zero vector yields NaN and the surface
+    // goes black. (The loader generates tangents when it can; this is the last-resort guard.)
+    vec3 T0 = Tangent - dot(Tangent, N) * N;
+    if (dot(T0, T0) < 1e-8) return N;
+    vec3 T = normalize(T0);
+    vec3 B = cross(N, T);
+
     vec3 n = texture(texture_normal1, TexCoords).rgb * 2.0 - 1.0;  // tangent space [-1,1]
     n.xy *= normalScale;                                          // glTF normalScale (xy only)
-    vec3 N = normalize(Normal);
-    vec3 T = normalize(Tangent - dot(Tangent, N) * N);            // Gram-Schmidt re-orthonormalize
-    vec3 B = cross(N, T);
     return normalize(mat3(T, B, N) * n);
 }
 

@@ -1,6 +1,6 @@
 { "name": "SpawnCar", "components": [
   { "type": "Transform", "position": [0, 0, 0], "rotation": [0, 0, 0] },
-  { "type": "Mesh", "model": "assets/models/911/scene.gltf", "flipUVs": true, "async": true },
+  { "type": "Mesh", "model": "assets/models/911/version2/porsche.gltf", "flipUVs": true, "async": true },
   { "type": "RigidBody3D", "mass": 2.0, "restitution": 0.1, "friction": 1.5, "drag": 0.05,
     "shape": { "kind": "obb", "halfExtents": [0.5, 0.5, 0.5] },
     "freezeAfter": 5.0, "freezeStart": "contact",

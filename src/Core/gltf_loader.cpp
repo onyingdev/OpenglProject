@@ -155,6 +155,36 @@ int addTexture(const tinygltf::Model& gm, int texIndex, const char* typeName, Co
     return idx;
 }
 
+// Generate per-vertex tangents from positions/UVs/normals when the glTF omits TANGENT (common for
+// Blender re-exports without a normal map). Standard per-triangle accumulation + Gram-Schmidt against
+// the normal; Bitangent = cross(N, T) to match the engine's normal-mapping convention. Without this a
+// missing tangent leaves Tangent = 0, and the PBR shader's normalize(Tangent) produces NaN -> black.
+void generateTangents(MeshData& md) {
+    const size_t n = md.vertices.size();
+    std::vector<glm::vec3> tan(n, glm::vec3(0.0f));
+    for (size_t i = 0; i + 2 < md.indices.size(); i += 3) {
+        const unsigned int i0 = md.indices[i], i1 = md.indices[i + 1], i2 = md.indices[i + 2];
+        if (i0 >= n || i1 >= n || i2 >= n) continue;
+        const glm::vec3 e1 = md.vertices[i1].Position - md.vertices[i0].Position;
+        const glm::vec3 e2 = md.vertices[i2].Position - md.vertices[i0].Position;
+        const glm::vec2 d1 = md.vertices[i1].TexCoords - md.vertices[i0].TexCoords;
+        const glm::vec2 d2 = md.vertices[i2].TexCoords - md.vertices[i0].TexCoords;
+        const float denom = d1.x * d2.y - d2.x * d1.y;
+        const float ad = denom < 0.0f ? -denom : denom;
+        if (ad < 1e-12f) continue;                      // degenerate UV triangle
+        const glm::vec3 t = (d2.y * e1 - d1.y * e2) / denom;
+        tan[i0] += t; tan[i1] += t; tan[i2] += t;
+    }
+    for (size_t i = 0; i < n; ++i) {
+        const glm::vec3 N = md.vertices[i].Normal;
+        glm::vec3 T = tan[i] - N * glm::dot(N, tan[i]);   // Gram-Schmidt orthogonalize against N
+        const float len = glm::length(T);
+        T = (len > 1e-8f) ? T / len : glm::vec3(1.0f, 0.0f, 0.0f);  // fallback for untouched verts
+        md.vertices[i].Tangent   = T;
+        md.vertices[i].Bitangent = glm::cross(N, T);
+    }
+}
+
 // Convert one primitive into a MeshData, baking `world` into positions (and its normal matrix into
 // normals/tangents). Skips non-triangle primitives — the engine draws GL_TRIANGLES only.
 void processPrimitive(const tinygltf::Model& gm, const tinygltf::Primitive& prim, const glm::mat4& world,
@@ -177,7 +207,10 @@ void processPrimitive(const tinygltf::Model& gm, const tinygltf::Primitive& prim
         md.vertices[i].Position = glm::vec3(world * p);
     }
 
+    bool hasNormal = false, hasUV = false, hasTangent = false;
+
     if (auto it = prim.attributes.find("NORMAL"); it != prim.attributes.end()) {
+        hasNormal = true;
         const tinygltf::Accessor& acc = gm.accessors[it->second];
         for (size_t i = 0; i < vertexCount; ++i)
             md.vertices[i].Normal = glm::normalize(normalMat * glm::vec3(
@@ -185,6 +218,7 @@ void processPrimitive(const tinygltf::Model& gm, const tinygltf::Primitive& prim
     }
 
     if (auto it = prim.attributes.find("TEXCOORD_0"); it != prim.attributes.end()) {
+        hasUV = true;
         const tinygltf::Accessor& acc = gm.accessors[it->second];
         for (size_t i = 0; i < vertexCount; ++i) {
             float u = readComponent(gm, acc, i, 0);
@@ -194,6 +228,7 @@ void processPrimitive(const tinygltf::Model& gm, const tinygltf::Primitive& prim
     }
 
     if (auto it = prim.attributes.find("TANGENT"); it != prim.attributes.end()) {
+        hasTangent = true;
         const tinygltf::Accessor& acc = gm.accessors[it->second];   // vec4: xyz tangent, w handedness
         for (size_t i = 0; i < vertexCount; ++i) {
             glm::vec3 t = glm::normalize(normalMat * glm::vec3(
@@ -212,6 +247,11 @@ void processPrimitive(const tinygltf::Model& gm, const tinygltf::Primitive& prim
         md.indices.reserve(vertexCount);
         for (unsigned int i = 0; i < vertexCount; ++i) md.indices.push_back(i);
     }
+
+    // Generate tangents when the asset omits them (e.g. Blender exports without a normal map) so the PBR
+    // normal-mapping TBN stays valid. Needs indices + UVs + normals; otherwise leave the flat default.
+    if (!hasTangent && hasUV && hasNormal)
+        generateTangents(md);
 
     // Material -> PBR factors + texture pool indices (glTF metallic-roughness model). Base color +
     // emissive are sRGB color maps; metallic-roughness / normal / occlusion are linear data maps.
