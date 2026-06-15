@@ -7,6 +7,16 @@
 #include <iostream>
 #include <string>
 
+// Colors authored in the JSON scene (light ambient/diffuse/specular, unlit object + debug-gizmo color)
+// are display-space sRGB. The PBR/lit pass now works in LINEAR space and the present pass re-encodes the
+// gamma, so these inputs must be linearized first or the scene would shift after the output encode.
+namespace {
+    inline float srgbChannelToLinear(float c) { c = (c < 0.0f) ? 0.0f : c; return (float)std::pow(c, 2.2f); }
+    inline glm::vec3 srgbToLinear(const glm::vec3& c) {
+        return glm::vec3(srgbChannelToLinear(c.x), srgbChannelToLinear(c.y), srgbChannelToLinear(c.z));
+    }
+}
+
 OpenGLRenderer::OpenGLRenderer(GLADloadproc loader) : m_loader(loader) {}
 
 OpenGLRenderer::~OpenGLRenderer() {
@@ -35,11 +45,12 @@ bool OpenGLRenderer::init(int fbW, int fbH) {
     glEnable(GL_DEPTH_TEST);
     glDisable(GL_MULTISAMPLE);   // the multisample FBO drives AA, not global state
 
-    // Built-in shaders (the GL backend owns them; RenderItems pick a material, not a shader).
-    m_lit   = std::make_unique<Shader>("assets/shaders/advanced_lighting.vs", "assets/shaders/advanced_lighting.fs");
-    // Same lighting fragment shader, but the vertex stage reads the model matrix from a per-instance
+    // Built-in shaders (the GL backend owns them; RenderItems pick a material, not a shader). "Lit" is
+    // now PBR (Cook-Torrance metallic-roughness); m_lit handles single/wireframe draws.
+    m_lit   = std::make_unique<Shader>("assets/shaders/pbr.vs", "assets/shaders/pbr.fs");
+    // Same PBR fragment shader, but the vertex stage reads the model matrix from a per-instance
     // attribute, so many identical models draw in one glDrawElementsInstanced instead of one call each.
-    m_litInstanced = std::make_unique<Shader>("assets/shaders/advanced_lighting_instanced.vs", "assets/shaders/advanced_lighting.fs");
+    m_litInstanced = std::make_unique<Shader>("assets/shaders/pbr_instanced.vs", "assets/shaders/pbr.fs");
     m_unlit = std::make_unique<Shader>("assets/shaders/light_s.vs",           "assets/shaders/light_s.fs");
     m_post  = std::make_unique<Shader>("assets/shaders/msaa_post.vs",         "assets/shaders/msaa_post.fs");
     m_post->use();
@@ -228,17 +239,20 @@ void OpenGLRenderer::uploadCamera(Shader& sh) {
     sh.setMat4("view", m_camera.view);
     sh.setMat4("projection", m_camera.projection);
     sh.setVec3("viewPos", m_camera.position.x, m_camera.position.y, m_camera.position.z);
-    sh.setFloat("shininess", 32.0f);   // viewPos/shininess are no-ops on the unlit shader (cached -1)
+    // (viewPos is a no-op on the unlit shader — cached -1.)
 }
 
 void OpenGLRenderer::uploadLights(Shader& sh) {
     sh.use();
 
-    // Directional "sun".
+    // Directional "sun". Direction is geometric (left as-is); the color terms are linearized.
+    const glm::vec3 dAmbient  = srgbToLinear(m_lights.dir.ambient);
+    const glm::vec3 dDiffuse  = srgbToLinear(m_lights.dir.diffuse);
+    const glm::vec3 dSpecular = srgbToLinear(m_lights.dir.specular);
     sh.setVec3("dirLight.direction", m_lights.dir.direction.x, m_lights.dir.direction.y, m_lights.dir.direction.z);
-    sh.setVec3("dirLight.ambient",   m_lights.dir.ambient.x,   m_lights.dir.ambient.y,   m_lights.dir.ambient.z);
-    sh.setVec3("dirLight.diffuse",   m_lights.dir.diffuse.x,   m_lights.dir.diffuse.y,   m_lights.dir.diffuse.z);
-    sh.setVec3("dirLight.specular",  m_lights.dir.specular.x,  m_lights.dir.specular.y,  m_lights.dir.specular.z);
+    sh.setVec3("dirLight.ambient",   dAmbient.x,  dAmbient.y,  dAmbient.z);
+    sh.setVec3("dirLight.diffuse",   dDiffuse.x,  dDiffuse.y,  dDiffuse.z);
+    sh.setVec3("dirLight.specular",  dSpecular.x, dSpecular.y, dSpecular.z);
 
     // Point lights: compact only the ENABLED ones to the front of the array and tell the shader how
     // many there are (numPointLights), so its loop skips the rest. Capped at the shader's array size.
@@ -247,14 +261,17 @@ void OpenGLRenderer::uploadLights(Shader& sh) {
     for (const PointLight& pl : m_lights.points) {
         if (!pl.enabled || np >= MAX_POINT_LIGHTS) continue;
         const std::string p = "pointLights[" + std::to_string(np) + "].";
+        const glm::vec3 a = srgbToLinear(pl.ambient);
+        const glm::vec3 d = srgbToLinear(pl.diffuse);
+        const glm::vec3 s = srgbToLinear(pl.specular);
         sh.setVec3 (p + "position",  pl.position.x, pl.position.y, pl.position.z);
         sh.setFloat(p + "constant",  pl.constant);
         sh.setFloat(p + "linear",    pl.linear);
         sh.setFloat(p + "quadratic", pl.quadratic);
         sh.setFloat(p + "attenuation", pl.attenuation);
-        sh.setVec3 (p + "ambient",   pl.ambient.x,  pl.ambient.y,  pl.ambient.z);
-        sh.setVec3 (p + "diffuse",   pl.diffuse.x,  pl.diffuse.y,  pl.diffuse.z);
-        sh.setVec3 (p + "specular",  pl.specular.x, pl.specular.y, pl.specular.z);
+        sh.setVec3 (p + "ambient",   a.x, a.y, a.z);
+        sh.setVec3 (p + "diffuse",   d.x, d.y, d.z);
+        sh.setVec3 (p + "specular",  s.x, s.y, s.z);
         ++np;
     }
     sh.setInt("numPointLights", np);
@@ -265,6 +282,8 @@ void OpenGLRenderer::uploadLights(Shader& sh) {
     for (const SpotLight& s : m_lights.spots) {
         if (!s.enabled || ns >= MAX_SPOT_LIGHTS) continue;
         const std::string sp = "spotLights[" + std::to_string(ns) + "].";
+        const glm::vec3 sd = srgbToLinear(s.diffuse);
+        const glm::vec3 ss = srgbToLinear(s.specular);
         sh.setVec3 (sp + "position",    s.position.x,  s.position.y,  s.position.z);
         sh.setVec3 (sp + "direction",   s.direction.x, s.direction.y, s.direction.z);
         sh.setFloat(sp + "cutOff",      s.cutOff);
@@ -273,8 +292,8 @@ void OpenGLRenderer::uploadLights(Shader& sh) {
         sh.setFloat(sp + "linear",      s.linear);
         sh.setFloat(sp + "quadratic",   s.quadratic);
         sh.setVec3 (sp + "ambient",     0.0f, 0.0f, 0.0f);
-        sh.setVec3 (sp + "diffuse",     s.diffuse.x,  s.diffuse.y,  s.diffuse.z);
-        sh.setVec3 (sp + "specular",    s.specular.x, s.specular.y, s.specular.z);
+        sh.setVec3 (sp + "diffuse",     sd.x, sd.y, sd.z);
+        sh.setVec3 (sp + "specular",    ss.x, ss.y, ss.z);
         ++ns;
     }
     sh.setInt("numSpotLights", ns);
@@ -325,8 +344,10 @@ void OpenGLRenderer::submit(const RenderItem& item) {
     Shader* sh = (item.material == MaterialKind::Lit) ? m_lit.get() : m_unlit.get();
     sh->use();
     sh->setMat4("model", item.modelMatrix);
-    if (item.material == MaterialKind::Unlit)
-        sh->setVec3("lightColor", item.unlitColor.x, item.unlitColor.y, item.unlitColor.z);
+    if (item.material == MaterialKind::Unlit) {
+        const glm::vec3 c = srgbToLinear(item.unlitColor);   // present pass re-encodes gamma for display
+        sh->setVec3("lightColor", c.x, c.y, c.z);
+    }
 
     if (item.wireframe) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -361,7 +382,8 @@ void OpenGLRenderer::drawWireBox(const glm::mat4& transform, const glm::vec3& co
     flushOpaqueBatches();   // meshes first, then gizmos on top
     m_unlit->use();
     m_unlit->setMat4("model", transform);
-    m_unlit->setVec3("lightColor", color.x, color.y, color.z);
+    const glm::vec3 wc = srgbToLinear(color);   // round-trips through the present gamma encode
+    m_unlit->setVec3("lightColor", wc.x, wc.y, wc.z);
     glBindVertexArray(m_wireCubeVao);
     glDrawArrays(GL_LINES, 0, 24);
     glBindVertexArray(0);
@@ -373,7 +395,8 @@ void OpenGLRenderer::drawWireSphere(const glm::vec3& center, float radius, const
                           * glm::scale(glm::mat4(1.0f), glm::vec3(radius));
     m_unlit->use();
     m_unlit->setMat4("model", model);
-    m_unlit->setVec3("lightColor", color.x, color.y, color.z);
+    const glm::vec3 sc = srgbToLinear(color);
+    m_unlit->setVec3("lightColor", sc.x, sc.y, sc.z);
     glBindVertexArray(m_wireSphereVao);
     glDrawArrays(GL_LINES, 0, m_wireSphereVerts);
     glBindVertexArray(0);
@@ -384,7 +407,8 @@ void OpenGLRenderer::drawLine(const glm::vec3& a, const glm::vec3& b, const glm:
     const float verts[6] = { a.x, a.y, a.z, b.x, b.y, b.z };
     m_unlit->use();
     m_unlit->setMat4("model", glm::mat4(1.0f));   // endpoints are already world-space
-    m_unlit->setVec3("lightColor", color.x, color.y, color.z);
+    const glm::vec3 lc = srgbToLinear(color);
+    m_unlit->setVec3("lightColor", lc.x, lc.y, lc.z);
     glBindVertexArray(m_lineVao);
     glBindBuffer(GL_ARRAY_BUFFER, m_lineVbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);

@@ -37,6 +37,13 @@ public:
     vector<Texture>      textures;
     glm::vec3            baseColor{1.0f};   // flat material color; set as the "baseColor" uniform at draw
                                             // time and multiplied with the diffuse map (white = no-op)
+    // PBR metallic-roughness factors (glTF). Set per-mesh from MeshData after construction; emitted as
+    // uniforms in Draw/DrawInstanced. Each multiplies its matching map (or stands alone when absent).
+    float                metallic = 1.0f;
+    float                roughness = 1.0f;
+    glm::vec3            emissiveFactor{0.0f};
+    float                occlusionStrength = 1.0f;
+    float                normalScale = 1.0f;
     unsigned int VAO = 0;
 
     // constructor — full (synchronous) upload. Move the vectors in (they're already owned rvalues from
@@ -71,6 +78,8 @@ public:
     Mesh(Mesh&& o) noexcept
         : vertices(std::move(o.vertices)), indices(std::move(o.indices)),
           textures(std::move(o.textures)), baseColor(o.baseColor),
+          metallic(o.metallic), roughness(o.roughness), emissiveFactor(o.emissiveFactor),
+          occlusionStrength(o.occlusionStrength), normalScale(o.normalScale),
           VAO(o.VAO), VBO(o.VBO), EBO(o.EBO), instanceVBO(o.instanceVBO),
           m_indexCount(o.m_indexCount), m_vboBytes(o.m_vboBytes), m_eboBytes(o.m_eboBytes),
           m_vboCursor(o.m_vboCursor), m_eboCursor(o.m_eboCursor)
@@ -85,6 +94,8 @@ public:
             indices   = std::move(o.indices);
             textures  = std::move(o.textures);
             baseColor = o.baseColor;
+            metallic = o.metallic; roughness = o.roughness; emissiveFactor = o.emissiveFactor;
+            occlusionStrength = o.occlusionStrength; normalScale = o.normalScale;
             VAO = o.VAO; VBO = o.VBO; EBO = o.EBO; instanceVBO = o.instanceVBO;
             m_indexCount = o.m_indexCount;
             m_vboBytes = o.m_vboBytes; m_eboBytes = o.m_eboBytes;
@@ -130,7 +141,7 @@ public:
     // render the mesh (single instance, model matrix supplied via the shader's `model` uniform)
     void Draw(IShader &shader) override
     {
-        shader.setVec3("baseColor", baseColor.x, baseColor.y, baseColor.z);
+        setMaterialUniforms(shader);
         bindTextures(shader);
         glBindVertexArray(VAO);
         glDrawElements(GL_TRIANGLES, m_indexCount, GL_UNSIGNED_INT, 0);
@@ -163,7 +174,7 @@ public:
         glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)count * (GLsizeiptr)sizeof(glm::mat4), mats, GL_DYNAMIC_DRAW);
 
-        shader.setVec3("baseColor", baseColor.x, baseColor.y, baseColor.z);
+        setMaterialUniforms(shader);
         bindTextures(shader);
         glDrawElementsInstanced(GL_TRIANGLES, m_indexCount, GL_UNSIGNED_INT, 0, count);
         glBindVertexArray(0);
@@ -171,6 +182,18 @@ public:
     }
 
 private:
+    // Per-mesh PBR material factors -> shader uniforms (sampler-name convention handles the maps).
+    // Names a non-PBR shader doesn't declare resolve to a cached -1 and are silently ignored.
+    void setMaterialUniforms(IShader &shader)
+    {
+        shader.setVec3 ("baseColor",         baseColor.x, baseColor.y, baseColor.z);
+        shader.setFloat("metallicFactor",    metallic);
+        shader.setFloat("roughnessFactor",   roughness);
+        shader.setVec3 ("emissiveFactor",    emissiveFactor.x, emissiveFactor.y, emissiveFactor.z);
+        shader.setFloat("occlusionStrength", occlusionStrength);
+        shader.setFloat("normalScale",       normalScale);
+    }
+
     // render data
     unsigned int VBO = 0, EBO = 0;
     unsigned int instanceVBO = 0;   // per-instance model matrices (lazily created on first DrawInstanced)
@@ -183,49 +206,43 @@ private:
     // Shared by Draw and DrawInstanced (uniform-sampler names are cached in the Shader now).
     void bindTextures(IShader &shader)
     {
-        unsigned int diffuseNr  = 1;
-        unsigned int specularNr = 1;
-        unsigned int normalNr   = 1;
-        unsigned int heightNr   = 1;
+        // Sampler families for the PBR set (plus legacy specular/height for OBJ/FBX, ignored by the PBR
+        // shader). Track which PBR families got a real map so we can bind a neutral default for the rest.
+        unsigned int diffuseNr  = 1, mrNr = 1, normalNr = 1, occlusionNr = 1, emissiveNr = 1;
+        unsigned int specularNr = 1, heightNr = 1;
         for(unsigned int i = 0; i < textures.size(); i++)
         {
             glActiveTexture(GL_TEXTURE0 + i); // active proper texture unit before binding
-            // retrieve texture number (the N in diffuse_textureN)
             string number;
-            string name = textures[i].type;
-            if(name == "texture_diffuse")
-                number = std::to_string(diffuseNr++);
-            else if(name == "texture_specular")
-                number = std::to_string(specularNr++); // transfer unsigned int to string
-            else if(name == "texture_normal")
-                number = std::to_string(normalNr++); // transfer unsigned int to string
-             else if(name == "texture_height")
-                number = std::to_string(heightNr++); // transfer unsigned int to string
+            const string& name = textures[i].type;
+            if      (name == "texture_diffuse")    number = std::to_string(diffuseNr++);
+            else if (name == "texture_mr")         number = std::to_string(mrNr++);
+            else if (name == "texture_normal")     number = std::to_string(normalNr++);
+            else if (name == "texture_occlusion")  number = std::to_string(occlusionNr++);
+            else if (name == "texture_emissive")   number = std::to_string(emissiveNr++);
+            else if (name == "texture_specular")   number = std::to_string(specularNr++);
+            else if (name == "texture_height")     number = std::to_string(heightNr++);
 
-            // now set the sampler to the correct texture unit (via the interface,
-            // no direct access to a backend-specific program handle)
             shader.setInt(name + number, i);
-            // and finally bind the texture
             glBindTexture(GL_TEXTURE_2D, textures[i].id);
         }
 
-        // Fallback bindings: if this mesh has no diffuse/specular map, point that sampler at a 1x1
-        // default instead of leaving it reading whatever texture the PREVIOUS mesh bound to the unit
-        // (the "untextured surface shows another object's texture" leak). White diffuse is a no-op
-        // against the baseColor multiply; black specular suppresses phantom highlights on flat meshes.
+        // Neutral defaults for any missing PBR sampler — both to make the factors authoritative on
+        // untextured meshes AND to stop a sampler reading whatever the PREVIOUS mesh left on the unit.
+        // white baseColor/mr/occlusion/emissive = factors stand alone; flat (0,0,1) normal = vertex normal.
         unsigned int unit = (unsigned int)textures.size();
-        if (diffuseNr == 1) {
+        auto bindDefault = [&](unsigned int present, const char* sampler, unsigned int tex) {
+            if (present != 1) return;                     // a real map of this family was bound
             glActiveTexture(GL_TEXTURE0 + unit);
-            glBindTexture(GL_TEXTURE_2D, defaultTexture(/*white=*/true));
-            shader.setInt("texture_diffuse1", (int)unit);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            shader.setInt(sampler, (int)unit);
             ++unit;
-        }
-        if (specularNr == 1) {
-            glActiveTexture(GL_TEXTURE0 + unit);
-            glBindTexture(GL_TEXTURE_2D, defaultTexture(/*white=*/false));
-            shader.setInt("texture_specular1", (int)unit);
-            ++unit;
-        }
+        };
+        bindDefault(diffuseNr,   "texture_diffuse1",   defaultTexture(true));
+        bindDefault(mrNr,        "texture_mr1",        defaultTexture(true));
+        bindDefault(normalNr,    "texture_normal1",    defaultNormalTexture());
+        bindDefault(occlusionNr, "texture_occlusion1", defaultTexture(true));
+        bindDefault(emissiveNr,  "texture_emissive1",  defaultTexture(true));
     }
 
     // Process-lifetime 1x1 fallback textures (white / black), created on first use on the GL thread and
@@ -237,6 +254,22 @@ private:
         if (tex == 0) {
             const unsigned char v = white ? 255 : 0;
             const unsigned char px[4] = { v, v, v, 255 };
+            glGenTextures(1, &tex);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        }
+        return tex;
+    }
+
+    // 1x1 flat tangent-space normal (0,0,1) encoded as RGB (128,128,255): decodes to the geometric
+    // normal, so a mesh with no normal map shades as if normal-mapping were off.
+    static unsigned int defaultNormalTexture()
+    {
+        static unsigned int tex = 0;
+        if (tex == 0) {
+            const unsigned char px[4] = { 128, 128, 255, 255 };
             glGenTextures(1, &tex);
             glBindTexture(GL_TEXTURE_2D, tex);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);

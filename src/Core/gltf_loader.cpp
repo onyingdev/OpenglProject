@@ -125,10 +125,11 @@ glm::mat4 localTransform(const tinygltf::Node& node) {
 }
 
 // Resolve a glTF texture's image into the model's de-duplicated texture pool, tagging it `typeName`
-// ("texture_diffuse"/"texture_normal"/...). Returns its pool index, or -1 if the texture/image is
-// missing or undecoded. De-dupes on (image source, type) so a shared image isn't copied twice.
-int addTexture(const tinygltf::Model& gm, int texIndex, const char* typeName, ModelData& out,
-               std::map<std::pair<int, std::string>, int>& seen) {
+// ("texture_diffuse"/"texture_normal"/...) and its color space (sRGB for color maps, linear for data
+// maps). Returns its pool index, or -1 if the texture/image is missing or undecoded. De-dupes on
+// (image source, type) so a shared image isn't copied twice.
+int addTexture(const tinygltf::Model& gm, int texIndex, const char* typeName, ColorSpace cs,
+               ModelData& out, std::map<std::pair<int, std::string>, int>& seen) {
     if (texIndex < 0 || texIndex >= (int)gm.textures.size()) return -1;
     const int src = gm.textures[texIndex].source;
     if (src < 0 || src >= (int)gm.images.size()) return -1;
@@ -138,7 +139,8 @@ int addTexture(const tinygltf::Model& gm, int texIndex, const char* typeName, Mo
 
     const tinygltf::Image& img = gm.images[src];
     TextureData td;
-    td.type = typeName;
+    td.type       = typeName;
+    td.colorSpace = cs;
     td.path = img.uri.empty() ? (img.name.empty() ? std::to_string(src) : img.name) : img.uri;
     if (img.width > 0 && img.height > 0 && img.component > 0 && !img.image.empty() && img.bits == 8) {
         td.width = img.width; td.height = img.height; td.channels = img.component;
@@ -211,22 +213,34 @@ void processPrimitive(const tinygltf::Model& gm, const tinygltf::Primitive& prim
         for (unsigned int i = 0; i < vertexCount; ++i) md.indices.push_back(i);
     }
 
-    // Material textures -> pool indices. glTF PBR: base color -> diffuse, metallic-roughness -> specular
-    // (approximate, fills the shader's specular slot), normal -> normal.
+    // Material -> PBR factors + texture pool indices (glTF metallic-roughness model). Base color +
+    // emissive are sRGB color maps; metallic-roughness / normal / occlusion are linear data maps.
     if (prim.material >= 0 && prim.material < (int)gm.materials.size()) {
         const tinygltf::Material& mat = gm.materials[prim.material];
-        // Base color factor — the flat material color, multiplied with the diffuse map at shade time.
-        // Defaults to {1,1,1,1}, so a textured mesh with no explicit factor stays a no-op (white).
-        const std::vector<double>& bcf = mat.pbrMetallicRoughness.baseColorFactor;
+        const tinygltf::PbrMetallicRoughness& pbr = mat.pbrMetallicRoughness;
+
+        // Scalar/vector factors. Each multiplies its matching map (or stands alone when absent).
+        const std::vector<double>& bcf = pbr.baseColorFactor;       // size 4, defaults {1,1,1,1}
         md.baseColor = glm::vec3((float)bcf[0], (float)bcf[1], (float)bcf[2]);
-        const int diffuse  = addTexture(gm, mat.pbrMetallicRoughness.baseColorTexture.index,
-                                        "texture_diffuse", out, seen);
-        const int specular = addTexture(gm, mat.pbrMetallicRoughness.metallicRoughnessTexture.index,
-                                        "texture_specular", out, seen);
-        const int normal   = addTexture(gm, mat.normalTexture.index, "texture_normal", out, seen);
-        if (diffuse  >= 0) md.textureIndices.push_back(diffuse);
-        if (specular >= 0) md.textureIndices.push_back(specular);
-        if (normal   >= 0) md.textureIndices.push_back(normal);
+        md.metallic  = (float)pbr.metallicFactor;
+        md.roughness = (float)pbr.roughnessFactor;
+        if (mat.emissiveFactor.size() == 3)
+            md.emissiveFactor = glm::vec3((float)mat.emissiveFactor[0], (float)mat.emissiveFactor[1],
+                                          (float)mat.emissiveFactor[2]);
+        md.occlusionStrength = (float)mat.occlusionTexture.strength;
+        md.normalScale       = (float)mat.normalTexture.scale;
+
+        // Textures. metallicRoughnessTexture packs occlusion?/roughness/metallic in R?/G/B.
+        const int diffuse   = addTexture(gm, pbr.baseColorTexture.index,         "texture_diffuse",   ColorSpace::sRGB,   out, seen);
+        const int mr        = addTexture(gm, pbr.metallicRoughnessTexture.index, "texture_mr",        ColorSpace::Linear, out, seen);
+        const int normal    = addTexture(gm, mat.normalTexture.index,            "texture_normal",    ColorSpace::Linear, out, seen);
+        const int occlusion = addTexture(gm, mat.occlusionTexture.index,         "texture_occlusion", ColorSpace::Linear, out, seen);
+        const int emissive  = addTexture(gm, mat.emissiveTexture.index,          "texture_emissive",  ColorSpace::sRGB,   out, seen);
+        if (diffuse   >= 0) md.textureIndices.push_back(diffuse);
+        if (mr        >= 0) md.textureIndices.push_back(mr);
+        if (normal    >= 0) md.textureIndices.push_back(normal);
+        if (occlusion >= 0) md.textureIndices.push_back(occlusion);
+        if (emissive  >= 0) md.textureIndices.push_back(emissive);
     }
 
     out.meshes.push_back(std::move(md));
