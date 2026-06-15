@@ -191,7 +191,7 @@ private:
         m_streaming = true;
         meshes.reserve(m_data.meshes.size());
         for (const MeshData &md : m_data.meshes)
-            meshes.emplace_back(md.vertices.size(), md.indices.size(), MeshStreamTag{});
+            meshes.emplace_back(md.vertices.size(), md.indices.size(), md.baseColor, MeshStreamTag{});
         m_texPool.reserve(m_data.textures.size());
         m_texCursor = 0;
     }
@@ -227,7 +227,7 @@ private:
             meshTextures.reserve(m.textureIndices.size());
             for (int idx : m.textureIndices)
                 if (idx >= 0 && idx < (int)pool.size()) meshTextures.push_back(pool[idx]);
-            meshes.emplace_back(std::move(m.vertices), std::move(m.indices), std::move(meshTextures));
+            meshes.emplace_back(std::move(m.vertices), std::move(m.indices), std::move(meshTextures), m.baseColor);
         }
     }
 
@@ -328,6 +328,12 @@ private:
         // materials -> texture pool indices. Sampler-name convention: texture_diffuseN / _specularN /
         // _normalN / _heightN (N assigned at bind time in Mesh::bindTextures).
         aiMaterial *material = scene->mMaterials[mesh->mMaterialIndex];
+
+        // Flat diffuse color factor — used when the mesh has no diffuse map (multiplied with the map
+        // otherwise, white = no-op). Mirrors the glTF baseColorFactor path; stays white if unset.
+        aiColor4D diffuseColor;
+        if (aiGetMaterialColor(material, AI_MATKEY_COLOR_DIFFUSE, &diffuseColor) == AI_SUCCESS)
+            out.baseColor = glm::vec3(diffuseColor.r, diffuseColor.g, diffuseColor.b);
 
         // 1. diffuse / base color (glTF & FBX expose base color under BASE_COLOR)
         vector<int> diffuse = loadMaterialTextures(material, aiTextureType_DIFFUSE, "texture_diffuse", model);

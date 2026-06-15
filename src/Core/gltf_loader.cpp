@@ -215,6 +215,10 @@ void processPrimitive(const tinygltf::Model& gm, const tinygltf::Primitive& prim
     // (approximate, fills the shader's specular slot), normal -> normal.
     if (prim.material >= 0 && prim.material < (int)gm.materials.size()) {
         const tinygltf::Material& mat = gm.materials[prim.material];
+        // Base color factor — the flat material color, multiplied with the diffuse map at shade time.
+        // Defaults to {1,1,1,1}, so a textured mesh with no explicit factor stays a no-op (white).
+        const std::vector<double>& bcf = mat.pbrMetallicRoughness.baseColorFactor;
+        md.baseColor = glm::vec3((float)bcf[0], (float)bcf[1], (float)bcf[2]);
         const int diffuse  = addTexture(gm, mat.pbrMetallicRoughness.baseColorTexture.index,
                                         "texture_diffuse", out, seen);
         const int specular = addTexture(gm, mat.pbrMetallicRoughness.metallicRoughnessTexture.index,

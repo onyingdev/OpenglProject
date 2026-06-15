@@ -44,6 +44,8 @@ struct MeshData {
     std::vector<Vertex>       vertices;
     std::vector<unsigned int> indices;
     std::vector<int>          textureIndices;   // -> ModelData::textures
+    glm::vec3                 baseColor{1.0f};   // material color factor; multiplied with the diffuse map
+                                                 // (white = no-op for textured meshes)
 };
 
 // A whole model as parsed from disk: every mesh, plus a de-duplicated texture pool the meshes index
