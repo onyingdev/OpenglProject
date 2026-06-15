@@ -15,6 +15,7 @@
 #include "Render/API/IShader.h"
 #include "Render/API/IModel.h"
 #include "Render/Assets/ModelData.h"   // backend-agnostic CPU asset data (parse output)
+#include "Render/Assets/GLTFLoader.h"  // tinygltf path for .gltf/.glb (Assimp handles the rest)
 
 #include <string>
 #include <fstream>
@@ -236,6 +237,11 @@ public:
     // for texture pixels. Touches no graphics API. The result is uploaded later via Model(ModelData&&).
     static ModelData parse(string const &path, bool gamma = false, bool flipUVs = false)
     {
+        // glTF/glb go through tinygltf (gltf::Load), which produces the same backend-agnostic ModelData.
+        // Everything else (OBJ/FBX/...) stays on Assimp below.
+        if (gltf::isGLTF(path))
+            return gltf::Load(path, gamma, flipUVs);
+
         ModelData model;
         model.gammaCorrection = gamma;
         model.flipUVs         = flipUVs;
