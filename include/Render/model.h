@@ -15,6 +15,7 @@
 #include "Render/API/IShader.h"
 #include "Render/API/IModel.h"
 #include "Render/Assets/ModelData.h"   // backend-agnostic CPU asset data (parse output)
+#include "Render/Assets/GLTFLoader.h"  // tinygltf path for .gltf/.glb (Assimp handles the rest)
 
 #include <string>
 #include <fstream>
@@ -190,7 +191,7 @@ private:
         m_streaming = true;
         meshes.reserve(m_data.meshes.size());
         for (const MeshData &md : m_data.meshes)
-            meshes.emplace_back(md.vertices.size(), md.indices.size(), MeshStreamTag{});
+            meshes.emplace_back(md.vertices.size(), md.indices.size(), md.baseColor, MeshStreamTag{});
         m_texPool.reserve(m_data.textures.size());
         m_texCursor = 0;
     }
@@ -226,7 +227,7 @@ private:
             meshTextures.reserve(m.textureIndices.size());
             for (int idx : m.textureIndices)
                 if (idx >= 0 && idx < (int)pool.size()) meshTextures.push_back(pool[idx]);
-            meshes.emplace_back(std::move(m.vertices), std::move(m.indices), std::move(meshTextures));
+            meshes.emplace_back(std::move(m.vertices), std::move(m.indices), std::move(meshTextures), m.baseColor);
         }
     }
 
@@ -236,6 +237,11 @@ public:
     // for texture pixels. Touches no graphics API. The result is uploaded later via Model(ModelData&&).
     static ModelData parse(string const &path, bool gamma = false, bool flipUVs = false)
     {
+        // glTF/glb go through tinygltf (gltf::Load), which produces the same backend-agnostic ModelData.
+        // Everything else (OBJ/FBX/...) stays on Assimp below.
+        if (gltf::isGLTF(path))
+            return gltf::Load(path, gamma, flipUVs);
+
         ModelData model;
         model.gammaCorrection = gamma;
         model.flipUVs         = flipUVs;
@@ -322,6 +328,12 @@ private:
         // materials -> texture pool indices. Sampler-name convention: texture_diffuseN / _specularN /
         // _normalN / _heightN (N assigned at bind time in Mesh::bindTextures).
         aiMaterial *material = scene->mMaterials[mesh->mMaterialIndex];
+
+        // Flat diffuse color factor — used when the mesh has no diffuse map (multiplied with the map
+        // otherwise, white = no-op). Mirrors the glTF baseColorFactor path; stays white if unset.
+        aiColor4D diffuseColor;
+        if (aiGetMaterialColor(material, AI_MATKEY_COLOR_DIFFUSE, &diffuseColor) == AI_SUCCESS)
+            out.baseColor = glm::vec3(diffuseColor.r, diffuseColor.g, diffuseColor.b);
 
         // 1. diffuse / base color (glTF & FBX expose base color under BASE_COLOR)
         vector<int> diffuse = loadMaterialTextures(material, aiTextureType_DIFFUSE, "texture_diffuse", model);

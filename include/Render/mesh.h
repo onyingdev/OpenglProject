@@ -35,15 +35,19 @@ public:
     vector<Vertex>       vertices;
     vector<unsigned int> indices;
     vector<Texture>      textures;
+    glm::vec3            baseColor{1.0f};   // flat material color; set as the "baseColor" uniform at draw
+                                            // time and multiplied with the diffuse map (white = no-op)
     unsigned int VAO = 0;
 
     // constructor — full (synchronous) upload. Move the vectors in (they're already owned rvalues from
     // the loader); copying them here was a wasted multi-MB memcpy on the upload frame.
-    Mesh(vector<Vertex> vertices, vector<unsigned int> indices, vector<Texture> textures)
+    Mesh(vector<Vertex> vertices, vector<unsigned int> indices, vector<Texture> textures,
+         glm::vec3 baseColor = glm::vec3(1.0f))
     {
-        this->vertices = std::move(vertices);
-        this->indices  = std::move(indices);
-        this->textures = std::move(textures);
+        this->vertices  = std::move(vertices);
+        this->indices   = std::move(indices);
+        this->textures  = std::move(textures);
+        this->baseColor = baseColor;
 
         // now that we have all the required data, set the vertex buffers and its attribute pointers.
         setupMesh();
@@ -52,8 +56,9 @@ public:
     // Streamed constructor — allocate VBO/EBO sized for the geometry but DON'T upload yet; the data is
     // fed later via uploadGeometryStep() across frames. `textures` stays empty until the owning Model
     // finishes uploading its texture pool and assigns them. Used by the async streamed-upload path.
-    Mesh(size_t vertexCount, size_t indexCount, MeshStreamTag)
+    Mesh(size_t vertexCount, size_t indexCount, glm::vec3 baseColor, MeshStreamTag)
     {
+        this->baseColor = baseColor;
         setupMeshStreamed(vertexCount, indexCount);
     }
 
@@ -65,7 +70,8 @@ public:
 
     Mesh(Mesh&& o) noexcept
         : vertices(std::move(o.vertices)), indices(std::move(o.indices)),
-          textures(std::move(o.textures)), VAO(o.VAO), VBO(o.VBO), EBO(o.EBO), instanceVBO(o.instanceVBO),
+          textures(std::move(o.textures)), baseColor(o.baseColor),
+          VAO(o.VAO), VBO(o.VBO), EBO(o.EBO), instanceVBO(o.instanceVBO),
           m_indexCount(o.m_indexCount), m_vboBytes(o.m_vboBytes), m_eboBytes(o.m_eboBytes),
           m_vboCursor(o.m_vboCursor), m_eboCursor(o.m_eboCursor)
     {
@@ -75,9 +81,10 @@ public:
     {
         if (this != &o) {
             release();
-            vertices = std::move(o.vertices);
-            indices  = std::move(o.indices);
-            textures = std::move(o.textures);
+            vertices  = std::move(o.vertices);
+            indices   = std::move(o.indices);
+            textures  = std::move(o.textures);
+            baseColor = o.baseColor;
             VAO = o.VAO; VBO = o.VBO; EBO = o.EBO; instanceVBO = o.instanceVBO;
             m_indexCount = o.m_indexCount;
             m_vboBytes = o.m_vboBytes; m_eboBytes = o.m_eboBytes;
@@ -123,6 +130,7 @@ public:
     // render the mesh (single instance, model matrix supplied via the shader's `model` uniform)
     void Draw(IShader &shader) override
     {
+        shader.setVec3("baseColor", baseColor.x, baseColor.y, baseColor.z);
         bindTextures(shader);
         glBindVertexArray(VAO);
         glDrawElements(GL_TRIANGLES, m_indexCount, GL_UNSIGNED_INT, 0);
@@ -155,6 +163,7 @@ public:
         glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
         glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)count * (GLsizeiptr)sizeof(glm::mat4), mats, GL_DYNAMIC_DRAW);
 
+        shader.setVec3("baseColor", baseColor.x, baseColor.y, baseColor.z);
         bindTextures(shader);
         glDrawElementsInstanced(GL_TRIANGLES, m_indexCount, GL_UNSIGNED_INT, 0, count);
         glBindVertexArray(0);
@@ -199,6 +208,42 @@ private:
             // and finally bind the texture
             glBindTexture(GL_TEXTURE_2D, textures[i].id);
         }
+
+        // Fallback bindings: if this mesh has no diffuse/specular map, point that sampler at a 1x1
+        // default instead of leaving it reading whatever texture the PREVIOUS mesh bound to the unit
+        // (the "untextured surface shows another object's texture" leak). White diffuse is a no-op
+        // against the baseColor multiply; black specular suppresses phantom highlights on flat meshes.
+        unsigned int unit = (unsigned int)textures.size();
+        if (diffuseNr == 1) {
+            glActiveTexture(GL_TEXTURE0 + unit);
+            glBindTexture(GL_TEXTURE_2D, defaultTexture(/*white=*/true));
+            shader.setInt("texture_diffuse1", (int)unit);
+            ++unit;
+        }
+        if (specularNr == 1) {
+            glActiveTexture(GL_TEXTURE0 + unit);
+            glBindTexture(GL_TEXTURE_2D, defaultTexture(/*white=*/false));
+            shader.setInt("texture_specular1", (int)unit);
+            ++unit;
+        }
+    }
+
+    // Process-lifetime 1x1 fallback textures (white / black), created on first use on the GL thread and
+    // shared by every mesh. Never freed — 1x1 each, and they must outlive all meshes regardless.
+    static unsigned int defaultTexture(bool white)
+    {
+        static unsigned int whiteTex = 0, blackTex = 0;
+        unsigned int& tex = white ? whiteTex : blackTex;
+        if (tex == 0) {
+            const unsigned char v = white ? 255 : 0;
+            const unsigned char px[4] = { v, v, v, 255 };
+            glGenTextures(1, &tex);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        }
+        return tex;
     }
 
     void release()

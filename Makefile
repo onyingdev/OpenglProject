@@ -15,6 +15,10 @@ OPENMP = -fopenmp
 # (-isystem also silences warnings originating in third-party headers.)
 INCLUDES = -I. -Iinclude -isystem vendor/glad -isystem vendor/glm -isystem vendor/GLFW/include -isystem vendor/json
 
+# Extra include root for the glTF loader TU only: lets tiny_gltf.h find itself + its bundled json.hpp.
+# Kept off the shared INCLUDES so its json.hpp / stb_image.h can't shadow the engine's elsewhere.
+TINYGLTF_INC = -isystem vendor/tinyglTF/tinygltf-release
+
 # === Output layout ===
 # Objects build into build/lib, the executable into build/. Change NAME to rename the
 # binary (the .exe suffix is added automatically on Windows).
@@ -29,6 +33,7 @@ ASSET_LOADER  = src/Core/lib_asset_loader.cpp
 INPUT_MANAGER = src/Core/input_manager.cpp
 GL_RENDERER   = src/Render/OpenGLRenderer.cpp
 GO_LOADER     = src/Core/GameObjectLoader.cpp
+GLTF_LOADER   = src/Core/gltf_loader.cpp
 
 # === Platform-specific settings ===
 ifeq ($(OS),Windows_NT)
@@ -49,7 +54,8 @@ endif
 
 # === Objects (all under $(OBJDIR)) ===
 OBJS = $(OBJDIR)/main.o $(OBJDIR)/glad.o $(OBJDIR)/shader_s.o $(OBJDIR)/lib_asset_loader.o \
-       $(OBJDIR)/input_manager.o $(OBJDIR)/OpenGLRenderer.o $(OBJDIR)/GameObjectLoader.o
+       $(OBJDIR)/input_manager.o $(OBJDIR)/OpenGLRenderer.o $(OBJDIR)/GameObjectLoader.o \
+       $(OBJDIR)/gltf_loader.o
 
 # === Build rules ===
 .PHONY: all recompile clean
@@ -74,6 +80,11 @@ $(OBJDIR)/OpenGLRenderer.o: $(GL_RENDERER) | $(OBJDIR)
 
 $(OBJDIR)/GameObjectLoader.o: $(GO_LOADER) | $(OBJDIR)
 	g++ $(OPENMP) $(INCLUDES) -c $< -o $@
+
+# The glTF loader gets the extra tinygltf include root; tiny_gltf.h's implementation is heavy so this
+# object is large/slow to compile, but it only rebuilds when gltf_loader.cpp itself changes.
+$(OBJDIR)/gltf_loader.o: $(GLTF_LOADER) | $(OBJDIR)
+	g++ $(INCLUDES) $(TINYGLTF_INC) -c $< -o $@
 
 $(OBJDIR)/glad.o: $(GLAD) | $(OBJDIR)
 	gcc $(INCLUDES) -c $< -o $@

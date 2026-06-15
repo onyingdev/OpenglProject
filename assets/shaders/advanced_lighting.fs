@@ -50,6 +50,11 @@ uniform sampler2D texture_diffuse1;
 uniform sampler2D texture_specular1;
 uniform float shininess;
 
+// Flat material color, multiplied with the diffuse map. Set per-mesh by Mesh::Draw/DrawInstanced and
+// defaults to white there, so textured meshes are unaffected; untextured meshes (which bind a 1x1 white
+// default diffuse) shade in this color instead of sampling a stale neighbor texture.
+uniform vec3 baseColor;
+
 uniform vec3 viewPos;
 uniform DirLight dirLight;
 uniform PointLight pointLights[NR_POINT_LIGHTS];
@@ -73,7 +78,7 @@ void main()
     vec3 viewDir = normalize(viewPos - FragPos);
 
     // Sample the material maps once; reuse for every light this fragment.
-    vec3 albedo  = vec3(texture(texture_diffuse1, TexCoords));
+    vec3 albedo  = baseColor * vec3(texture(texture_diffuse1, TexCoords));
     vec3 specMap = vec3(texture(texture_specular1, TexCoords));
 
     // == =====================================================
