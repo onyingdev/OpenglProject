@@ -67,6 +67,7 @@ uniform float normalScale;
 uniform float baseColorAlpha;
 uniform int   alphaMode;
 uniform float alphaCutoff;
+uniform int   doubleSided;   // 1 = flip the normal on back faces so both sides light correctly
 
 uniform vec3 viewPos;
 uniform DirLight dirLight;
@@ -87,6 +88,9 @@ const float MAX_REFLECTION_LOD = 4.0;   // prefilterMap has 5 mips (0..4 -> roug
 vec3 getNormal()
 {
     vec3 N = normalize(Normal);
+    // Double-sided materials are lit from both sides: on a back-facing fragment the interpolated normal
+    // points away from the viewer, so flip it (and the TBN built from it below) to face us.
+    if (doubleSided == 1 && !gl_FrontFacing) N = -N;
     // Re-orthonormalize the tangent against N (Gram-Schmidt). If there's no usable tangent frame
     // (asset without tangents/UVs -> Tangent ~ 0, or tangent parallel to N), skip normal mapping and
     // use the geometric normal — otherwise normalize() of a zero vector yields NaN and the surface

@@ -50,6 +50,7 @@ public:
     float                baseColorAlpha = 1.0f;
     int                  alphaMode = 0;
     float                alphaCutoff = 0.5f;
+    bool                 doubleSided = false;   // glTF: light both faces (shader flips back-face normals)
     unsigned int VAO = 0;
 
     // constructor — full (synchronous) upload. Move the vectors in (they're already owned rvalues from
@@ -87,6 +88,7 @@ public:
           metallic(o.metallic), roughness(o.roughness), emissiveFactor(o.emissiveFactor),
           occlusionStrength(o.occlusionStrength), normalScale(o.normalScale),
           baseColorAlpha(o.baseColorAlpha), alphaMode(o.alphaMode), alphaCutoff(o.alphaCutoff),
+          doubleSided(o.doubleSided),
           VAO(o.VAO), VBO(o.VBO), EBO(o.EBO), instanceVBO(o.instanceVBO),
           m_indexCount(o.m_indexCount), m_vboBytes(o.m_vboBytes), m_eboBytes(o.m_eboBytes),
           m_vboCursor(o.m_vboCursor), m_eboCursor(o.m_eboCursor)
@@ -104,6 +106,7 @@ public:
             metallic = o.metallic; roughness = o.roughness; emissiveFactor = o.emissiveFactor;
             occlusionStrength = o.occlusionStrength; normalScale = o.normalScale;
             baseColorAlpha = o.baseColorAlpha; alphaMode = o.alphaMode; alphaCutoff = o.alphaCutoff;
+            doubleSided = o.doubleSided;
             VAO = o.VAO; VBO = o.VBO; EBO = o.EBO; instanceVBO = o.instanceVBO;
             m_indexCount = o.m_indexCount;
             m_vboBytes = o.m_vboBytes; m_eboBytes = o.m_eboBytes;
@@ -209,6 +212,7 @@ private:
         shader.setFloat("baseColorAlpha",    baseColorAlpha);
         shader.setInt  ("alphaMode",         alphaMode);
         shader.setFloat("alphaCutoff",       alphaCutoff);
+        shader.setInt  ("doubleSided",       doubleSided ? 1 : 0);
     }
 
     // render data

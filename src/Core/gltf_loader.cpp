@@ -269,6 +269,7 @@ void processPrimitive(const tinygltf::Model& gm, const tinygltf::Primitive& prim
         // Alpha handling: OPAQUE (ignore alpha) / MASK (cutout at alphaCutoff) / BLEND (alpha blend).
         md.alphaMode   = (mat.alphaMode == "MASK") ? 1 : (mat.alphaMode == "BLEND") ? 2 : 0;
         md.alphaCutoff = (float)mat.alphaCutoff;
+        md.doubleSided = mat.doubleSided;   // light both faces (shader flips back-face normals)
         if (mat.emissiveFactor.size() == 3)
             md.emissiveFactor = glm::vec3((float)mat.emissiveFactor[0], (float)mat.emissiveFactor[1],
                                           (float)mat.emissiveFactor[2]);

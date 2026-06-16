@@ -64,6 +64,9 @@ struct MeshData {
     float                     baseColorAlpha    = 1.0f;
     int                       alphaMode         = 0;
     float                     alphaCutoff       = 0.5f;
+    // glTF doubleSided: when true the mesh is lit from both sides (the shader flips the normal on back
+    // faces). When false, back faces keep their (away-facing) normal as before.
+    bool                      doubleSided       = false;
 };
 
 // A whole model as parsed from disk: every mesh, plus a de-duplicated texture pool the meshes index

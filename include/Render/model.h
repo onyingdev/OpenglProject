@@ -248,6 +248,7 @@ private:
         mesh.baseColorAlpha    = md.baseColorAlpha;
         mesh.alphaMode         = md.alphaMode;
         mesh.alphaCutoff       = md.alphaCutoff;
+        mesh.doubleSided       = md.doubleSided;
     }
 
 public:
