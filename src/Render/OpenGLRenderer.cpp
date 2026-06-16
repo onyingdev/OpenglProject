@@ -1,11 +1,25 @@
 #include "Render/GL/OpenGLRenderer.h"
 #include "Render/API/IModel.h"   // complete type needed to call IModel::Draw
 #include "Core/Engine/Profiling/Profiler.h"   // GPU timer-query subsections (gpu.frame/flush/resolve/present)
+#include "Render/CubemapCache.h"              // shared cube-map loader (skybox + per-object env maps)
+#include "Render/IblProbeCache.h"             // on-demand IBL bakes shared per environment cube map
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 #include <vector>
+#include <array>
 #include <iostream>
 #include <string>
+
+// Display-space sRGB colors that must be linearized before the linear lit pass (the present pass
+// re-encodes gamma). Used for the UNLIT object + debug-gizmo colors. Light radiance is NOT run through
+// this: a light's color/intensity is authored as linear radiance, and sRGB-decoding it would crush
+// sub-1 intensities (e.g. a 0.30 "sun" -> 0.07) and make the scene far too dark under PBR's albedo/π.
+namespace {
+    inline float srgbChannelToLinear(float c) { c = (c < 0.0f) ? 0.0f : c; return (float)std::pow(c, 2.2f); }
+    inline glm::vec3 srgbToLinear(const glm::vec3& c) {
+        return glm::vec3(srgbChannelToLinear(c.x), srgbChannelToLinear(c.y), srgbChannelToLinear(c.z));
+    }
+}
 
 OpenGLRenderer::OpenGLRenderer(GLADloadproc loader) : m_loader(loader) {}
 
@@ -19,6 +33,9 @@ OpenGLRenderer::~OpenGLRenderer() {
     if (m_wireSphereVao) glDeleteVertexArrays(1, &m_wireSphereVao);
     if (m_lineVbo)       glDeleteBuffers(1, &m_lineVbo);
     if (m_lineVao)       glDeleteVertexArrays(1, &m_lineVao);
+    if (m_skyboxTex)     glDeleteTextures(1, &m_skyboxTex);
+    if (m_skyboxVbo)     glDeleteBuffers(1, &m_skyboxVbo);
+    if (m_skyboxVao)     glDeleteVertexArrays(1, &m_skyboxVao);
 }
 
 bool OpenGLRenderer::init(int fbW, int fbH) {
@@ -34,13 +51,23 @@ bool OpenGLRenderer::init(int fbW, int fbH) {
 
     glEnable(GL_DEPTH_TEST);
     glDisable(GL_MULTISAMPLE);   // the multisample FBO drives AA, not global state
+    glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);   // smooth IBL convolution / prefilter across cube faces
 
-    // Built-in shaders (the GL backend owns them; RenderItems pick a material, not a shader).
-    m_lit   = std::make_unique<Shader>("assets/shaders/advanced_lighting.vs", "assets/shaders/advanced_lighting.fs");
-    // Same lighting fragment shader, but the vertex stage reads the model matrix from a per-instance
+    // Built-in shaders (the GL backend owns them; RenderItems pick a material, not a shader). "Lit" is
+    // now PBR (Cook-Torrance metallic-roughness); m_lit handles single/wireframe draws.
+    m_lit   = std::make_unique<Shader>("assets/shaders/pbr.vs", "assets/shaders/pbr.fs");
+    // Same PBR fragment shader, but the vertex stage reads the model matrix from a per-instance
     // attribute, so many identical models draw in one glDrawElementsInstanced instead of one call each.
-    m_litInstanced = std::make_unique<Shader>("assets/shaders/advanced_lighting_instanced.vs", "assets/shaders/advanced_lighting.fs");
+    m_litInstanced = std::make_unique<Shader>("assets/shaders/pbr_instanced.vs", "assets/shaders/pbr.fs");
     m_unlit = std::make_unique<Shader>("assets/shaders/light_s.vs",           "assets/shaders/light_s.fs");
+    // IBL sampler units are fixed (10/11/12); set once on both lit programs. flushOpaqueBatches binds
+    // the actual irradiance/prefilter per (model,env) group + the shared BRDF LUT, and toggles hasIBL.
+    for (Shader* s : { m_lit.get(), m_litInstanced.get() }) {
+        s->use();
+        s->setInt("irradianceMap", 10);
+        s->setInt("prefilterMap",  11);
+        s->setInt("brdfLUT",       12);
+    }
     m_post  = std::make_unique<Shader>("assets/shaders/msaa_post.vs",         "assets/shaders/msaa_post.fs");
     m_post->use();
     m_post->setInt("screenTexture", 0);
@@ -52,6 +79,13 @@ bool OpenGLRenderer::init(int fbW, int fbH) {
     buildQuad();
     buildDebugGeometry();
     buildTargets();
+    buildSkybox();   // honors m_settings.skybox (set by applySettings before init); disables itself on failure
+    // Warm up the scene-default IBL probe + the shared BRDF LUT from the skybox so frame 1 isn't hitched.
+    // Per-object probes bake lazily on first use (IblProbeCache, keyed by env cube). No-op without a skybox.
+    if (m_skyboxTex) {
+        IblProbeCache::instance().get(m_skyboxTex);
+        IblProbeCache::instance().brdfLUT();
+    }
     return true;
 }
 
@@ -138,6 +172,68 @@ void OpenGLRenderer::buildDebugGeometry() {
     glBindVertexArray(0);
 }
 
+// Skybox cube map: delegate to the shared loader. The renderer OWNS this texture (deletes it in the
+// dtor), so it uses the uncached loadCubemapGL — distinct from per-object reflective maps, which come
+// from CubemapCache::get and are owned/freed by the cache on scene unload.
+GLuint OpenGLRenderer::loadCubemap(const std::array<std::string, 6>& faces) {
+    return CubemapCache::loadCubemapGL(faces);
+}
+
+// Build the skybox cube VAO + shader and load the configured cubemap. No-op if disabled; if the
+// cubemap fails to load, the skybox is turned off so the rest of the frame still renders.
+void OpenGLRenderer::buildSkybox() {
+    if (!m_settings.skybox.enabled) return;
+
+    // Unit cube, position only (the position is also the cube-map sample direction). 36 verts.
+    static const float verts[] = {
+        -1,  1, -1,  -1, -1, -1,   1, -1, -1,   1, -1, -1,   1,  1, -1,  -1,  1, -1,
+        -1, -1,  1,  -1, -1, -1,  -1,  1, -1,  -1,  1, -1,  -1,  1,  1,  -1, -1,  1,
+         1, -1, -1,   1, -1,  1,   1,  1,  1,   1,  1,  1,   1,  1, -1,   1, -1, -1,
+        -1, -1,  1,  -1,  1,  1,   1,  1,  1,   1,  1,  1,   1, -1,  1,  -1, -1,  1,
+        -1,  1, -1,   1,  1, -1,   1,  1,  1,   1,  1,  1,  -1,  1,  1,  -1,  1, -1,
+        -1, -1, -1,  -1, -1,  1,   1, -1, -1,   1, -1, -1,  -1, -1,  1,   1, -1,  1
+    };
+    glGenVertexArrays(1, &m_skyboxVao);
+    glGenBuffers(1, &m_skyboxVbo);
+    glBindVertexArray(m_skyboxVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_skyboxVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glBindVertexArray(0);
+
+    m_skybox = std::make_unique<Shader>("assets/shaders/skybox.vs", "assets/shaders/skybox.fs");
+    m_skybox->use();
+    m_skybox->setInt("skybox", 0);
+
+    m_skyboxTex = loadCubemap(m_settings.skybox.faces);
+    if (!m_skyboxTex) {
+        std::cerr << "OpenGLRenderer: skybox disabled (cubemap failed to load)\n";
+        m_settings.skybox.enabled = false;
+    }
+}
+
+// Draw the environment behind everything: depth test LEQUAL (the skybox vertex stage forces depth=1),
+// camera view with translation stripped so it never moves relative to the camera. Called in endScene
+// while the scene FBO is still bound, after the opaque flush, so it only fills un-covered pixels.
+void OpenGLRenderer::drawSkybox() {
+    // `enabled` governs loading + the IBL bake; `drawBackground` governs only the visible background cube.
+    // enabled:true + drawBackground:false = no background, IBL reflections/ambient still active.
+    if (!m_settings.skybox.enabled || !m_settings.skybox.drawBackground || !m_skyboxTex) return;
+
+    glDepthFunc(GL_LEQUAL);
+    m_skybox->use();
+    const glm::mat4 viewNoTrans = glm::mat4(glm::mat3(m_camera.view));   // drop translation
+    m_skybox->setMat4("view", viewNoTrans);
+    m_skybox->setMat4("projection", m_camera.projection);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, m_skyboxTex);
+    glBindVertexArray(m_skyboxVao);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+    glBindVertexArray(0);
+    glDepthFunc(GL_LESS);   // restore default for the next frame's geometry
+}
+
 void OpenGLRenderer::destroyTargets() {
     if (m_sceneDepth)   { glDeleteRenderbuffers(1, &m_sceneDepth); m_sceneDepth = 0; }
     if (m_sceneColor)   { glDeleteTextures(1, &m_sceneColor);      m_sceneColor = 0; }
@@ -161,7 +257,9 @@ void OpenGLRenderer::buildTargets() {
         // Multisample color texture + matching multisample depth renderbuffer.
         glGenTextures(1, &m_sceneColor);
         glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, m_sceneColor);
-        glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, samples, GL_RGB, rw, rh, GL_TRUE);
+        // RGBA16F (HDR): linear lighting stored at float precision so smooth gradients don't band when
+        // the present pass gamma-stretches the darks. RGBA (not RGB) — RGB16F isn't always renderable.
+        glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, samples, GL_RGBA16F, rw, rh, GL_TRUE);
         glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, m_sceneColor, 0);
 
@@ -178,7 +276,7 @@ void OpenGLRenderer::buildTargets() {
         glBindFramebuffer(GL_FRAMEBUFFER, m_resolveFbo);
         glGenTextures(1, &m_resolveColor);
         glBindTexture(GL_TEXTURE_2D, m_resolveColor);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rw, rh, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, rw, rh, 0, GL_RGBA, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_resolveColor, 0);
@@ -187,10 +285,11 @@ void OpenGLRenderer::buildTargets() {
 
         m_presentTex = m_resolveColor;
     } else {
-        // No MSAA: single-sample color texture sampled directly by the present pass.
+        // No MSAA: single-sample color texture sampled directly by the present pass. RGBA16F (HDR) so
+        // linear lighting keeps float precision until the present pass encodes gamma (avoids dark banding).
         glGenTextures(1, &m_sceneColor);
         glBindTexture(GL_TEXTURE_2D, m_sceneColor);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rw, rh, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, rw, rh, 0, GL_RGBA, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_sceneColor, 0);
@@ -228,13 +327,13 @@ void OpenGLRenderer::uploadCamera(Shader& sh) {
     sh.setMat4("view", m_camera.view);
     sh.setMat4("projection", m_camera.projection);
     sh.setVec3("viewPos", m_camera.position.x, m_camera.position.y, m_camera.position.z);
-    sh.setFloat("shininess", 32.0f);   // viewPos/shininess are no-ops on the unlit shader (cached -1)
+    // (viewPos is a no-op on the unlit shader — cached -1.)
 }
 
 void OpenGLRenderer::uploadLights(Shader& sh) {
     sh.use();
 
-    // Directional "sun".
+    // Directional "sun" — radiance is authored linear, uploaded as-is.
     sh.setVec3("dirLight.direction", m_lights.dir.direction.x, m_lights.dir.direction.y, m_lights.dir.direction.z);
     sh.setVec3("dirLight.ambient",   m_lights.dir.ambient.x,   m_lights.dir.ambient.y,   m_lights.dir.ambient.z);
     sh.setVec3("dirLight.diffuse",   m_lights.dir.diffuse.x,   m_lights.dir.diffuse.y,   m_lights.dir.diffuse.z);
@@ -290,10 +389,12 @@ void OpenGLRenderer::beginScene(const CameraView& cam) {
     glBindFramebuffer(GL_FRAMEBUFFER, m_sceneFbo);
     glViewport(0, 0, m_settings.renderWidth, m_settings.renderHeight);
     glEnable(GL_DEPTH_TEST);
-    glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
+    const glm::vec4& bg = m_settings.backgroundColor;
+    glClearColor(bg.r, bg.g, bg.b, bg.a);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // New frame of deferred lit submissions.
+    // New frame of deferred lit submissions. IBL probes are bound per (model,env) group in
+    // flushOpaqueBatches (the env varies per group), not globally here.
     m_batches.clear();
     m_batchesFlushed = false;
 
@@ -314,19 +415,25 @@ void OpenGLRenderer::setLights(const LightSet& lights) {
 void OpenGLRenderer::submit(const RenderItem& item) {
     if (!item.model) return;
 
-    // Opaque lit meshes are DEFERRED and grouped by model, then drawn instanced in flushOpaqueBatches()
-    // — one glDrawElementsInstanced per model instead of one draw call per object. Unlit (lamps) and
-    // wireframe items are rare and stay on the immediate path below.
+    // Opaque lit meshes are DEFERRED and grouped by (model, environment cube), then drawn instanced in
+    // flushOpaqueBatches() — one glDrawElementsInstanced per group instead of one draw call per object.
+    // envCubemap 0 = the scene-default skybox probe; a per-object cube map gives its own IBL probe.
+    // Unlit (lamps) and wireframe items are rare and stay on the immediate path below.
     if (item.material == MaterialKind::Lit && !item.wireframe) {
-        m_batches[item.model].push_back(item.modelMatrix);
+        LitBatch& b = m_batches[item.model][(GLuint)item.envCubemap];
+        b.instances.push_back(item.modelMatrix);
+        b.iblDiffuse  = item.iblDiffuse;   // consistent per (model,env): same cubemap -> same intensities
+        b.iblSpecular = item.iblSpecular;
         return;
     }
 
     Shader* sh = (item.material == MaterialKind::Lit) ? m_lit.get() : m_unlit.get();
     sh->use();
     sh->setMat4("model", item.modelMatrix);
-    if (item.material == MaterialKind::Unlit)
-        sh->setVec3("lightColor", item.unlitColor.x, item.unlitColor.y, item.unlitColor.z);
+    if (item.material == MaterialKind::Unlit) {
+        const glm::vec3 c = srgbToLinear(item.unlitColor);   // present pass re-encodes gamma for display
+        sh->setVec3("lightColor", c.x, c.y, c.z);
+    }
 
     if (item.wireframe) {
         glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -337,9 +444,10 @@ void OpenGLRenderer::submit(const RenderItem& item) {
     }
 }
 
-// Draw all deferred lit meshes, one instanced call per distinct model. Idempotent per frame: the first
-// of (debug draw / endScene) flushes, the rest are no-ops — so meshes always land before debug
-// wireframes and the present pass, preserving draw order (all opaque + depth-tested anyway).
+// Draw all deferred lit meshes, one instanced call per (model, environment) group. Each group binds its
+// own IBL probe (irradiance/prefilter) so objects can reflect different environments while staying
+// instanced; env 0 uses the scene-default skybox probe. Idempotent per frame: the first of (debug draw /
+// endScene) flushes, the rest are no-ops — meshes land before debug wireframes and the present pass.
 void OpenGLRenderer::flushOpaqueBatches() {
     if (m_batchesFlushed) return;
     m_batchesFlushed = true;
@@ -348,9 +456,87 @@ void OpenGLRenderer::flushOpaqueBatches() {
     PROFILE_GPU_DETAIL("gpu.flush");   // GPU time for the instanced draws
     PROFILE_CPU_DETAIL("cpu.flush");   // CPU time to upload matrices + issue the draw calls
 
+    IblProbeCache& ibl = IblProbeCache::instance();
+
+    // Pre-bake every probe this frame needs + the shared BRDF LUT (each bake switches FBO/viewport
+    // internally), THEN rebind the scene target. env 0 resolves to the scene skybox; a group whose env
+    // doesn't resolve to a cube gets no probe (hemisphere fallback). Baking is one-time per environment.
+    // Iterates batch groups (not meshes), so a blend-only model's env still bakes here for the
+    // transparent flush. m_frameBrdfLUT is stashed for that second pass.
+    bool anyEnv = false;
+    for (auto& [model, byEnv] : m_batches)
+        for (auto& [env, batch] : byEnv) {
+            const GLuint cube = env ? env : m_skyboxTex;
+            if (cube) { ibl.get(cube); anyEnv = true; }
+        }
+    m_frameBrdfLUT = anyEnv ? ibl.brdfLUT() : 0;   // env-independent; may bake here (before rebind)
+
+    glBindFramebuffer(GL_FRAMEBUFFER, m_sceneFbo);
+    glViewport(0, 0, m_settings.renderWidth, m_settings.renderHeight);
+
+    // Shared BRDF LUT at unit 12 for the whole flush.
+    if (m_frameBrdfLUT) { glActiveTexture(GL_TEXTURE0 + 12); glBindTexture(GL_TEXTURE_2D, m_frameBrdfLUT); }
+
     m_litInstanced->use();
-    for (auto& [model, matrices] : m_batches)
-        model->DrawInstanced(*m_litInstanced, matrices.data(), (int)matrices.size());
+    for (auto& [model, byEnv] : m_batches)
+        for (auto& [env, batch] : byEnv) {
+            bindIBLForEnv(env, m_frameBrdfLUT);
+            bindIBLIntensities(env, batch);
+            model->DrawInstanced(*m_litInstanced, batch.instances.data(), (int)batch.instances.size(), MaterialPass::Opaque);
+        }
+}
+
+// Set the per-group IBL contribution multipliers on the instanced program: env 0 (scene skybox) takes the
+// skybox config, a per-object cube map takes its cubemap.json values (carried on the batch).
+void OpenGLRenderer::bindIBLIntensities(GLuint env, const LitBatch& batch) {
+    const float d = env ? batch.iblDiffuse  : m_settings.skybox.diffuse;
+    const float s = env ? batch.iblSpecular : m_settings.skybox.specular;
+    m_litInstanced->setFloat("iblDiffuse",  d);
+    m_litInstanced->setFloat("iblSpecular", s);
+}
+
+// Bind a batch environment's IBL probe (irradiance/prefilter -> units 10/11) and toggle hasIBL on the
+// instanced program. env 0 resolves to the scene skybox; the shared BRDF LUT (unit 12) is bound by the
+// caller once per pass. Probes are already baked by flushOpaqueBatches' pre-bake, so get() is a cache hit.
+void OpenGLRenderer::bindIBLForEnv(GLuint env, GLuint brdf) {
+    const GLuint cube = env ? env : m_skyboxTex;
+    const bool hasIBL = (cube != 0) && (brdf != 0);
+    if (hasIBL) {
+        const IblProbeCache::Probe& p = IblProbeCache::instance().get(cube);
+        glActiveTexture(GL_TEXTURE0 + 10); glBindTexture(GL_TEXTURE_CUBE_MAP, p.irradiance);
+        glActiveTexture(GL_TEXTURE0 + 11); glBindTexture(GL_TEXTURE_CUBE_MAP, p.prefilter);
+        glActiveTexture(GL_TEXTURE0);
+    }
+    m_litInstanced->setInt("hasIBL", hasIBL ? 1 : 0);
+}
+
+// Second opaque-flush sibling: draw the BLEND meshes of every batch, alpha-blended over the already-drawn
+// opaque geometry + skybox, into the HDR scene FBO (before resolve/tonemap). Depth-test on, depth-write
+// off; no global back-to-front sort (correct for single-layer transparency — see the Phase 4 notes).
+void OpenGLRenderer::flushTransparentBatches() {
+    if (m_batches.empty()) return;
+
+    PROFILE_GPU_DETAIL("gpu.transparent");
+    PROFILE_CPU_DETAIL("cpu.transparent");
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);    // test against opaque depth, but don't write (translucent surfaces)
+    glDepthFunc(GL_LEQUAL);   // draw over COINCIDENT opaque depth too (clearcoat shell over paint)
+
+    if (m_frameBrdfLUT) { glActiveTexture(GL_TEXTURE0 + 12); glBindTexture(GL_TEXTURE_2D, m_frameBrdfLUT); }
+
+    m_litInstanced->use();
+    for (auto& [model, byEnv] : m_batches)
+        for (auto& [env, batch] : byEnv) {
+            bindIBLForEnv(env, m_frameBrdfLUT);
+            bindIBLIntensities(env, batch);
+            model->DrawInstanced(*m_litInstanced, batch.instances.data(), (int)batch.instances.size(), MaterialPass::Transparent);
+        }
+
+    glDepthFunc(GL_LESS);    // restore default for the next frame
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
 }
 
 // --- debug primitives ---------------------------------------------------------
@@ -361,7 +547,8 @@ void OpenGLRenderer::drawWireBox(const glm::mat4& transform, const glm::vec3& co
     flushOpaqueBatches();   // meshes first, then gizmos on top
     m_unlit->use();
     m_unlit->setMat4("model", transform);
-    m_unlit->setVec3("lightColor", color.x, color.y, color.z);
+    const glm::vec3 wc = srgbToLinear(color);   // round-trips through the present gamma encode
+    m_unlit->setVec3("lightColor", wc.x, wc.y, wc.z);
     glBindVertexArray(m_wireCubeVao);
     glDrawArrays(GL_LINES, 0, 24);
     glBindVertexArray(0);
@@ -373,7 +560,8 @@ void OpenGLRenderer::drawWireSphere(const glm::vec3& center, float radius, const
                           * glm::scale(glm::mat4(1.0f), glm::vec3(radius));
     m_unlit->use();
     m_unlit->setMat4("model", model);
-    m_unlit->setVec3("lightColor", color.x, color.y, color.z);
+    const glm::vec3 sc = srgbToLinear(color);
+    m_unlit->setVec3("lightColor", sc.x, sc.y, sc.z);
     glBindVertexArray(m_wireSphereVao);
     glDrawArrays(GL_LINES, 0, m_wireSphereVerts);
     glBindVertexArray(0);
@@ -384,7 +572,8 @@ void OpenGLRenderer::drawLine(const glm::vec3& a, const glm::vec3& b, const glm:
     const float verts[6] = { a.x, a.y, a.z, b.x, b.y, b.z };
     m_unlit->use();
     m_unlit->setMat4("model", glm::mat4(1.0f));   // endpoints are already world-space
-    m_unlit->setVec3("lightColor", color.x, color.y, color.z);
+    const glm::vec3 lc = srgbToLinear(color);
+    m_unlit->setVec3("lightColor", lc.x, lc.y, lc.z);
     glBindVertexArray(m_lineVao);
     glBindBuffer(GL_ARRAY_BUFFER, m_lineVbo);
     glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(verts), verts);
@@ -393,7 +582,9 @@ void OpenGLRenderer::drawLine(const glm::vec3& a, const glm::vec3& b, const glm:
 }
 
 void OpenGLRenderer::endScene() {
-    flushOpaqueBatches();   // draw any deferred meshes not already flushed by a debug-draw call
+    flushOpaqueBatches();        // opaque + mask meshes (deferred; may already be flushed by a debug draw)
+    drawSkybox();                // fill un-covered pixels with the environment (scene FBO still bound)
+    flushTransparentBatches();   // BLEND meshes, blended over the opaque scene + skybox in linear HDR
 
     const int rw = m_settings.renderWidth;
     const int rh = m_settings.renderHeight;
@@ -435,11 +626,20 @@ void OpenGLRenderer::endScene() {
     // FXAA is a post-process AA: it samples the single-sample scene target in the
     // present pass and resolves edges. Any other mode (None / already-resolved MSAA)
     // just blits the texture through unchanged.
+    const float gamma = (m_settings.gamma > 0.01f) ? m_settings.gamma : 2.2f;   // floor avoids /0
+    const float exposure = m_settings.exposure;
+    const int   tonemap  = (int)m_settings.tonemap;   // matches the GLSL branch ids (see RenderSettings.h)
     if (m_settings.aa == AntiAliasing::FXAA) {
         m_fxaa->use();
         m_fxaa->setVec2("iResolution", (float)rw, (float)rh);
+        m_fxaa->setFloat("gamma", gamma);
+        m_fxaa->setFloat("exposure", exposure);
+        m_fxaa->setInt("tonemap", tonemap);
     } else {
         m_post->use();
+        m_post->setFloat("gamma", gamma);
+        m_post->setFloat("exposure", exposure);
+        m_post->setInt("tonemap", tonemap);
     }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_presentTex);

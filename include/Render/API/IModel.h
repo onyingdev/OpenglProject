@@ -3,6 +3,10 @@
 
 class IShader;
 
+// Which transparency pass a draw belongs to. A model splits its meshes by glTF alphaMode: OPAQUE/MASK
+// meshes draw in the Opaque pass, BLEND meshes in the (sorted/blended) Transparent pass.
+enum class MaterialPass { Opaque, Transparent };
+
 // Backend-agnostic model: a collection of meshes drawn together under one shader.
 // Loading (Assimp, etc.) and GPU upload live in the concrete backend; the engine
 // holds models only as IModel and draws them through this interface.
@@ -13,6 +17,13 @@ public:
 
     // Draw `count` copies in ONE instanced call, each transformed by its own matrix in `instances`.
     // The backend owns how the per-instance matrices reach the shader (a GL instance buffer here);
-    // the shader must read the model matrix from a per-instance attribute, not a uniform.
-    virtual void DrawInstanced(IShader& shader, const glm::mat4* instances, int count) = 0;
+    // the shader must read the model matrix from a per-instance attribute, not a uniform. `pass`
+    // selects which alpha class of meshes to draw (Opaque skips BLEND meshes, and vice versa).
+    virtual void DrawInstanced(IShader& shader, const glm::mat4* instances, int count,
+                               MaterialPass pass = MaterialPass::Opaque) = 0;
+
+    // Force every mesh's glTF `doubleSided` flag on/off. Used to override assets whose exporter omitted
+    // the flag (e.g. single-sided glass that should be lit from both faces). Default no-op for backends
+    // that don't model it. NOTE: models are shared (cached by path), so this affects all users of the model.
+    virtual void setDoubleSided(bool /*enabled*/) {}
 };

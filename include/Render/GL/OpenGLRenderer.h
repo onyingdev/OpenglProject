@@ -31,14 +31,29 @@ public:
     void drawLine(const glm::vec3& a, const glm::vec3& b, const glm::vec3& color) override;
 
 private:
+    // One (model, environment) instanced group: the per-instance matrices + how this environment's IBL
+    // contributes (from the cubemap.json; env 0 uses the skybox config). Consistent per group since the
+    // intensities come from the shared cubemap.
+    struct LitBatch {
+        std::vector<glm::mat4> instances;
+        float iblDiffuse  = 1.0f;
+        float iblSpecular = 1.0f;
+    };
+
     void buildTargets();    // (re)create scene/resolve FBOs for the current settings
     void destroyTargets();
     void buildQuad();       // fullscreen present quad (created once)
     void buildDebugGeometry();  // wire-cube + wire-sphere + dynamic line buffers (created once)
+    void buildSkybox();     // cube VAO + skybox shader + load the cubemap (once, in init; honors settings)
+    void drawSkybox();      // draw the environment cube behind the opaque scene (in endScene)
+    static GLuint loadCubemap(const std::array<std::string, 6>& faces);  // 6 sRGB faces -> GL cube map (0 on failure)
 
     void uploadCamera(Shader& sh);   // push view/projection/viewPos to a program
     void uploadLights(Shader& sh);   // push the frame's light set to a program
-    void flushOpaqueBatches();       // draw all deferred lit meshes instanced (idempotent per frame)
+    void flushOpaqueBatches();       // draw deferred lit meshes instanced (opaque+mask pass; idempotent/frame)
+    void flushTransparentBatches();  // second pass: BLEND meshes, blended over the resolved opaque+skybox
+    void bindIBLForEnv(GLuint env, GLuint brdf);   // bind a batch env's probe (irradiance/prefilter) + hasIBL
+    void bindIBLIntensities(GLuint env, const LitBatch& batch);   // set iblDiffuse/iblSpecular uniforms
 
     GLADloadproc   m_loader   = nullptr;
     bool           m_glLoaded = false;
@@ -69,12 +84,19 @@ private:
     std::unique_ptr<Shader> m_unlit;        // light_s
     std::unique_ptr<Shader> m_post;         // msaa_post (fullscreen present, no post-AA)
     std::unique_ptr<Shader> m_fxaa;         // fxaa_s (present pass with FXAA edge filter)
+    std::unique_ptr<Shader> m_skybox;       // skybox (environment cubemap background)
+
+    // Environment cubemap (drawn behind opaque geometry, and the scene-default IBL probe source).
+    // 0 / disabled when no skybox is configured. IBL bakes live in IblProbeCache (keyed by env cube).
+    GLuint m_skyboxTex = 0, m_skyboxVao = 0, m_skyboxVbo = 0;
 
     CameraView m_camera;
     LightSet   m_lights;
 
-    // Deferred opaque-lit submissions, grouped by model so each group draws in ONE instanced call.
-    // Filled by submit(), flushed (once) by flushOpaqueBatches() before debug draw / present.
-    std::unordered_map<IModel*, std::vector<glm::mat4>> m_batches;
+    // Deferred opaque-lit submissions, grouped by (model, environment cube) so each group draws in ONE
+    // instanced call with its own IBL probe bound. Env 0 = the scene-default skybox probe. Filled by
+    // submit(), flushed (once) by flushOpaqueBatches() before debug draw / present.
+    std::unordered_map<IModel*, std::unordered_map<GLuint, LitBatch>> m_batches;
     bool m_batchesFlushed = false;
+    GLuint m_frameBrdfLUT = 0;   // BRDF LUT resolved by the opaque flush; reused by the transparent flush
 };

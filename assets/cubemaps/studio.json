@@ -1,0 +1,13 @@
+{
+  "_comment": "Environment cube map for per-object IBL probes. faces are GL order: +X,-X,+Y,-Y,+Z,-Z (right,left,top,bottom,front,back). Reference from a Mesh component with \"cubemap\": \"assets/cubemaps/studio.json\". diffuse = how much this env LIGHTS the model (irradiance); specular = how much it REFLECTS. Lower diffuse hands shading to the directional sun (less uniform). 1.0 = full; 0 = off.",
+  "diffuse": 0.40,
+  "specular": 0.90,
+  "faces": [
+    "assets/textures/small_studio/px.png",
+    "assets/textures/small_studio/nx.png",
+    "assets/textures/small_studio/py.png",
+    "assets/textures/small_studio/ny.png",
+    "assets/textures/small_studio/pz.png",
+    "assets/textures/small_studio/nz.png"
+  ]
+}

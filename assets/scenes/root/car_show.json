@@ -1,0 +1,8 @@
+{
+  "scenes": [
+    { "name": "car_scene", "path": "assets/scenes/car_scene.json", "active": true }
+  ],
+  "objects": [
+    "assets/gameObjects/pov_camera.json"
+  ]
+}

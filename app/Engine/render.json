@@ -15,7 +15,22 @@
     "internalHeight": 1080,
     "antialiasing": "fxaa",
     "msaaSamples": 2,
-    "debugColliders": false
+    "debugColliders": false,
+    "gamma": 2.2,
+    "tonemap": "aces",
+    "exposure": 1.0,
+    "skybox": {
+      "enabled": false,
+      "drawBackground": true,
+      "faces": [
+        "assets/textures/studio_light/px.png",
+        "assets/textures/studio_light/nx.png",
+        "assets/textures/studio_light/py.png",
+        "assets/textures/studio_light/ny.png",
+        "assets/textures/studio_light/pz.png",
+        "assets/textures/studio_light/nz.png"
+      ]
+    }
   },
   "profiler": {
     "cpu": false,

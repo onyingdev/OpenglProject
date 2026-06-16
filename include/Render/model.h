@@ -156,11 +156,19 @@ public:
             meshes[i].Draw(shader);
     }
 
-    // Draw `count` copies of every mesh in one instanced call each (see Mesh::DrawInstanced).
-    void DrawInstanced(IShader &shader, const glm::mat4* instances, int count) override
+    // Draw `count` copies of every mesh in one instanced call each (see Mesh::DrawInstanced). `pass`
+    // selects the alpha class: each mesh draws only if it matches (Opaque skips BLEND meshes, etc.).
+    void DrawInstanced(IShader &shader, const glm::mat4* instances, int count,
+                       MaterialPass pass = MaterialPass::Opaque) override
     {
         for(unsigned int i = 0; i < meshes.size(); i++)
-            meshes[i].DrawInstanced(shader, instances, count);
+            meshes[i].DrawInstanced(shader, instances, count, pass);
+    }
+
+    // Force the doubleSided flag on every mesh (override for assets that omit it, e.g. single-sided glass).
+    void setDoubleSided(bool enabled) override
+    {
+        for (Mesh& m : meshes) m.doubleSided = enabled;
     }
 
 private:
@@ -190,8 +198,10 @@ private:
 
         m_streaming = true;
         meshes.reserve(m_data.meshes.size());
-        for (const MeshData &md : m_data.meshes)
+        for (const MeshData &md : m_data.meshes) {
             meshes.emplace_back(md.vertices.size(), md.indices.size(), md.baseColor, MeshStreamTag{});
+            applyMaterialFactors(meshes.back(), md);
+        }
         m_texPool.reserve(m_data.textures.size());
         m_texCursor = 0;
     }
@@ -228,7 +238,23 @@ private:
             for (int idx : m.textureIndices)
                 if (idx >= 0 && idx < (int)pool.size()) meshTextures.push_back(pool[idx]);
             meshes.emplace_back(std::move(m.vertices), std::move(m.indices), std::move(meshTextures), m.baseColor);
+            applyMaterialFactors(meshes.back(), m);
         }
+    }
+
+    // Copy the PBR metallic-roughness factors from a parsed MeshData onto its GPU Mesh (baseColor already
+    // went through the ctor; the rest are plain scalars/vec3s set here).
+    static void applyMaterialFactors(Mesh &mesh, const MeshData &md)
+    {
+        mesh.metallic          = md.metallic;
+        mesh.roughness         = md.roughness;
+        mesh.emissiveFactor    = md.emissiveFactor;
+        mesh.occlusionStrength = md.occlusionStrength;
+        mesh.normalScale       = md.normalScale;
+        mesh.baseColorAlpha    = md.baseColorAlpha;
+        mesh.alphaMode         = md.alphaMode;
+        mesh.alphaCutoff       = md.alphaCutoff;
+        mesh.doubleSided       = md.doubleSided;
     }
 
 public:
@@ -335,28 +361,31 @@ private:
         if (aiGetMaterialColor(material, AI_MATKEY_COLOR_DIFFUSE, &diffuseColor) == AI_SUCCESS)
             out.baseColor = glm::vec3(diffuseColor.r, diffuseColor.g, diffuseColor.b);
 
-        // 1. diffuse / base color (glTF & FBX expose base color under BASE_COLOR)
-        vector<int> diffuse = loadMaterialTextures(material, aiTextureType_DIFFUSE, "texture_diffuse", model);
+        // Color textures (diffuse/base color) are sRGB; data maps (specular/normal/height) are linear, so
+        // the new uploadTexture picks the right internal format and OBJ/FBX diffuse isn't double-dark.
+        // 1. diffuse / base color (glTF & FBX expose base color under BASE_COLOR) — sRGB
+        vector<int> diffuse = loadMaterialTextures(material, aiTextureType_DIFFUSE, "texture_diffuse", ColorSpace::sRGB, model);
         if (diffuse.empty())
-            diffuse = loadMaterialTextures(material, aiTextureType_BASE_COLOR, "texture_diffuse", model);
+            diffuse = loadMaterialTextures(material, aiTextureType_BASE_COLOR, "texture_diffuse", ColorSpace::sRGB, model);
         out.textureIndices.insert(out.textureIndices.end(), diffuse.begin(), diffuse.end());
-        // 2. specular
-        vector<int> specular = loadMaterialTextures(material, aiTextureType_SPECULAR, "texture_specular", model);
+        // 2. specular (linear reflectance data)
+        vector<int> specular = loadMaterialTextures(material, aiTextureType_SPECULAR, "texture_specular", ColorSpace::Linear, model);
         out.textureIndices.insert(out.textureIndices.end(), specular.begin(), specular.end());
-        // 3. normal (NORMALS for glTF/FBX; OBJ's map_Bump arrives as HEIGHT, fall back to it)
-        vector<int> normal = loadMaterialTextures(material, aiTextureType_NORMALS, "texture_normal", model);
+        // 3. normal (NORMALS for glTF/FBX; OBJ's map_Bump arrives as HEIGHT, fall back to it) — linear
+        vector<int> normal = loadMaterialTextures(material, aiTextureType_NORMALS, "texture_normal", ColorSpace::Linear, model);
         if (normal.empty())
-            normal = loadMaterialTextures(material, aiTextureType_HEIGHT, "texture_normal", model);
+            normal = loadMaterialTextures(material, aiTextureType_HEIGHT, "texture_normal", ColorSpace::Linear, model);
         out.textureIndices.insert(out.textureIndices.end(), normal.begin(), normal.end());
-        // 4. height / displacement
-        vector<int> height = loadMaterialTextures(material, aiTextureType_DISPLACEMENT, "texture_height", model);
+        // 4. height / displacement — linear
+        vector<int> height = loadMaterialTextures(material, aiTextureType_DISPLACEMENT, "texture_height", ColorSpace::Linear, model);
         out.textureIndices.insert(out.textureIndices.end(), height.begin(), height.end());
 
         return out;
     }
 
     // Decode each texture of `type` into model.textures (de-duped by path) and return their indices.
-    static vector<int> loadMaterialTextures(aiMaterial *mat, aiTextureType type, string typeName, ModelData &model)
+    // `cs` tags the decoded texture's color space so the GPU upload picks an sRGB or linear format.
+    static vector<int> loadMaterialTextures(aiMaterial *mat, aiTextureType type, string typeName, ColorSpace cs, ModelData &model)
     {
         vector<int> indices;
         for (unsigned int i = 0; i < mat->GetTextureCount(type); i++)
@@ -370,8 +399,9 @@ private:
             if (found >= 0) { indices.push_back(found); continue; }
 
             TextureData td = decodeTexture(str.C_Str(), model.directory);
-            td.type = typeName;
-            td.path = str.C_Str();
+            td.type       = typeName;
+            td.path       = str.C_Str();
+            td.colorSpace = cs;
             model.textures.push_back(std::move(td));
             indices.push_back((int)model.textures.size() - 1);
         }
@@ -422,7 +452,14 @@ private:
                 format = GL_RGBA;
             }
 
-            glTexImage2D(GL_TEXTURE_2D, 0, format, td.width, td.height, 0, format, GL_UNSIGNED_BYTE, td.pixels.data());
+            // Internal format == data format for linear (data) textures; sRGB color maps (base color,
+            // emissive) must be stored sRGB so the GPU linearizes on sample. sRGB only applies to 3/4-
+            // channel color maps; 1/2-channel maps are always data (roughness/AO/...) and stay linear.
+            GLint internalFormat = (GLint)format;
+            if (td.colorSpace == ColorSpace::sRGB && td.channels >= 3)
+                internalFormat = (td.channels == 4) ? GL_SRGB8_ALPHA8 : GL_SRGB8;
+
+            glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, td.width, td.height, 0, format, GL_UNSIGNED_BYTE, td.pixels.data());
             glGenerateMipmap(GL_TEXTURE_2D);
 
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);

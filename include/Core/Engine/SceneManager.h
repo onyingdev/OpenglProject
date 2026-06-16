@@ -9,6 +9,8 @@
 
 #include "Core/Engine/Scene.h"
 #include "Render/ModelCache.h"                        // cleared on scene unload (hot-reload freshness)
+#include "Render/CubemapCache.h"                       // per-object env cube maps, cleared alongside models
+#include "Render/IblProbeCache.h"                      // baked IBL probes (keyed by env cube), cleared together
 #include "Core/Engine/Services/SceneLoader.h"
 #include "Core/Engine/Services/GameObjectLoader.h"   // loose/root objects from "objects" in the manifest
 #include "Core/Engine/Services/LoadContext.h"
@@ -122,6 +124,11 @@ public:
         // Drop cached models too: bounds memory across reloads and lets a hot-reload re-import an
         // edited .obj. Safe — models still referenced by a live (loose) MeshComponent survive.
         ModelCache::clear();
+        // Free per-object env cube maps AND their baked IBL probes together: the probe map is keyed by
+        // env cube GL id, so clearing both at once prevents a recycled id from aliasing a stale probe.
+        CubemapCache::clear();
+        IblProbeCache::instance().clear();
+
     }
 
     // Free EVERYTHING (scenes + loose objects). Call at shutdown while the GL context

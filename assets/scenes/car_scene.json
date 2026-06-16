@@ -1,0 +1,8 @@
+{
+  "name": "car_scene",
+  "transform": { "position": [0, 0, 0] },
+  "objects": [
+    "assets/gameObjects/sun.json",
+    "assets/gameObjects/porsche_911.json"
+  ]
+}
