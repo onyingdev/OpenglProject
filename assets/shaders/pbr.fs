@@ -68,6 +68,15 @@ uniform SpotLight spotLights[NR_SPOT_LIGHTS];
 uniform int numPointLights;
 uniform int numSpotLights;
 
+// Image-based lighting (Karis split-sum), baked once from the scene environment cube map:
+//   irradianceMap = diffuse, prefilterMap = roughness-mipped specular, brdfLUT = environment BRDF.
+// hasIBL == 0 (no skybox / IBL) falls back to the hemisphere ambient at the bottom of main().
+uniform samplerCube irradianceMap;
+uniform samplerCube prefilterMap;
+uniform sampler2D   brdfLUT;
+uniform int hasIBL;
+const float MAX_REFLECTION_LOD = 4.0;   // prefilterMap has 5 mips (0..4 -> roughness 0..1)
+
 vec3 getNormal()
 {
     vec3 N = normalize(Normal);
@@ -112,6 +121,12 @@ float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
 vec3 fresnelSchlick(float cosTheta, vec3 F0)
 {
     return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+}
+
+// Fresnel with a roughness term for the IBL ambient (rough surfaces shouldn't show a sharp rim).
+vec3 fresnelSchlickRoughness(float cosTheta, vec3 F0, float roughness)
+{
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
 }
 
 // One analytic light's contribution: Cook-Torrance specular + Lambert diffuse, weighted by radiance.
@@ -167,23 +182,41 @@ void main()
         Lo += cookTorrance(N, V, L, spotLights[i].diffuse * att * intensity, albedo, roughness, metallic, F0);
     }
 
-    // Hemisphere ambient (cheap IBL stand-in): sky color = dirLight.ambient, ground = a darker fraction.
-    // Diffuse fill follows the up-facing normal so back/under sides aren't pitch black (suppressed for
-    // metals, which carry no diffuse); a crude Fresnel-weighted sky reflection keeps dark/metallic
-    // surfaces from reading as black silhouettes. Replaced by real cube-map IBL later.
     float NdotV = max(dot(N, V), 0.0);
-    vec3 skyAmb    = dirLight.ambient;
-    vec3 groundAmb = dirLight.ambient * 0.35;
+    vec3  R     = reflect(-V, N);
+    vec3  ambient;
 
-    vec3 ambColorN  = mix(groundAmb, skyAmb, clamp(0.5 * N.y + 0.5, 0.0, 1.0));
-    vec3 ambDiffuse = ambColorN * albedo * ao * (1.0 - metallic);
+    if (hasIBL == 1) {
+        // Cube-map IBL (Karis split-sum). Diffuse = irradiance * albedo (energy-conserved by kD);
+        // specular = prefiltered radiance * (F * brdf.scale + brdf.bias). Both modulated by AO.
+        vec3 F  = fresnelSchlickRoughness(NdotV, F0, roughness);
+        vec3 kD = (vec3(1.0) - F) * (1.0 - metallic);
 
-    vec3 R          = reflect(-V, N);
-    vec3 ambColorR  = mix(groundAmb, skyAmb, clamp(0.5 * R.y + 0.5, 0.0, 1.0));
-    vec3 Famb       = F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - NdotV, 0.0, 1.0), 5.0);
-    vec3 ambSpecular = ambColorR * Famb * ao;
+        vec3 irradiance = texture(irradianceMap, N).rgb;
+        vec3 ambDiffuse = irradiance * albedo;
 
-    vec3 ambient  = ambDiffuse + ambSpecular;
+        vec3 prefiltered = textureLod(prefilterMap, R, roughness * MAX_REFLECTION_LOD).rgb;
+        vec2 envBRDF     = texture(brdfLUT, vec2(NdotV, roughness)).rg;
+        vec3 ambSpecular = prefiltered * (F * envBRDF.x + envBRDF.y);
+
+        ambient = (kD * ambDiffuse + ambSpecular) * ao;
+    } else {
+        // Hemisphere ambient fallback (no skybox/IBL): sky color = dirLight.ambient, ground darker.
+        // Diffuse fill follows the up-facing normal (suppressed for metals); a crude Fresnel sky
+        // reflection keeps dark/metallic surfaces from reading as black silhouettes.
+        vec3 skyAmb    = dirLight.ambient;
+        vec3 groundAmb = dirLight.ambient * 0.35;
+
+        vec3 ambColorN  = mix(groundAmb, skyAmb, clamp(0.5 * N.y + 0.5, 0.0, 1.0));
+        vec3 ambDiffuse = ambColorN * albedo * ao * (1.0 - metallic);
+
+        vec3 ambColorR   = mix(groundAmb, skyAmb, clamp(0.5 * R.y + 0.5, 0.0, 1.0));
+        vec3 Famb        = fresnelSchlickRoughness(NdotV, F0, roughness);
+        vec3 ambSpecular = ambColorR * Famb * ao;
+
+        ambient = ambDiffuse + ambSpecular;
+    }
+
     vec3 emissive = emissiveFactor * texture(texture_emissive1, TexCoords).rgb;
 
     FragColor = vec4(ambient + Lo + emissive, 1.0);   // linear; present pass encodes gamma

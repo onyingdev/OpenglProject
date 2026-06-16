@@ -37,6 +37,7 @@ private:
     void buildDebugGeometry();  // wire-cube + wire-sphere + dynamic line buffers (created once)
     void buildSkybox();     // cube VAO + skybox shader + load the cubemap (once, in init; honors settings)
     void drawSkybox();      // draw the environment cube behind the opaque scene (in endScene)
+    void bakeIBL();         // bake irradiance + prefilter + BRDF LUT from the skybox (once, after buildSkybox)
     static GLuint loadCubemap(const std::array<std::string, 6>& faces);  // 6 sRGB faces -> GL cube map (0 on failure)
 
     void uploadCamera(Shader& sh);   // push view/projection/viewPos to a program
@@ -77,6 +78,11 @@ private:
 
     // Environment cubemap (drawn behind opaque geometry). 0 / disabled when no skybox is configured.
     GLuint m_skyboxTex = 0, m_skyboxVao = 0, m_skyboxVbo = 0;
+
+    // Baked IBL set (from the skybox cube map). Bound to fixed units 10/11/12 for the lit programs;
+    // m_hasIBL gates the IBL ambient branch in pbr.fs (falls back to hemisphere ambient when false).
+    GLuint m_irradianceMap = 0, m_prefilterMap = 0, m_brdfLUT = 0;
+    bool   m_hasIBL = false;
 
     CameraView m_camera;
     LightSet   m_lights;
