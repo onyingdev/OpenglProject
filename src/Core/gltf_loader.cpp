@@ -261,9 +261,14 @@ void processPrimitive(const tinygltf::Model& gm, const tinygltf::Primitive& prim
 
         // Scalar/vector factors. Each multiplies its matching map (or stands alone when absent).
         const std::vector<double>& bcf = pbr.baseColorFactor;       // size 4, defaults {1,1,1,1}
-        md.baseColor = glm::vec3((float)bcf[0], (float)bcf[1], (float)bcf[2]);
+        md.baseColor      = glm::vec3((float)bcf[0], (float)bcf[1], (float)bcf[2]);
+        md.baseColorAlpha = (float)bcf[3];                          // alpha factor (BLEND/MASK source)
         md.metallic  = (float)pbr.metallicFactor;
         md.roughness = (float)pbr.roughnessFactor;
+
+        // Alpha handling: OPAQUE (ignore alpha) / MASK (cutout at alphaCutoff) / BLEND (alpha blend).
+        md.alphaMode   = (mat.alphaMode == "MASK") ? 1 : (mat.alphaMode == "BLEND") ? 2 : 0;
+        md.alphaCutoff = (float)mat.alphaCutoff;
         if (mat.emissiveFactor.size() == 3)
             md.emissiveFactor = glm::vec3((float)mat.emissiveFactor[0], (float)mat.emissiveFactor[1],
                                           (float)mat.emissiveFactor[2]);

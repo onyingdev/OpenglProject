@@ -59,6 +59,11 @@ struct MeshData {
     glm::vec3                 emissiveFactor{0.0f};
     float                     occlusionStrength = 1.0f;
     float                     normalScale       = 1.0f;
+    // glTF alpha handling. baseColorAlpha = baseColorFactor.a (multiplies the base-color map's alpha).
+    // alphaMode: 0=OPAQUE (alpha ignored), 1=MASK (discard below alphaCutoff), 2=BLEND (alpha blended).
+    float                     baseColorAlpha    = 1.0f;
+    int                       alphaMode         = 0;
+    float                     alphaCutoff       = 0.5f;
 };
 
 // A whole model as parsed from disk: every mesh, plus a de-duplicated texture pool the meshes index

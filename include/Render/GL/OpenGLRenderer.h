@@ -41,7 +41,9 @@ private:
 
     void uploadCamera(Shader& sh);   // push view/projection/viewPos to a program
     void uploadLights(Shader& sh);   // push the frame's light set to a program
-    void flushOpaqueBatches();       // draw all deferred lit meshes instanced (idempotent per frame)
+    void flushOpaqueBatches();       // draw deferred lit meshes instanced (opaque+mask pass; idempotent/frame)
+    void flushTransparentBatches();  // second pass: BLEND meshes, blended over the resolved opaque+skybox
+    void bindIBLForEnv(GLuint env, GLuint brdf);   // bind a batch env's probe (irradiance/prefilter) + hasIBL
 
     GLADloadproc   m_loader   = nullptr;
     bool           m_glLoaded = false;
@@ -86,4 +88,5 @@ private:
     // submit(), flushed (once) by flushOpaqueBatches() before debug draw / present.
     std::unordered_map<IModel*, std::unordered_map<GLuint, std::vector<glm::mat4>>> m_batches;
     bool m_batchesFlushed = false;
+    GLuint m_frameBrdfLUT = 0;   // BRDF LUT resolved by the opaque flush; reused by the transparent flush
 };

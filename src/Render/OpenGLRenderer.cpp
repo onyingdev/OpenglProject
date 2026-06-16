@@ -457,35 +457,71 @@ void OpenGLRenderer::flushOpaqueBatches() {
     // Pre-bake every probe this frame needs + the shared BRDF LUT (each bake switches FBO/viewport
     // internally), THEN rebind the scene target. env 0 resolves to the scene skybox; a group whose env
     // doesn't resolve to a cube gets no probe (hemisphere fallback). Baking is one-time per environment.
+    // Iterates batch groups (not meshes), so a blend-only model's env still bakes here for the
+    // transparent flush. m_frameBrdfLUT is stashed for that second pass.
     bool anyEnv = false;
     for (auto& [model, byEnv] : m_batches)
         for (auto& [env, mats] : byEnv) {
             const GLuint cube = env ? env : m_skyboxTex;
             if (cube) { ibl.get(cube); anyEnv = true; }
         }
-    const GLuint brdf = anyEnv ? ibl.brdfLUT() : 0;   // env-independent; may bake here (before rebind)
+    m_frameBrdfLUT = anyEnv ? ibl.brdfLUT() : 0;   // env-independent; may bake here (before rebind)
 
     glBindFramebuffer(GL_FRAMEBUFFER, m_sceneFbo);
     glViewport(0, 0, m_settings.renderWidth, m_settings.renderHeight);
 
     // Shared BRDF LUT at unit 12 for the whole flush.
-    if (brdf) { glActiveTexture(GL_TEXTURE0 + 12); glBindTexture(GL_TEXTURE_2D, brdf); }
+    if (m_frameBrdfLUT) { glActiveTexture(GL_TEXTURE0 + 12); glBindTexture(GL_TEXTURE_2D, m_frameBrdfLUT); }
 
     m_litInstanced->use();
-    for (auto& [model, byEnv] : m_batches) {
+    for (auto& [model, byEnv] : m_batches)
         for (auto& [env, mats] : byEnv) {
-            const GLuint cube = env ? env : m_skyboxTex;
-            const bool hasIBL = (cube != 0) && (brdf != 0);
-            if (hasIBL) {
-                const IblProbeCache::Probe& p = ibl.get(cube);
-                glActiveTexture(GL_TEXTURE0 + 10); glBindTexture(GL_TEXTURE_CUBE_MAP, p.irradiance);
-                glActiveTexture(GL_TEXTURE0 + 11); glBindTexture(GL_TEXTURE_CUBE_MAP, p.prefilter);
-                glActiveTexture(GL_TEXTURE0);
-            }
-            m_litInstanced->setInt("hasIBL", hasIBL ? 1 : 0);
-            model->DrawInstanced(*m_litInstanced, mats.data(), (int)mats.size());
+            bindIBLForEnv(env, m_frameBrdfLUT);
+            model->DrawInstanced(*m_litInstanced, mats.data(), (int)mats.size(), MaterialPass::Opaque);
         }
+}
+
+// Bind a batch environment's IBL probe (irradiance/prefilter -> units 10/11) and toggle hasIBL on the
+// instanced program. env 0 resolves to the scene skybox; the shared BRDF LUT (unit 12) is bound by the
+// caller once per pass. Probes are already baked by flushOpaqueBatches' pre-bake, so get() is a cache hit.
+void OpenGLRenderer::bindIBLForEnv(GLuint env, GLuint brdf) {
+    const GLuint cube = env ? env : m_skyboxTex;
+    const bool hasIBL = (cube != 0) && (brdf != 0);
+    if (hasIBL) {
+        const IblProbeCache::Probe& p = IblProbeCache::instance().get(cube);
+        glActiveTexture(GL_TEXTURE0 + 10); glBindTexture(GL_TEXTURE_CUBE_MAP, p.irradiance);
+        glActiveTexture(GL_TEXTURE0 + 11); glBindTexture(GL_TEXTURE_CUBE_MAP, p.prefilter);
+        glActiveTexture(GL_TEXTURE0);
     }
+    m_litInstanced->setInt("hasIBL", hasIBL ? 1 : 0);
+}
+
+// Second opaque-flush sibling: draw the BLEND meshes of every batch, alpha-blended over the already-drawn
+// opaque geometry + skybox, into the HDR scene FBO (before resolve/tonemap). Depth-test on, depth-write
+// off; no global back-to-front sort (correct for single-layer transparency — see the Phase 4 notes).
+void OpenGLRenderer::flushTransparentBatches() {
+    if (m_batches.empty()) return;
+
+    PROFILE_GPU_DETAIL("gpu.transparent");
+    PROFILE_CPU_DETAIL("cpu.transparent");
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE);    // test against opaque depth, but don't write (translucent surfaces)
+    glDepthFunc(GL_LEQUAL);   // draw over COINCIDENT opaque depth too (clearcoat shell over paint)
+
+    if (m_frameBrdfLUT) { glActiveTexture(GL_TEXTURE0 + 12); glBindTexture(GL_TEXTURE_2D, m_frameBrdfLUT); }
+
+    m_litInstanced->use();
+    for (auto& [model, byEnv] : m_batches)
+        for (auto& [env, mats] : byEnv) {
+            bindIBLForEnv(env, m_frameBrdfLUT);
+            model->DrawInstanced(*m_litInstanced, mats.data(), (int)mats.size(), MaterialPass::Transparent);
+        }
+
+    glDepthFunc(GL_LESS);    // restore default for the next frame
+    glDepthMask(GL_TRUE);
+    glDisable(GL_BLEND);
 }
 
 // --- debug primitives ---------------------------------------------------------
@@ -531,8 +567,9 @@ void OpenGLRenderer::drawLine(const glm::vec3& a, const glm::vec3& b, const glm:
 }
 
 void OpenGLRenderer::endScene() {
-    flushOpaqueBatches();   // draw any deferred meshes not already flushed by a debug-draw call
-    drawSkybox();           // fill un-covered pixels with the environment (scene FBO still bound)
+    flushOpaqueBatches();        // opaque + mask meshes (deferred; may already be flushed by a debug draw)
+    drawSkybox();                // fill un-covered pixels with the environment (scene FBO still bound)
+    flushTransparentBatches();   // BLEND meshes, blended over the opaque scene + skybox in linear HDR
 
     const int rw = m_settings.renderWidth;
     const int rh = m_settings.renderHeight;

@@ -8,6 +8,7 @@
 
 #include "Render/API/IShader.h"
 #include "Render/API/IMesh.h"
+#include "Render/API/IModel.h"         // MaterialPass (Opaque/Transparent) for the per-mesh draw split
 #include "Render/Assets/ModelData.h"   // Vertex (+ MAX_BONE_INFLUENCE) — shared with the loader
 
 #include <algorithm>
@@ -44,6 +45,11 @@ public:
     glm::vec3            emissiveFactor{0.0f};
     float                occlusionStrength = 1.0f;
     float                normalScale = 1.0f;
+    // glTF alpha: baseColorAlpha = baseColorFactor.a; alphaMode 0=OPAQUE/1=MASK/2=BLEND; alphaCutoff for
+    // MASK. The renderer draws BLEND meshes in a separate blended pass; MASK discards in the shader.
+    float                baseColorAlpha = 1.0f;
+    int                  alphaMode = 0;
+    float                alphaCutoff = 0.5f;
     unsigned int VAO = 0;
 
     // constructor — full (synchronous) upload. Move the vectors in (they're already owned rvalues from
@@ -80,6 +86,7 @@ public:
           textures(std::move(o.textures)), baseColor(o.baseColor),
           metallic(o.metallic), roughness(o.roughness), emissiveFactor(o.emissiveFactor),
           occlusionStrength(o.occlusionStrength), normalScale(o.normalScale),
+          baseColorAlpha(o.baseColorAlpha), alphaMode(o.alphaMode), alphaCutoff(o.alphaCutoff),
           VAO(o.VAO), VBO(o.VBO), EBO(o.EBO), instanceVBO(o.instanceVBO),
           m_indexCount(o.m_indexCount), m_vboBytes(o.m_vboBytes), m_eboBytes(o.m_eboBytes),
           m_vboCursor(o.m_vboCursor), m_eboCursor(o.m_eboCursor)
@@ -96,6 +103,7 @@ public:
             baseColor = o.baseColor;
             metallic = o.metallic; roughness = o.roughness; emissiveFactor = o.emissiveFactor;
             occlusionStrength = o.occlusionStrength; normalScale = o.normalScale;
+            baseColorAlpha = o.baseColorAlpha; alphaMode = o.alphaMode; alphaCutoff = o.alphaCutoff;
             VAO = o.VAO; VBO = o.VBO; EBO = o.EBO; instanceVBO = o.instanceVBO;
             m_indexCount = o.m_indexCount;
             m_vboBytes = o.m_vboBytes; m_eboBytes = o.m_eboBytes;
@@ -153,9 +161,15 @@ public:
     // per-instance buffer wired to attribute locations 7-10 (a mat4, divisor 1). The geometry VAO is
     // shared across all instances; only this buffer differs per frame. Pair with an instanced shader
     // that reads the model matrix from that attribute instead of a uniform.
-    void DrawInstanced(IShader &shader, const glm::mat4* mats, int count)
+    void DrawInstanced(IShader &shader, const glm::mat4* mats, int count,
+                       MaterialPass pass = MaterialPass::Opaque)
     {
         if (count <= 0) return;
+        // Per-mesh alpha split: BLEND meshes (alphaMode 2) draw only in the Transparent pass; OPAQUE +
+        // MASK meshes draw only in the Opaque pass (MASK then discards in the shader). Skip mismatches.
+        const bool isBlend = (alphaMode == 2);
+        if (isBlend != (pass == MaterialPass::Transparent)) return;
+
         glBindVertexArray(VAO);
 
         if (instanceVBO == 0) {
@@ -192,6 +206,9 @@ private:
         shader.setVec3 ("emissiveFactor",    emissiveFactor.x, emissiveFactor.y, emissiveFactor.z);
         shader.setFloat("occlusionStrength", occlusionStrength);
         shader.setFloat("normalScale",       normalScale);
+        shader.setFloat("baseColorAlpha",    baseColorAlpha);
+        shader.setInt  ("alphaMode",         alphaMode);
+        shader.setFloat("alphaCutoff",       alphaCutoff);
     }
 
     // render data

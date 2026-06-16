@@ -61,6 +61,13 @@ uniform vec3  emissiveFactor;
 uniform float occlusionStrength;
 uniform float normalScale;
 
+// glTF alpha. baseColorAlpha = baseColorFactor.a; alphaMode 0=OPAQUE / 1=MASK (cutout) / 2=BLEND.
+// Alpha = baseColorAlpha * base-color map alpha. The renderer draws BLEND meshes in a separate blended
+// pass; OPAQUE/MASK draw opaque (MASK discards below alphaCutoff). Output alpha matters only for BLEND.
+uniform float baseColorAlpha;
+uniform int   alphaMode;
+uniform float alphaCutoff;
+
 uniform vec3 viewPos;
 uniform DirLight dirLight;
 uniform PointLight pointLights[NR_POINT_LIGHTS];
@@ -147,7 +154,11 @@ vec3 cookTorrance(vec3 N, vec3 V, vec3 L, vec3 radiance, vec3 albedo, float roug
 
 void main()
 {
-    vec3  albedo    = baseColor * texture(texture_diffuse1, TexCoords).rgb;
+    vec4  baseSample = texture(texture_diffuse1, TexCoords);
+    vec3  albedo     = baseColor * baseSample.rgb;
+    float alpha      = baseColorAlpha * baseSample.a;
+    if (alphaMode == 1 && alpha < alphaCutoff) discard;   // MASK cutout
+
     vec3  mr        = texture(texture_mr1, TexCoords).rgb;
     float metallic  = metallicFactor * mr.b;
     float roughness = clamp(roughnessFactor * mr.g, 0.04, 1.0);   // floor avoids a singular highlight
@@ -219,5 +230,7 @@ void main()
 
     vec3 emissive = emissiveFactor * texture(texture_emissive1, TexCoords).rgb;
 
-    FragColor = vec4(ambient + Lo + emissive, 1.0);   // linear; present pass encodes gamma
+    // Output alpha matters only for the BLEND pass (blending is off for opaque/mask). linear; present
+    // pass encodes gamma.
+    FragColor = vec4(ambient + Lo + emissive, alphaMode == 2 ? alpha : 1.0);
 }

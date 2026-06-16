@@ -156,11 +156,13 @@ public:
             meshes[i].Draw(shader);
     }
 
-    // Draw `count` copies of every mesh in one instanced call each (see Mesh::DrawInstanced).
-    void DrawInstanced(IShader &shader, const glm::mat4* instances, int count) override
+    // Draw `count` copies of every mesh in one instanced call each (see Mesh::DrawInstanced). `pass`
+    // selects the alpha class: each mesh draws only if it matches (Opaque skips BLEND meshes, etc.).
+    void DrawInstanced(IShader &shader, const glm::mat4* instances, int count,
+                       MaterialPass pass = MaterialPass::Opaque) override
     {
         for(unsigned int i = 0; i < meshes.size(); i++)
-            meshes[i].DrawInstanced(shader, instances, count);
+            meshes[i].DrawInstanced(shader, instances, count, pass);
     }
 
 private:
@@ -243,6 +245,9 @@ private:
         mesh.emissiveFactor    = md.emissiveFactor;
         mesh.occlusionStrength = md.occlusionStrength;
         mesh.normalScale       = md.normalScale;
+        mesh.baseColorAlpha    = md.baseColorAlpha;
+        mesh.alphaMode         = md.alphaMode;
+        mesh.alphaCutoff       = md.alphaCutoff;
     }
 
 public:
