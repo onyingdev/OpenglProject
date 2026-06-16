@@ -1,7 +1,7 @@
 #include "Render/GL/OpenGLRenderer.h"
 #include "Render/API/IModel.h"   // complete type needed to call IModel::Draw
 #include "Core/Engine/Profiling/Profiler.h"   // GPU timer-query subsections (gpu.frame/flush/resolve/present)
-#include "Core/Engine/Helpers/stb_image.h"    // cubemap face loading (impl lives in another TU)
+#include "Render/CubemapCache.h"              // shared cube-map loader (skybox + reflective objects)
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 #include <vector>
@@ -58,6 +58,10 @@ bool OpenGLRenderer::init(int fbW, int fbH) {
     // attribute, so many identical models draw in one glDrawElementsInstanced instead of one call each.
     m_litInstanced = std::make_unique<Shader>("assets/shaders/pbr_instanced.vs", "assets/shaders/pbr.fs");
     m_unlit = std::make_unique<Shader>("assets/shaders/light_s.vs",           "assets/shaders/light_s.fs");
+    // Environment-mapped mirror material (per-object cube map; falls back to the scene skybox).
+    m_reflect = std::make_unique<Shader>("assets/shaders/reflect.vs",         "assets/shaders/reflect.fs");
+    m_reflect->use();
+    m_reflect->setInt("skybox", 0);
     m_post  = std::make_unique<Shader>("assets/shaders/msaa_post.vs",         "assets/shaders/msaa_post.fs");
     m_post->use();
     m_post->setInt("screenTexture", 0);
@@ -156,43 +160,11 @@ void OpenGLRenderer::buildDebugGeometry() {
     glBindVertexArray(0);
 }
 
-// Load 6 face images into a GL cube map. Faces are color (sRGB) data, so we use an sRGB internal
-// format — sampling then returns LINEAR, matching the rest of the PBR pipeline. Returns 0 (and frees
-// any partial allocation) if any face is missing, so the caller can disable the skybox gracefully.
+// Skybox cube map: delegate to the shared loader. The renderer OWNS this texture (deletes it in the
+// dtor), so it uses the uncached loadCubemapGL — distinct from per-object reflective maps, which come
+// from CubemapCache::get and are owned/freed by the cache on scene unload.
 GLuint OpenGLRenderer::loadCubemap(const std::array<std::string, 6>& faces) {
-    GLuint tex = 0;
-    glGenTextures(1, &tex);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
-
-    // Cube-map faces are authored top-down; unlike 2D model textures they must NOT be flipped.
-    const bool prevFlip = false;
-    stbi_set_flip_vertically_on_load(false);
-
-    int w, h, n;
-    for (unsigned i = 0; i < 6; ++i) {
-        unsigned char* data = stbi_load(faces[i].c_str(), &w, &h, &n, 0);
-        if (!data) {
-            std::cerr << "OpenGLRenderer: cubemap face failed to load: " << faces[i] << "\n";
-            stbi_image_free(data);
-            glDeleteTextures(1, &tex);
-            stbi_set_flip_vertically_on_load(prevFlip);
-            return 0;
-        }
-        const GLenum srcFormat = (n == 4) ? GL_RGBA : (n == 1 ? GL_RED : GL_RGB);
-        const GLint  intFormat = (n == 4) ? GL_SRGB8_ALPHA8 : (n == 1 ? GL_RED : GL_SRGB8);
-        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, intFormat, w, h, 0,
-                     srcFormat, GL_UNSIGNED_BYTE, data);
-        stbi_image_free(data);
-    }
-    stbi_set_flip_vertically_on_load(prevFlip);
-
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
-    return tex;
+    return CubemapCache::loadCubemapGL(faces);
 }
 
 // Build the skybox cube VAO + shader and load the configured cubemap. No-op if disabled; if the
@@ -415,6 +387,7 @@ void OpenGLRenderer::beginScene(const CameraView& cam) {
     uploadCamera(*m_lit);
     uploadCamera(*m_litInstanced);
     uploadCamera(*m_unlit);
+    uploadCamera(*m_reflect);   // reflective material needs view/projection/viewPos (cameraPos)
 }
 
 void OpenGLRenderer::setLights(const LightSet& lights) {
@@ -432,6 +405,20 @@ void OpenGLRenderer::submit(const RenderItem& item) {
     // wireframe items are rare and stay on the immediate path below.
     if (item.material == MaterialKind::Lit && !item.wireframe) {
         m_batches[item.model].push_back(item.modelMatrix);
+        return;
+    }
+
+    // Reflective: environment-mapped mirror. Bind the per-object cube map (or the scene skybox as a
+    // fallback) to unit 0 and draw with the reflect program. The mesh's own 2D textures still bind
+    // during Draw, but on a separate target so they don't disturb the samplerCube at unit 0.
+    if (item.material == MaterialKind::Reflective) {
+        const GLuint cube = item.envCubemap ? (GLuint)item.envCubemap : m_skyboxTex;
+        if (!cube) return;   // nothing to reflect (no per-object map and no skybox) -> skip
+        m_reflect->use();
+        m_reflect->setMat4("model", item.modelMatrix);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+        item.model->Draw(*m_reflect);
         return;
     }
 

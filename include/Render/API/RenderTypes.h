@@ -14,7 +14,8 @@ struct CameraView {
 
 // Which built-in material a draw uses. RenderItems name a material, never a concrete
 // shader, so the backend owns shader selection.
-enum class MaterialKind { Lit, Unlit };
+//   Reflective: environment-mapped mirror reflection of a cube map (envCubemap below).
+enum class MaterialKind { Lit, Unlit, Reflective };
 
 // One draw submission: a model, where to put it, and how to shade it.
 struct RenderItem {
@@ -23,6 +24,9 @@ struct RenderItem {
     MaterialKind material = MaterialKind::Lit;
     glm::vec3    unlitColor{1.0f};   // used when material == Unlit (e.g. a lamp cube)
     bool         wireframe = false;  // absorbs the old glPolygonMode toggle
+    // GL cube-map texture id reflected when material == Reflective (0 -> fall back to the scene
+    // skybox). Plain unsigned int so this API header stays free of any GL type dependency.
+    unsigned int envCubemap = 0;
 };
 
 struct DirLight {

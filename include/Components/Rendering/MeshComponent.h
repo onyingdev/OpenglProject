@@ -6,6 +6,7 @@
 #include "Render/API/RenderTypes.h"
 #include "Render/model.h"          // concrete GL Model, used only at construction
 #include "Render/ModelCache.h"     // share one GPU upload per model path (spawns, scene duplicates)
+#include "Render/CubemapCache.h"   // share one cube-map upload per face set (reflective objects)
 #include "Render/Assets/AssetManager.h" // async (threaded) loading: request() + ModelHandle
 #include <glm/gtc/matrix_transform.hpp>
 #include <nlohmann/json.hpp>
@@ -29,6 +30,11 @@ public:
     MaterialKind Material = MaterialKind::Lit;
     glm::vec3    UnlitColor{1.0f};
 
+    // Environment cube map this object reflects when Material == Reflective. 0 means "use the scene
+    // skybox" (set in JSON via "material":"reflective" with no faces). A non-zero id comes from
+    // CubemapCache (shared per face set). GL cube texture id; the cache owns its lifetime.
+    unsigned int EnvCubemap = 0;
+
     MeshComponent() = default;
     explicit MeshComponent(std::shared_ptr<IModel> model) : ModelRef(std::move(model)) {}
     // Convenience: load a FRESH, un-shared model from disk (the direct-load path). For shared
@@ -39,7 +45,10 @@ public:
         : ModelRef(std::make_shared<Model>(path, false, flipUVs)) {}
 
     // JSON: { "type": "Mesh", "model": "assets/.../foo.obj", "flipUVs": false,
-    //         "material": "lit"|"unlit", "color": [r,g,b] }
+    //         "material": "lit"|"unlit"|"reflective", "color": [r,g,b],
+    //         "cubemap": [ "+x.jpg","-x.jpg","+y.jpg","-y.jpg","+z.jpg","-z.jpg" ] }
+    // A "cubemap" array implies a reflective material; "material":"reflective" with no cubemap
+    // reflects the scene skybox instead.
     void deserialize(const nlohmann::json& j, LoadContext&) override {
         const std::string model = j.value("model", std::string{});
         const bool flip  = j.value("flipUVs", false);
@@ -52,9 +61,20 @@ public:
             else       ModelRef  = ModelCache::get(model, false, flip);   // shared upload per path
         }
 
-        Material   = (j.value("material", std::string{"lit"}) == "unlit")
-                         ? MaterialKind::Unlit : MaterialKind::Lit;
+        const std::string mat = j.value("material", std::string{"lit"});
+        Material   = (mat == "unlit")      ? MaterialKind::Unlit
+                   : (mat == "reflective") ? MaterialKind::Reflective
+                                           : MaterialKind::Lit;
         UnlitColor = jsonVec3(j.value("color", nlohmann::json{}), UnlitColor);
+
+        // Optional per-object environment cube map (6 faces, GL order +X,-X,+Y,-Y,+Z,-Z). Loading is
+        // synchronous + cached; assigning one forces the reflective material so it actually shows.
+        if (j.contains("cubemap") && j["cubemap"].is_array() && j["cubemap"].size() == 6) {
+            std::array<std::string, 6> faces{};
+            for (int i = 0; i < 6; ++i) faces[i] = j["cubemap"][i].get<std::string>();
+            EnvCubemap = CubemapCache::get(faces);
+            Material   = MaterialKind::Reflective;
+        }
     }
 
     // Promote a finished async load into the live model. Cheap no-op for synchronously-loaded meshes
@@ -89,6 +109,7 @@ public:
         item.wireframe   = (Mode == RenderMode::Wireframe);
         item.material    = Material;
         item.unlitColor  = UnlitColor;
+        item.envCubemap  = EnvCubemap;   // 0 -> renderer falls back to the scene skybox
         return item;
     }
 

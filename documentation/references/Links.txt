@@ -6,3 +6,4 @@ https://www.4a-games.com.mt/4a-dna/in-depth-technical-dive-into-metro-exodus-pc-
 https://www.youtube.com/watch?v=byP6cA71Cgw
 https://www.youtube.com/watch?v=9IULfQH7E90
 https://www.havok.com/blog/how-havoks-constraint-solver-works-pgs-baumgarte/
+https://gameprogrammingpatterns.com/

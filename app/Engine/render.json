@@ -37,7 +37,7 @@
     "detail": false,
     "reportEvery": 60,
     "physics": {
-      "timings": false,
+      "timings": true,
       "solver": false,
       "print": false
     }

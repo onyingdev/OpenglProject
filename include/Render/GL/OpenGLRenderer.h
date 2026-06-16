@@ -73,6 +73,7 @@ private:
     std::unique_ptr<Shader> m_post;         // msaa_post (fullscreen present, no post-AA)
     std::unique_ptr<Shader> m_fxaa;         // fxaa_s (present pass with FXAA edge filter)
     std::unique_ptr<Shader> m_skybox;       // skybox (environment cubemap background)
+    std::unique_ptr<Shader> m_reflect;      // reflect (environment-mapped mirror material)
 
     // Environment cubemap (drawn behind opaque geometry). 0 / disabled when no skybox is configured.
     GLuint m_skyboxTex = 0, m_skyboxVao = 0, m_skyboxVbo = 0;
