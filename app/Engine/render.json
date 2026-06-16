@@ -22,12 +22,12 @@
     "skybox": {
       "enabled": true,
       "faces": [
-        "assets/textures/skybox/right.jpg",
-        "assets/textures/skybox/left.jpg",
-        "assets/textures/skybox/top.jpg",
-        "assets/textures/skybox/bottom.jpg",
-        "assets/textures/skybox/front.jpg",
-        "assets/textures/skybox/back.jpg"
+        "assets/textures/studio_light/px.png",
+        "assets/textures/studio_light/nx.png",
+        "assets/textures/studio_light/py.png",
+        "assets/textures/studio_light/ny.png",
+        "assets/textures/studio_light/pz.png",
+        "assets/textures/studio_light/nz.png"
       ]
     }
   },
