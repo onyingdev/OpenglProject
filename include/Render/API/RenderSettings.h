@@ -17,4 +17,5 @@ struct RenderSettings {
     int          msaaSamples  = 2;                // only used when aa == MSAA (2, 4, 8, ...)
     bool         vsync        = false;            // applied by the Window/context, not the renderer
     bool         debugColliders = false;          // draw collider/hurtbox wireframes (initial state; toggled at runtime)
+    float        gamma        = 2.2f;             // present-pass output gamma exponent (sRGB ~2.2)
 };

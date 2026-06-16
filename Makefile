@@ -19,6 +19,11 @@ INCLUDES = -I. -Iinclude -isystem vendor/glad -isystem vendor/glm -isystem vendo
 # Kept off the shared INCLUDES so its json.hpp / stb_image.h can't shadow the engine's elsewhere.
 TINYGLTF_INC = -isystem vendor/tinyglTF/tinygltf-release
 
+# Offline asset tools (built on demand via `make tools`, NOT part of the default engine build). The glTF
+# tangent baker is standalone (its own tinygltf). It needs glm, the tinygltf headers, and -Iinclude so
+# tiny_gltf.h can resolve the engine's stb_image.h (the tinygltf-release dir doesn't ship its own).
+TOOL_INC = -Iinclude -isystem vendor/glm $(TINYGLTF_INC)
+
 # === Output layout ===
 # Objects build into build/lib, the executable into build/. Change NAME to rename the
 # binary (the .exe suffix is added automatically on Windows).
@@ -34,6 +39,7 @@ INPUT_MANAGER = src/Core/input_manager.cpp
 GL_RENDERER   = src/Render/OpenGLRenderer.cpp
 GO_LOADER     = src/Core/GameObjectLoader.cpp
 GLTF_LOADER   = src/Core/gltf_loader.cpp
+GLTF_TANGENTS = tools/gltf_tangents.cpp
 
 # === Platform-specific settings ===
 ifeq ($(OS),Windows_NT)
@@ -41,6 +47,7 @@ ifeq ($(OS),Windows_NT)
     #   pacman -S mingw-w64-ucrt-x86_64-glfw mingw-w64-ucrt-x86_64-assimp
     LIBS  = -lglfw3 -lassimp -lgdi32 -lopengl32
     EXEC  = $(BUILD)/$(NAME).exe
+    TOOL_TANGENTS = $(BUILD)/gltf_tangents.exe
     MKDIR = if not exist "$(subst /,\,$(OBJDIR))" mkdir "$(subst /,\,$(OBJDIR))"
     CLEAN = if exist "$(subst /,\,$(BUILD))" rmdir /s /q "$(subst /,\,$(BUILD))"
 else
@@ -48,6 +55,7 @@ else
     #   apt install libglfw3-dev libassimp-dev
     LIBS  = -lglfw -lassimp -lGL -ldl -lpthread
     EXEC  = $(BUILD)/$(NAME)
+    TOOL_TANGENTS = $(BUILD)/gltf_tangents
     MKDIR = mkdir -p $(OBJDIR)
     CLEAN = rm -rf $(BUILD)
 endif
@@ -58,7 +66,7 @@ OBJS = $(OBJDIR)/main.o $(OBJDIR)/glad.o $(OBJDIR)/shader_s.o $(OBJDIR)/lib_asse
        $(OBJDIR)/gltf_loader.o
 
 # === Build rules ===
-.PHONY: all recompile clean
+.PHONY: all recompile clean tools
 
 all: $(EXEC)
 
@@ -102,6 +110,13 @@ $(OBJDIR)/input_manager.o: $(INPUT_MANAGER) | $(OBJDIR)
 # its timestamp changes.
 $(OBJDIR):
 	$(MKDIR)
+
+# Offline tools (built on demand, e.g. `mingw32-make tools`). Standalone — no link against the engine.
+# The tangent baker compiles its own tinygltf, so it's a single self-contained translation unit.
+tools: $(TOOL_TANGENTS)
+
+$(TOOL_TANGENTS): $(GLTF_TANGENTS) | $(OBJDIR)
+	g++ -O2 $(TOOL_INC) $(GLTF_TANGENTS) -o $(TOOL_TANGENTS)
 
 clean:
 	$(CLEAN)

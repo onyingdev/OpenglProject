@@ -452,11 +452,14 @@ void OpenGLRenderer::endScene() {
     // FXAA is a post-process AA: it samples the single-sample scene target in the
     // present pass and resolves edges. Any other mode (None / already-resolved MSAA)
     // just blits the texture through unchanged.
+    const float gamma = (m_settings.gamma > 0.01f) ? m_settings.gamma : 2.2f;   // floor avoids /0
     if (m_settings.aa == AntiAliasing::FXAA) {
         m_fxaa->use();
         m_fxaa->setVec2("iResolution", (float)rw, (float)rh);
+        m_fxaa->setFloat("gamma", gamma);
     } else {
         m_post->use();
+        m_post->setFloat("gamma", gamma);
     }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_presentTex);

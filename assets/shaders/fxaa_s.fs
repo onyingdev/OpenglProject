@@ -17,6 +17,7 @@ in vec2 v_rgbM;
 
 uniform sampler2D screenTexture;
 uniform vec2 iResolution;
+uniform float gamma;   // present-pass output gamma (from render.json; ~2.2)
 
 #ifndef FXAA_REDUCE_MIN
     #define FXAA_REDUCE_MIN   (1.0 / 128.0)
@@ -81,7 +82,7 @@ void main() {
     FragColor = fxaa(screenTexture, fragCoord, iResolution,
                      v_rgbNW, v_rgbNE, v_rgbSW, v_rgbSE, v_rgbM);
 
-    // Final present pass: scene was lit in LINEAR space (PBR), so re-encode to sRGB gamma for display.
+    // Final present pass: scene was lit in LINEAR space (PBR), so re-encode to display gamma.
     // FXAA resolves on the linear buffer (edge luma is still monotonic), then we gamma-encode the result.
-    FragColor.rgb = pow(FragColor.rgb, vec3(1.0 / 2.2));
+    FragColor.rgb = pow(FragColor.rgb, vec3(1.0 / gamma));
 }

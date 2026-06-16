@@ -15,7 +15,8 @@
     "internalHeight": 1080,
     "antialiasing": "fxaa",
     "msaaSamples": 2,
-    "debugColliders": false
+    "debugColliders": false,
+    "gamma": 2.2
   },
   "profiler": {
     "cpu": false,

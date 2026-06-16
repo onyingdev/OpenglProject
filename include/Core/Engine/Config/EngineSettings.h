@@ -104,6 +104,7 @@ private:
             s.render.renderHeight   = r.value("internalHeight",  s.render.renderHeight);
             s.render.msaaSamples    = r.value("msaaSamples",     s.render.msaaSamples);
             s.render.debugColliders = r.value("debugColliders",  s.render.debugColliders);
+            s.render.gamma          = r.value("gamma",           s.render.gamma);
             if (r.contains("antialiasing")) s.render.aa = parseAA(r["antialiasing"].get<std::string>(), s.render.aa);
         }
 

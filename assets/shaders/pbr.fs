@@ -167,8 +167,23 @@ void main()
         Lo += cookTorrance(N, V, L, spotLights[i].diffuse * att * intensity, albedo, roughness, metallic, F0);
     }
 
-    // Flat ambient fill (IBL stand-in) + emissive.
-    vec3 ambient  = dirLight.ambient * albedo * ao;
+    // Hemisphere ambient (cheap IBL stand-in): sky color = dirLight.ambient, ground = a darker fraction.
+    // Diffuse fill follows the up-facing normal so back/under sides aren't pitch black (suppressed for
+    // metals, which carry no diffuse); a crude Fresnel-weighted sky reflection keeps dark/metallic
+    // surfaces from reading as black silhouettes. Replaced by real cube-map IBL later.
+    float NdotV = max(dot(N, V), 0.0);
+    vec3 skyAmb    = dirLight.ambient;
+    vec3 groundAmb = dirLight.ambient * 0.35;
+
+    vec3 ambColorN  = mix(groundAmb, skyAmb, clamp(0.5 * N.y + 0.5, 0.0, 1.0));
+    vec3 ambDiffuse = ambColorN * albedo * ao * (1.0 - metallic);
+
+    vec3 R          = reflect(-V, N);
+    vec3 ambColorR  = mix(groundAmb, skyAmb, clamp(0.5 * R.y + 0.5, 0.0, 1.0));
+    vec3 Famb       = F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(clamp(1.0 - NdotV, 0.0, 1.0), 5.0);
+    vec3 ambSpecular = ambColorR * Famb * ao;
+
+    vec3 ambient  = ambDiffuse + ambSpecular;
     vec3 emissive = emissiveFactor * texture(texture_emissive1, TexCoords).rgb;
 
     FragColor = vec4(ambient + Lo + emissive, 1.0);   // linear; present pass encodes gamma
