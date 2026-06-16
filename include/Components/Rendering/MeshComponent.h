@@ -48,9 +48,12 @@ public:
 
     // JSON: { "type": "Mesh", "model": "assets/.../foo.obj", "flipUVs": false,
     //         "material": "lit"|"unlit", "color": [r,g,b],
-    //         "cubemap": "assets/cubemaps/foo.json" }     // or an inline 6-element face array
+    //         "renderMode": "solid"|"wireframe"|"hidden",
+    //         "cubemap": "assets/cubemaps/foo.json",       // or an inline 6-element face array
+    //         "doubleSided": true }                        // force both faces lit (asset omitted the flag)
     // A "cubemap" makes the object a NORMAL lit object that reflects/receives ambient from that
-    // environment's IBL probe (shared per cube map) instead of the scene skybox.
+    // environment's IBL probe (shared per cube map) instead of the scene skybox. "doubleSided" forces
+    // every mesh double-sided — use it when a glTF leaves a glass/thin material single-sided.
     void deserialize(const nlohmann::json& j, LoadContext&) override {
         const std::string model = j.value("model", std::string{});
         const bool flip  = j.value("flipUVs", false);
@@ -67,6 +70,12 @@ public:
                          ? MaterialKind::Unlit : MaterialKind::Lit;
         UnlitColor = jsonVec3(j.value("color", nlohmann::json{}), UnlitColor);
 
+        // Render mode: solid (default) / wireframe (lines) / hidden (skipped in renderItem()).
+        const std::string rm = j.value("renderMode", std::string{"solid"});
+        Mode = (rm == "wireframe") ? RenderMode::Wireframe
+             : (rm == "hidden")    ? RenderMode::Hidden
+                                   : RenderMode::Solid;
+
         // Optional per-object environment cube map -> this object's IBL probe (it stays Lit). "cubemap"
         // is a path to a cubemap.json ({ "faces": [6 paths] }) or an inline 6-element face array (GL
         // order +X,-X,+Y,-Y,+Z,-Z). The env cube is shared via CubemapCache and its IBL bake is shared
@@ -76,6 +85,11 @@ public:
             if (resolveCubemapFaces(j["cubemap"], faces))
                 EnvCubemap = CubemapCache::get(faces);
         }
+
+        // Force double-sided when the asset omitted the glTF flag (e.g. single-sided glass). Applied now
+        // for sync loads; the async path re-applies on promotion in update(). Mutates the shared model.
+        m_forceDoubleSided = j.value("doubleSided", false);
+        if (m_forceDoubleSided && ModelRef) ModelRef->setDoubleSided(true);
     }
 
     // Promote a finished async load into the live model. Cheap no-op for synchronously-loaded meshes
@@ -84,6 +98,7 @@ public:
         if (!ModelRef && m_pending && m_pending->ready) {
             ModelRef = m_pending->model;
             m_pending.reset();
+            if (m_forceDoubleSided && ModelRef) ModelRef->setDoubleSided(true);
         }
     }
 
@@ -143,6 +158,10 @@ private:
     // In-flight async load: set by deserialize when "async": true, cleared once update() promotes it
     // into ModelRef. Null for synchronously-loaded meshes.
     std::shared_ptr<ModelHandle> m_pending;
+
+    // "doubleSided": true in JSON — force every mesh of the model double-sided after it loads (covers
+    // assets whose exporter omitted the glTF flag). Applied in deserialize (sync) / update (async).
+    bool m_forceDoubleSided = false;
 };
 
 REGISTER_COMPONENT(MeshComponent, "Mesh")

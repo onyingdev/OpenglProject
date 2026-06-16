@@ -165,6 +165,12 @@ public:
             meshes[i].DrawInstanced(shader, instances, count, pass);
     }
 
+    // Force the doubleSided flag on every mesh (override for assets that omit it, e.g. single-sided glass).
+    void setDoubleSided(bool enabled) override
+    {
+        for (Mesh& m : meshes) m.doubleSided = enabled;
+    }
+
 private:
     // ---- streamed-upload state (set by beginStreamed, consumed/cleared by uploadStep) ----
     bool            m_streaming = false;

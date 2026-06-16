@@ -21,4 +21,9 @@ public:
     // selects which alpha class of meshes to draw (Opaque skips BLEND meshes, and vice versa).
     virtual void DrawInstanced(IShader& shader, const glm::mat4* instances, int count,
                                MaterialPass pass = MaterialPass::Opaque) = 0;
+
+    // Force every mesh's glTF `doubleSided` flag on/off. Used to override assets whose exporter omitted
+    // the flag (e.g. single-sided glass that should be lit from both faces). Default no-op for backends
+    // that don't model it. NOTE: models are shared (cached by path), so this affects all users of the model.
+    virtual void setDoubleSided(bool /*enabled*/) {}
 };
