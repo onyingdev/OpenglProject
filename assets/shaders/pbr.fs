@@ -85,6 +85,13 @@ uniform sampler2D   brdfLUT;
 uniform int hasIBL;
 const float MAX_REFLECTION_LOD = 4.0;   // prefilterMap has 5 mips (0..4 -> roughness 0..1)
 
+// Per-environment IBL contribution multipliers (from the cubemap.json / skybox config). Let a cubemap act
+// as "light information" (diffuse irradiance) and/or "reflection information" (specular) independently:
+// lowering iblDiffuse hands diffuse shading back to the directional sun (less uniform), iblSpecular tunes
+// the reflections. Default 1.0 (full IBL) — set by the renderer per (model,env) group.
+uniform float iblDiffuse;
+uniform float iblSpecular;
+
 vec3 getNormal()
 {
     vec3 N = normalize(Normal);
@@ -214,7 +221,9 @@ void main()
         vec2 envBRDF     = texture(brdfLUT, vec2(NdotV, roughness)).rg;
         vec3 ambSpecular = prefiltered * (F * envBRDF.x + envBRDF.y);
 
-        ambient = (kD * ambDiffuse + ambSpecular) * ao;
+        // Scale the "environment as light" (diffuse) and "environment as reflection" (specular) terms
+        // independently so a cubemap can be reflection-only / light-only / both.
+        ambient = (kD * ambDiffuse * iblDiffuse + ambSpecular * iblSpecular) * ao;
     } else {
         // Hemisphere ambient fallback (no skybox/IBL): sky color = dirLight.ambient, ground darker.
         // Diffuse fill follows the up-facing normal (suppressed for metals); a crude Fresnel sky

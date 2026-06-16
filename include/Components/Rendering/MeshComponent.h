@@ -36,6 +36,10 @@ public:
     // the cache owns its lifetime). The object stays Lit and uses this environment's baked IBL probe
     // instead of the scene skybox. 0 = use the scene-default skybox probe.
     unsigned int EnvCubemap = 0;
+    // How this environment contributes (from the cubemap.json): EnvDiffuse scales the irradiance
+    // (env-as-light) term, EnvSpecular the reflection term. 1.0 = full; 0 = reflection-only / light-only.
+    float        EnvDiffuse  = 1.0f;
+    float        EnvSpecular = 1.0f;
 
     MeshComponent() = default;
     explicit MeshComponent(std::shared_ptr<IModel> model) : ModelRef(std::move(model)) {}
@@ -82,7 +86,7 @@ public:
         // per env cube (baked lazily on first draw). Missing/invalid -> 0 -> scene-default IBL.
         if (j.contains("cubemap")) {
             std::array<std::string, 6> faces{};
-            if (resolveCubemapFaces(j["cubemap"], faces))
+            if (resolveCubemapFaces(j["cubemap"], faces, EnvDiffuse, EnvSpecular))
                 EnvCubemap = CubemapCache::get(faces);
         }
 
@@ -126,14 +130,18 @@ public:
         item.material    = Material;
         item.unlitColor  = UnlitColor;
         item.envCubemap  = EnvCubemap;   // 0 -> renderer falls back to the scene skybox
+        item.iblDiffuse  = EnvDiffuse;
+        item.iblSpecular = EnvSpecular;
         return item;
     }
 
 private:
-    // Resolve a "cubemap" JSON node to 6 face paths (GL order +X,-X,+Y,-Y,+Z,-Z). Accepts either an
-    // inline 6-element array, or a string path to a cubemap.json of the form { "faces": [ 6 paths ] }.
+    // Resolve a "cubemap" JSON node to 6 face paths (GL order +X,-X,+Y,-Y,+Z,-Z) and its IBL contribution
+    // multipliers. Accepts either an inline 6-element array (faces only; diffuse/specular default 1.0), or
+    // a string path to a cubemap.json of the form { "faces": [6], "diffuse": 1.0, "specular": 1.0 }.
     // Returns false on any malformed/missing input (caller then leaves EnvCubemap = 0).
-    static bool resolveCubemapFaces(const nlohmann::json& node, std::array<std::string, 6>& out) {
+    static bool resolveCubemapFaces(const nlohmann::json& node, std::array<std::string, 6>& out,
+                                    float& diffuse, float& specular) {
         const nlohmann::json* arr = nullptr;
         nlohmann::json fileJson;   // must outlive `arr` when loaded from a file
         if (node.is_string()) {
@@ -141,7 +149,9 @@ private:
             if (!f) return false;
             try { f >> fileJson; } catch (const std::exception&) { return false; }
             if (!fileJson.contains("faces") || !fileJson["faces"].is_array()) return false;
-            arr = &fileJson["faces"];
+            arr      = &fileJson["faces"];
+            diffuse  = fileJson.value("diffuse",  diffuse);
+            specular = fileJson.value("specular", specular);
         } else if (node.is_array()) {
             arr = &node;
         } else {

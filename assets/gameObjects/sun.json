@@ -1,6 +1,6 @@
 {
   "name": "Sun",
   "components": [
-    { "type": "DirectionalLight", "direction": [-0.3, -1.0, -0.3], "color": [1.0, 1.0, 1.0], "ambient": 0.25, "diffuse": 0.0, "specular": 0.40 }
+    { "type": "DirectionalLight", "direction": [-0.3, -1.0, -0.3], "color": [1.0, 1.0, 1.0], "ambient": 0.25, "diffuse": 2.0, "specular": 0.40 }
   ]
 }

@@ -109,10 +109,20 @@ private:
             if (r.contains("antialiasing")) s.render.aa = parseAA(r["antialiasing"].get<std::string>(), s.render.aa);
             if (r.contains("tonemap")) s.render.tonemap = parseTonemap(r["tonemap"].get<std::string>(), s.render.tonemap);
 
+            // backgroundColor is a 4-element [r,g,b,a] ARRAY (no jsonVec4 helper exists), so read the
+            // four entries manually into the vec4. Missing/malformed -> keep the struct default.
+            if (r.contains("backgroundColor") && r["backgroundColor"].is_array() && r["backgroundColor"].size() == 4) {
+                const auto& c = r["backgroundColor"];
+                s.render.backgroundColor = glm::vec4(c[0].get<float>(), c[1].get<float>(),
+                                                     c[2].get<float>(), c[3].get<float>());
+            }
+
             if (r.contains("skybox") && r["skybox"].is_object()) {
                 const auto& sb = r["skybox"];
                 s.render.skybox.enabled        = sb.value("enabled",        s.render.skybox.enabled);
                 s.render.skybox.drawBackground = sb.value("drawBackground", s.render.skybox.drawBackground);
+                s.render.skybox.diffuse        = sb.value("diffuse",        s.render.skybox.diffuse);
+                s.render.skybox.specular       = sb.value("specular",       s.render.skybox.specular);
                 if (sb.contains("faces") && sb["faces"].is_array() && sb["faces"].size() == 6) {
                     for (int i = 0; i < 6; ++i)
                         s.render.skybox.faces[i] = sb["faces"][i].get<std::string>();
@@ -134,6 +144,7 @@ private:
                 s.profiler.physPrint   = ph.value("print",   s.profiler.physPrint);
             }
         }
+
     }
 
     static RenderBackend parseBackend(std::string v, RenderBackend fallback) {

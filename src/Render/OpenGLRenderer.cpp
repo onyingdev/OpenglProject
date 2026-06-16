@@ -389,7 +389,8 @@ void OpenGLRenderer::beginScene(const CameraView& cam) {
     glBindFramebuffer(GL_FRAMEBUFFER, m_sceneFbo);
     glViewport(0, 0, m_settings.renderWidth, m_settings.renderHeight);
     glEnable(GL_DEPTH_TEST);
-    glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
+    const glm::vec4& bg = m_settings.backgroundColor;
+    glClearColor(bg.r, bg.g, bg.b, bg.a);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     // New frame of deferred lit submissions. IBL probes are bound per (model,env) group in
@@ -419,7 +420,10 @@ void OpenGLRenderer::submit(const RenderItem& item) {
     // envCubemap 0 = the scene-default skybox probe; a per-object cube map gives its own IBL probe.
     // Unlit (lamps) and wireframe items are rare and stay on the immediate path below.
     if (item.material == MaterialKind::Lit && !item.wireframe) {
-        m_batches[item.model][(GLuint)item.envCubemap].push_back(item.modelMatrix);
+        LitBatch& b = m_batches[item.model][(GLuint)item.envCubemap];
+        b.instances.push_back(item.modelMatrix);
+        b.iblDiffuse  = item.iblDiffuse;   // consistent per (model,env): same cubemap -> same intensities
+        b.iblSpecular = item.iblSpecular;
         return;
     }
 
@@ -461,7 +465,7 @@ void OpenGLRenderer::flushOpaqueBatches() {
     // transparent flush. m_frameBrdfLUT is stashed for that second pass.
     bool anyEnv = false;
     for (auto& [model, byEnv] : m_batches)
-        for (auto& [env, mats] : byEnv) {
+        for (auto& [env, batch] : byEnv) {
             const GLuint cube = env ? env : m_skyboxTex;
             if (cube) { ibl.get(cube); anyEnv = true; }
         }
@@ -475,10 +479,20 @@ void OpenGLRenderer::flushOpaqueBatches() {
 
     m_litInstanced->use();
     for (auto& [model, byEnv] : m_batches)
-        for (auto& [env, mats] : byEnv) {
+        for (auto& [env, batch] : byEnv) {
             bindIBLForEnv(env, m_frameBrdfLUT);
-            model->DrawInstanced(*m_litInstanced, mats.data(), (int)mats.size(), MaterialPass::Opaque);
+            bindIBLIntensities(env, batch);
+            model->DrawInstanced(*m_litInstanced, batch.instances.data(), (int)batch.instances.size(), MaterialPass::Opaque);
         }
+}
+
+// Set the per-group IBL contribution multipliers on the instanced program: env 0 (scene skybox) takes the
+// skybox config, a per-object cube map takes its cubemap.json values (carried on the batch).
+void OpenGLRenderer::bindIBLIntensities(GLuint env, const LitBatch& batch) {
+    const float d = env ? batch.iblDiffuse  : m_settings.skybox.diffuse;
+    const float s = env ? batch.iblSpecular : m_settings.skybox.specular;
+    m_litInstanced->setFloat("iblDiffuse",  d);
+    m_litInstanced->setFloat("iblSpecular", s);
 }
 
 // Bind a batch environment's IBL probe (irradiance/prefilter -> units 10/11) and toggle hasIBL on the
@@ -514,9 +528,10 @@ void OpenGLRenderer::flushTransparentBatches() {
 
     m_litInstanced->use();
     for (auto& [model, byEnv] : m_batches)
-        for (auto& [env, mats] : byEnv) {
+        for (auto& [env, batch] : byEnv) {
             bindIBLForEnv(env, m_frameBrdfLUT);
-            model->DrawInstanced(*m_litInstanced, mats.data(), (int)mats.size(), MaterialPass::Transparent);
+            bindIBLIntensities(env, batch);
+            model->DrawInstanced(*m_litInstanced, batch.instances.data(), (int)batch.instances.size(), MaterialPass::Transparent);
         }
 
     glDepthFunc(GL_LESS);    // restore default for the next frame

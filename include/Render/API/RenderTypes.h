@@ -27,6 +27,10 @@ struct RenderItem {
     // this environment's baked probe instead of the scene skybox. 0 = use the scene-default skybox
     // probe. Plain unsigned int so this API header stays free of any GL type dependency.
     unsigned int envCubemap = 0;
+    // Per-environment IBL contribution multipliers (from the cubemap.json). iblDiffuse scales the
+    // "environment as light" (irradiance) term, iblSpecular the reflection term. 1.0 = full IBL.
+    float        iblDiffuse  = 1.0f;
+    float        iblSpecular = 1.0f;
 };
 
 struct DirLight {

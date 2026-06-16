@@ -31,6 +31,15 @@ public:
     void drawLine(const glm::vec3& a, const glm::vec3& b, const glm::vec3& color) override;
 
 private:
+    // One (model, environment) instanced group: the per-instance matrices + how this environment's IBL
+    // contributes (from the cubemap.json; env 0 uses the skybox config). Consistent per group since the
+    // intensities come from the shared cubemap.
+    struct LitBatch {
+        std::vector<glm::mat4> instances;
+        float iblDiffuse  = 1.0f;
+        float iblSpecular = 1.0f;
+    };
+
     void buildTargets();    // (re)create scene/resolve FBOs for the current settings
     void destroyTargets();
     void buildQuad();       // fullscreen present quad (created once)
@@ -44,6 +53,7 @@ private:
     void flushOpaqueBatches();       // draw deferred lit meshes instanced (opaque+mask pass; idempotent/frame)
     void flushTransparentBatches();  // second pass: BLEND meshes, blended over the resolved opaque+skybox
     void bindIBLForEnv(GLuint env, GLuint brdf);   // bind a batch env's probe (irradiance/prefilter) + hasIBL
+    void bindIBLIntensities(GLuint env, const LitBatch& batch);   // set iblDiffuse/iblSpecular uniforms
 
     GLADloadproc   m_loader   = nullptr;
     bool           m_glLoaded = false;
@@ -86,7 +96,7 @@ private:
     // Deferred opaque-lit submissions, grouped by (model, environment cube) so each group draws in ONE
     // instanced call with its own IBL probe bound. Env 0 = the scene-default skybox probe. Filled by
     // submit(), flushed (once) by flushOpaqueBatches() before debug draw / present.
-    std::unordered_map<IModel*, std::unordered_map<GLuint, std::vector<glm::mat4>>> m_batches;
+    std::unordered_map<IModel*, std::unordered_map<GLuint, LitBatch>> m_batches;
     bool m_batchesFlushed = false;
     GLuint m_frameBrdfLUT = 0;   // BRDF LUT resolved by the opaque flush; reused by the transparent flush
 };

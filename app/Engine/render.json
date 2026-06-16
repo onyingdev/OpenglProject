@@ -6,7 +6,7 @@
     "title": "OpenGL",
     "mode": "windowed",
     "resize": "free",
-    "vsync": false,
+    "vsync": true,
     "glMajor": 3,
     "glMinor": 3
   },
@@ -38,7 +38,7 @@
     "detail": false,
     "reportEvery": 60,
     "physics": {
-      "timings": true,
+      "timings": false,
       "solver": false,
       "print": false
     }

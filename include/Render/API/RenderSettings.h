@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <string>
+#include <glm/glm.hpp>
 
 // Runtime-tunable rendering configuration. Changing the render resolution or the
 // anti-aliasing mode rebuilds the renderer's offscreen targets on the fly (see
@@ -28,6 +29,8 @@ enum class TonemapMode {
 struct SkyboxSettings {
     bool                          enabled = false;
     bool                          drawBackground = true;   // false = hide the background cube but keep IBL
+    float                         diffuse  = 1.0f;         // IBL irradiance (env-as-light) multiplier
+    float                         specular = 1.0f;         // IBL reflection multiplier
     std::array<std::string, 6>    faces{};
 };
 
@@ -42,4 +45,5 @@ struct RenderSettings {
     TonemapMode  tonemap      = TonemapMode::ACES; // HDR->LDR operator before the gamma encode
     float        exposure     = 1.0f;             // linear exposure multiplier applied before tonemapping
     SkyboxSettings skybox;                        // environment cubemap (background; IBL source later)
+    glm::vec4 backgroundColor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
 };
