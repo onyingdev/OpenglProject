@@ -20,7 +20,8 @@
     "tonemap": "aces",
     "exposure": 1.0,
     "skybox": {
-      "enabled": true,
+      "enabled": false,
+      "drawBackground": true,
       "faces": [
         "assets/textures/studio_light/px.png",
         "assets/textures/studio_light/nx.png",

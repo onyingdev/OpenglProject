@@ -1,7 +1,8 @@
 #include "Render/GL/OpenGLRenderer.h"
 #include "Render/API/IModel.h"   // complete type needed to call IModel::Draw
 #include "Core/Engine/Profiling/Profiler.h"   // GPU timer-query subsections (gpu.frame/flush/resolve/present)
-#include "Render/CubemapCache.h"              // shared cube-map loader (skybox + reflective objects)
+#include "Render/CubemapCache.h"              // shared cube-map loader (skybox + per-object env maps)
+#include "Render/IblProbeCache.h"             // on-demand IBL bakes shared per environment cube map
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 #include <vector>
@@ -35,9 +36,6 @@ OpenGLRenderer::~OpenGLRenderer() {
     if (m_skyboxTex)     glDeleteTextures(1, &m_skyboxTex);
     if (m_skyboxVbo)     glDeleteBuffers(1, &m_skyboxVbo);
     if (m_skyboxVao)     glDeleteVertexArrays(1, &m_skyboxVao);
-    if (m_irradianceMap) glDeleteTextures(1, &m_irradianceMap);
-    if (m_prefilterMap)  glDeleteTextures(1, &m_prefilterMap);
-    if (m_brdfLUT)       glDeleteTextures(1, &m_brdfLUT);
 }
 
 bool OpenGLRenderer::init(int fbW, int fbH) {
@@ -62,10 +60,14 @@ bool OpenGLRenderer::init(int fbW, int fbH) {
     // attribute, so many identical models draw in one glDrawElementsInstanced instead of one call each.
     m_litInstanced = std::make_unique<Shader>("assets/shaders/pbr_instanced.vs", "assets/shaders/pbr.fs");
     m_unlit = std::make_unique<Shader>("assets/shaders/light_s.vs",           "assets/shaders/light_s.fs");
-    // Environment-mapped mirror material (per-object cube map; falls back to the scene skybox).
-    m_reflect = std::make_unique<Shader>("assets/shaders/reflect.vs",         "assets/shaders/reflect.fs");
-    m_reflect->use();
-    m_reflect->setInt("skybox", 0);
+    // IBL sampler units are fixed (10/11/12); set once on both lit programs. flushOpaqueBatches binds
+    // the actual irradiance/prefilter per (model,env) group + the shared BRDF LUT, and toggles hasIBL.
+    for (Shader* s : { m_lit.get(), m_litInstanced.get() }) {
+        s->use();
+        s->setInt("irradianceMap", 10);
+        s->setInt("prefilterMap",  11);
+        s->setInt("brdfLUT",       12);
+    }
     m_post  = std::make_unique<Shader>("assets/shaders/msaa_post.vs",         "assets/shaders/msaa_post.fs");
     m_post->use();
     m_post->setInt("screenTexture", 0);
@@ -78,7 +80,12 @@ bool OpenGLRenderer::init(int fbW, int fbH) {
     buildDebugGeometry();
     buildTargets();
     buildSkybox();   // honors m_settings.skybox (set by applySettings before init); disables itself on failure
-    bakeIBL();       // bake irradiance/prefilter/BRDF from the skybox (no-op if the skybox didn't load)
+    // Warm up the scene-default IBL probe + the shared BRDF LUT from the skybox so frame 1 isn't hitched.
+    // Per-object probes bake lazily on first use (IblProbeCache, keyed by env cube). No-op without a skybox.
+    if (m_skyboxTex) {
+        IblProbeCache::instance().get(m_skyboxTex);
+        IblProbeCache::instance().brdfLUT();
+    }
     return true;
 }
 
@@ -210,7 +217,9 @@ void OpenGLRenderer::buildSkybox() {
 // camera view with translation stripped so it never moves relative to the camera. Called in endScene
 // while the scene FBO is still bound, after the opaque flush, so it only fills un-covered pixels.
 void OpenGLRenderer::drawSkybox() {
-    if (!m_settings.skybox.enabled || !m_skyboxTex) return;
+    // `enabled` governs loading + the IBL bake; `drawBackground` governs only the visible background cube.
+    // enabled:true + drawBackground:false = no background, IBL reflections/ambient still active.
+    if (!m_settings.skybox.enabled || !m_settings.skybox.drawBackground || !m_skyboxTex) return;
 
     glDepthFunc(GL_LEQUAL);
     m_skybox->use();
@@ -223,151 +232,6 @@ void OpenGLRenderer::drawSkybox() {
     glDrawArrays(GL_TRIANGLES, 0, 36);
     glBindVertexArray(0);
     glDepthFunc(GL_LESS);   // restore default for the next frame's geometry
-}
-
-// Bake the Karis split-sum IBL set from the skybox cube map: a diffuse irradiance map, a roughness-
-// mipped specular prefilter map, and the environment-BRDF LUT. Runs once at init (after buildSkybox),
-// rendering each into offscreen targets with a temporary capture FBO. No-op if the skybox didn't load.
-void OpenGLRenderer::bakeIBL() {
-    if (!m_settings.skybox.enabled || !m_skyboxTex) return;
-
-    // The prefilter mip-sampling firefly fix reads coarse mips of the environment, so give it a mip
-    // chain. (Also makes the skybox itself mip-filtered, which is harmless.)
-    glBindTexture(GL_TEXTURE_CUBE_MAP, m_skyboxTex);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glGenerateMipmap(GL_TEXTURE_CUBE_MAP);
-    int srcRes = 512;
-    glGetTexLevelParameteriv(GL_TEXTURE_CUBE_MAP_POSITIVE_X, 0, GL_TEXTURE_WIDTH, &srcRes);
-
-    Shader irradianceSh("assets/shaders/cubemap_capture.vs", "assets/shaders/irradiance_convolution.fs");
-    Shader prefilterSh ("assets/shaders/cubemap_capture.vs", "assets/shaders/prefilter.fs");
-    Shader brdfSh      ("assets/shaders/brdf.vs",            "assets/shaders/brdf.fs");
-
-    // Capture FBO + depth RBO (resized per target below).
-    GLuint capFbo = 0, capRbo = 0;
-    glGenFramebuffers(1, &capFbo);
-    glGenRenderbuffers(1, &capRbo);
-
-    const glm::mat4 capProj = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, 10.0f);
-    const glm::mat4 capViews[6] = {
-        glm::lookAt(glm::vec3(0.0f), glm::vec3( 1, 0, 0), glm::vec3(0,-1, 0)),
-        glm::lookAt(glm::vec3(0.0f), glm::vec3(-1, 0, 0), glm::vec3(0,-1, 0)),
-        glm::lookAt(glm::vec3(0.0f), glm::vec3( 0, 1, 0), glm::vec3(0, 0, 1)),
-        glm::lookAt(glm::vec3(0.0f), glm::vec3( 0,-1, 0), glm::vec3(0, 0,-1)),
-        glm::lookAt(glm::vec3(0.0f), glm::vec3( 0, 0, 1), glm::vec3(0,-1, 0)),
-        glm::lookAt(glm::vec3(0.0f), glm::vec3( 0, 0,-1), glm::vec3(0,-1, 0)),
-    };
-    auto drawCube = [&]() {
-        glBindVertexArray(m_skyboxVao);
-        glDrawArrays(GL_TRIANGLES, 0, 36);
-        glBindVertexArray(0);
-    };
-
-    // --- 1. Diffuse irradiance map (small; heavily convolved) ---------------------------------
-    const int IRR_RES = 32;
-    glGenTextures(1, &m_irradianceMap);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, m_irradianceMap);
-    for (int i = 0; i < 6; ++i)
-        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB16F, IRR_RES, IRR_RES, 0, GL_RGB, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, capFbo);
-    glBindRenderbuffer(GL_RENDERBUFFER, capRbo);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, IRR_RES, IRR_RES);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, capRbo);
-
-    irradianceSh.use();
-    irradianceSh.setInt("environmentMap", 0);
-    irradianceSh.setMat4("projection", capProj);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, m_skyboxTex);
-    glViewport(0, 0, IRR_RES, IRR_RES);
-    for (int i = 0; i < 6; ++i) {
-        irradianceSh.setMat4("view", capViews[i]);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, m_irradianceMap, 0);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        drawCube();
-    }
-
-    // --- 2. Specular prefilter map (mip chain = roughness levels) -----------------------------
-    const int PRE_RES = 128;
-    const int PRE_MIPS = 5;   // matches MAX_REFLECTION_LOD (4) in pbr.fs
-    glGenTextures(1, &m_prefilterMap);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, m_prefilterMap);
-    for (int i = 0; i < 6; ++i)
-        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB16F, PRE_RES, PRE_RES, 0, GL_RGB, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glGenerateMipmap(GL_TEXTURE_CUBE_MAP);   // allocate the mip chain we render into
-
-    prefilterSh.use();
-    prefilterSh.setInt("environmentMap", 0);
-    prefilterSh.setMat4("projection", capProj);
-    prefilterSh.setFloat("resolution", (float)srcRes);
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, m_skyboxTex);
-    glBindFramebuffer(GL_FRAMEBUFFER, capFbo);
-    for (int mip = 0; mip < PRE_MIPS; ++mip) {
-        const int mipRes = (int)(PRE_RES * std::pow(0.5, mip));
-        glBindRenderbuffer(GL_RENDERBUFFER, capRbo);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, mipRes, mipRes);
-        glViewport(0, 0, mipRes, mipRes);
-        const float roughness = (float)mip / (float)(PRE_MIPS - 1);
-        prefilterSh.setFloat("roughness", roughness);
-        for (int i = 0; i < 6; ++i) {
-            prefilterSh.setMat4("view", capViews[i]);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, m_prefilterMap, mip);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            drawCube();
-        }
-    }
-
-    // --- 3. Environment BRDF LUT (2D, view-independent; reuses the present quad) ---------------
-    const int LUT_RES = 512;
-    glGenTextures(1, &m_brdfLUT);
-    glBindTexture(GL_TEXTURE_2D, m_brdfLUT);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, LUT_RES, LUT_RES, 0, GL_RG, GL_FLOAT, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, capFbo);
-    glBindRenderbuffer(GL_RENDERBUFFER, capRbo);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, LUT_RES, LUT_RES);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_brdfLUT, 0);
-    glViewport(0, 0, LUT_RES, LUT_RES);
-    brdfSh.use();
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    glBindVertexArray(m_quadVao);
-    glDrawArrays(GL_TRIANGLES, 0, 6);
-    glBindVertexArray(0);
-
-    // Restore default framebuffer; per-frame viewport is set in beginScene.
-    glDeleteFramebuffers(1, &capFbo);
-    glDeleteRenderbuffers(1, &capRbo);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    m_hasIBL = true;
-
-    // Point the lit programs' IBL samplers at the fixed units they're bound to each frame, and flip the
-    // ambient branch in pbr.fs. (hasIBL defaults to 0, so non-IBL builds keep the hemisphere ambient.)
-    for (Shader* s : { m_lit.get(), m_litInstanced.get() }) {
-        s->use();
-        s->setInt("irradianceMap", 10);
-        s->setInt("prefilterMap",  11);
-        s->setInt("brdfLUT",       12);
-        s->setInt("hasIBL", 1);
-    }
-    std::cout << "OpenGLRenderer: IBL baked (irradiance " << IRR_RES << ", prefilter " << PRE_RES
-              << "x" << PRE_MIPS << " mips, BRDF LUT " << LUT_RES << ", env " << srcRes << ")\n";
 }
 
 void OpenGLRenderer::destroyTargets() {
@@ -528,26 +392,16 @@ void OpenGLRenderer::beginScene(const CameraView& cam) {
     glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // New frame of deferred lit submissions.
+    // New frame of deferred lit submissions. IBL probes are bound per (model,env) group in
+    // flushOpaqueBatches (the env varies per group), not globally here.
     m_batches.clear();
     m_batchesFlushed = false;
-
-    // Bind the baked IBL set to its fixed units for the whole frame. Material textures use units 0..~7
-    // (Mesh::bindTextures), the skybox/reflect use unit 0 — none touch 10/11/12, so this stays valid for
-    // every lit draw this frame. No-op when there's no environment (hemisphere-ambient fallback).
-    if (m_hasIBL) {
-        glActiveTexture(GL_TEXTURE0 + 10); glBindTexture(GL_TEXTURE_CUBE_MAP, m_irradianceMap);
-        glActiveTexture(GL_TEXTURE0 + 11); glBindTexture(GL_TEXTURE_CUBE_MAP, m_prefilterMap);
-        glActiveTexture(GL_TEXTURE0 + 12); glBindTexture(GL_TEXTURE_2D,       m_brdfLUT);
-        glActiveTexture(GL_TEXTURE0);   // restore default unit for material/skybox binds
-    }
 
     // Push camera matrices to every program that draws scene geometry up front. Both lit programs
     // need them because lit meshes now go through the instanced program; m_lit stays for wireframe.
     uploadCamera(*m_lit);
     uploadCamera(*m_litInstanced);
     uploadCamera(*m_unlit);
-    uploadCamera(*m_reflect);   // reflective material needs view/projection/viewPos (cameraPos)
 }
 
 void OpenGLRenderer::setLights(const LightSet& lights) {
@@ -560,25 +414,12 @@ void OpenGLRenderer::setLights(const LightSet& lights) {
 void OpenGLRenderer::submit(const RenderItem& item) {
     if (!item.model) return;
 
-    // Opaque lit meshes are DEFERRED and grouped by model, then drawn instanced in flushOpaqueBatches()
-    // — one glDrawElementsInstanced per model instead of one draw call per object. Unlit (lamps) and
-    // wireframe items are rare and stay on the immediate path below.
+    // Opaque lit meshes are DEFERRED and grouped by (model, environment cube), then drawn instanced in
+    // flushOpaqueBatches() — one glDrawElementsInstanced per group instead of one draw call per object.
+    // envCubemap 0 = the scene-default skybox probe; a per-object cube map gives its own IBL probe.
+    // Unlit (lamps) and wireframe items are rare and stay on the immediate path below.
     if (item.material == MaterialKind::Lit && !item.wireframe) {
-        m_batches[item.model].push_back(item.modelMatrix);
-        return;
-    }
-
-    // Reflective: environment-mapped mirror. Bind the per-object cube map (or the scene skybox as a
-    // fallback) to unit 0 and draw with the reflect program. The mesh's own 2D textures still bind
-    // during Draw, but on a separate target so they don't disturb the samplerCube at unit 0.
-    if (item.material == MaterialKind::Reflective) {
-        const GLuint cube = item.envCubemap ? (GLuint)item.envCubemap : m_skyboxTex;
-        if (!cube) return;   // nothing to reflect (no per-object map and no skybox) -> skip
-        m_reflect->use();
-        m_reflect->setMat4("model", item.modelMatrix);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
-        item.model->Draw(*m_reflect);
+        m_batches[item.model][(GLuint)item.envCubemap].push_back(item.modelMatrix);
         return;
     }
 
@@ -599,9 +440,10 @@ void OpenGLRenderer::submit(const RenderItem& item) {
     }
 }
 
-// Draw all deferred lit meshes, one instanced call per distinct model. Idempotent per frame: the first
-// of (debug draw / endScene) flushes, the rest are no-ops — so meshes always land before debug
-// wireframes and the present pass, preserving draw order (all opaque + depth-tested anyway).
+// Draw all deferred lit meshes, one instanced call per (model, environment) group. Each group binds its
+// own IBL probe (irradiance/prefilter) so objects can reflect different environments while staying
+// instanced; env 0 uses the scene-default skybox probe. Idempotent per frame: the first of (debug draw /
+// endScene) flushes, the rest are no-ops — meshes land before debug wireframes and the present pass.
 void OpenGLRenderer::flushOpaqueBatches() {
     if (m_batchesFlushed) return;
     m_batchesFlushed = true;
@@ -610,9 +452,40 @@ void OpenGLRenderer::flushOpaqueBatches() {
     PROFILE_GPU_DETAIL("gpu.flush");   // GPU time for the instanced draws
     PROFILE_CPU_DETAIL("cpu.flush");   // CPU time to upload matrices + issue the draw calls
 
+    IblProbeCache& ibl = IblProbeCache::instance();
+
+    // Pre-bake every probe this frame needs + the shared BRDF LUT (each bake switches FBO/viewport
+    // internally), THEN rebind the scene target. env 0 resolves to the scene skybox; a group whose env
+    // doesn't resolve to a cube gets no probe (hemisphere fallback). Baking is one-time per environment.
+    bool anyEnv = false;
+    for (auto& [model, byEnv] : m_batches)
+        for (auto& [env, mats] : byEnv) {
+            const GLuint cube = env ? env : m_skyboxTex;
+            if (cube) { ibl.get(cube); anyEnv = true; }
+        }
+    const GLuint brdf = anyEnv ? ibl.brdfLUT() : 0;   // env-independent; may bake here (before rebind)
+
+    glBindFramebuffer(GL_FRAMEBUFFER, m_sceneFbo);
+    glViewport(0, 0, m_settings.renderWidth, m_settings.renderHeight);
+
+    // Shared BRDF LUT at unit 12 for the whole flush.
+    if (brdf) { glActiveTexture(GL_TEXTURE0 + 12); glBindTexture(GL_TEXTURE_2D, brdf); }
+
     m_litInstanced->use();
-    for (auto& [model, matrices] : m_batches)
-        model->DrawInstanced(*m_litInstanced, matrices.data(), (int)matrices.size());
+    for (auto& [model, byEnv] : m_batches) {
+        for (auto& [env, mats] : byEnv) {
+            const GLuint cube = env ? env : m_skyboxTex;
+            const bool hasIBL = (cube != 0) && (brdf != 0);
+            if (hasIBL) {
+                const IblProbeCache::Probe& p = ibl.get(cube);
+                glActiveTexture(GL_TEXTURE0 + 10); glBindTexture(GL_TEXTURE_CUBE_MAP, p.irradiance);
+                glActiveTexture(GL_TEXTURE0 + 11); glBindTexture(GL_TEXTURE_CUBE_MAP, p.prefilter);
+                glActiveTexture(GL_TEXTURE0);
+            }
+            m_litInstanced->setInt("hasIBL", hasIBL ? 1 : 0);
+            model->DrawInstanced(*m_litInstanced, mats.data(), (int)mats.size());
+        }
+    }
 }
 
 // --- debug primitives ---------------------------------------------------------

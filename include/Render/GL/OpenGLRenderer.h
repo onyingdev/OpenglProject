@@ -37,7 +37,6 @@ private:
     void buildDebugGeometry();  // wire-cube + wire-sphere + dynamic line buffers (created once)
     void buildSkybox();     // cube VAO + skybox shader + load the cubemap (once, in init; honors settings)
     void drawSkybox();      // draw the environment cube behind the opaque scene (in endScene)
-    void bakeIBL();         // bake irradiance + prefilter + BRDF LUT from the skybox (once, after buildSkybox)
     static GLuint loadCubemap(const std::array<std::string, 6>& faces);  // 6 sRGB faces -> GL cube map (0 on failure)
 
     void uploadCamera(Shader& sh);   // push view/projection/viewPos to a program
@@ -74,21 +73,17 @@ private:
     std::unique_ptr<Shader> m_post;         // msaa_post (fullscreen present, no post-AA)
     std::unique_ptr<Shader> m_fxaa;         // fxaa_s (present pass with FXAA edge filter)
     std::unique_ptr<Shader> m_skybox;       // skybox (environment cubemap background)
-    std::unique_ptr<Shader> m_reflect;      // reflect (environment-mapped mirror material)
 
-    // Environment cubemap (drawn behind opaque geometry). 0 / disabled when no skybox is configured.
+    // Environment cubemap (drawn behind opaque geometry, and the scene-default IBL probe source).
+    // 0 / disabled when no skybox is configured. IBL bakes live in IblProbeCache (keyed by env cube).
     GLuint m_skyboxTex = 0, m_skyboxVao = 0, m_skyboxVbo = 0;
-
-    // Baked IBL set (from the skybox cube map). Bound to fixed units 10/11/12 for the lit programs;
-    // m_hasIBL gates the IBL ambient branch in pbr.fs (falls back to hemisphere ambient when false).
-    GLuint m_irradianceMap = 0, m_prefilterMap = 0, m_brdfLUT = 0;
-    bool   m_hasIBL = false;
 
     CameraView m_camera;
     LightSet   m_lights;
 
-    // Deferred opaque-lit submissions, grouped by model so each group draws in ONE instanced call.
-    // Filled by submit(), flushed (once) by flushOpaqueBatches() before debug draw / present.
-    std::unordered_map<IModel*, std::vector<glm::mat4>> m_batches;
+    // Deferred opaque-lit submissions, grouped by (model, environment cube) so each group draws in ONE
+    // instanced call with its own IBL probe bound. Env 0 = the scene-default skybox probe. Filled by
+    // submit(), flushed (once) by flushOpaqueBatches() before debug draw / present.
+    std::unordered_map<IModel*, std::unordered_map<GLuint, std::vector<glm::mat4>>> m_batches;
     bool m_batchesFlushed = false;
 };

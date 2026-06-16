@@ -111,7 +111,8 @@ private:
 
             if (r.contains("skybox") && r["skybox"].is_object()) {
                 const auto& sb = r["skybox"];
-                s.render.skybox.enabled = sb.value("enabled", s.render.skybox.enabled);
+                s.render.skybox.enabled        = sb.value("enabled",        s.render.skybox.enabled);
+                s.render.skybox.drawBackground = sb.value("drawBackground", s.render.skybox.drawBackground);
                 if (sb.contains("faces") && sb["faces"].is_array() && sb["faces"].size() == 6) {
                     for (int i = 0; i < 6; ++i)
                         s.render.skybox.faces[i] = sb["faces"][i].get<std::string>();

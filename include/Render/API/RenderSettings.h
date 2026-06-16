@@ -27,6 +27,7 @@ enum class TonemapMode {
 // (right, left, top, bottom, front, back). Loaded once at init; absent/empty -> disabled.
 struct SkyboxSettings {
     bool                          enabled = false;
+    bool                          drawBackground = true;   // false = hide the background cube but keep IBL
     std::array<std::string, 6>    faces{};
 };
 

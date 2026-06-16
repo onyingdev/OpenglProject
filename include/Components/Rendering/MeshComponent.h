@@ -13,6 +13,8 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <array>
+#include <fstream>
 
 // Attach to a GameObject to give it a renderable mesh model. The component is pure
 // data + transform: it produces a RenderItem for the renderer to draw, and never
@@ -30,9 +32,9 @@ public:
     MaterialKind Material = MaterialKind::Lit;
     glm::vec3    UnlitColor{1.0f};
 
-    // Environment cube map this object reflects when Material == Reflective. 0 means "use the scene
-    // skybox" (set in JSON via "material":"reflective" with no faces). A non-zero id comes from
-    // CubemapCache (shared per face set). GL cube texture id; the cache owns its lifetime.
+    // Per-object IBL environment cube map (GL cube texture id from CubemapCache, shared per face set;
+    // the cache owns its lifetime). The object stays Lit and uses this environment's baked IBL probe
+    // instead of the scene skybox. 0 = use the scene-default skybox probe.
     unsigned int EnvCubemap = 0;
 
     MeshComponent() = default;
@@ -45,10 +47,10 @@ public:
         : ModelRef(std::make_shared<Model>(path, false, flipUVs)) {}
 
     // JSON: { "type": "Mesh", "model": "assets/.../foo.obj", "flipUVs": false,
-    //         "material": "lit"|"unlit"|"reflective", "color": [r,g,b],
-    //         "cubemap": [ "+x.jpg","-x.jpg","+y.jpg","-y.jpg","+z.jpg","-z.jpg" ] }
-    // A "cubemap" array implies a reflective material; "material":"reflective" with no cubemap
-    // reflects the scene skybox instead.
+    //         "material": "lit"|"unlit", "color": [r,g,b],
+    //         "cubemap": "assets/cubemaps/foo.json" }     // or an inline 6-element face array
+    // A "cubemap" makes the object a NORMAL lit object that reflects/receives ambient from that
+    // environment's IBL probe (shared per cube map) instead of the scene skybox.
     void deserialize(const nlohmann::json& j, LoadContext&) override {
         const std::string model = j.value("model", std::string{});
         const bool flip  = j.value("flipUVs", false);
@@ -61,19 +63,18 @@ public:
             else       ModelRef  = ModelCache::get(model, false, flip);   // shared upload per path
         }
 
-        const std::string mat = j.value("material", std::string{"lit"});
-        Material   = (mat == "unlit")      ? MaterialKind::Unlit
-                   : (mat == "reflective") ? MaterialKind::Reflective
-                                           : MaterialKind::Lit;
+        Material   = (j.value("material", std::string{"lit"}) == "unlit")
+                         ? MaterialKind::Unlit : MaterialKind::Lit;
         UnlitColor = jsonVec3(j.value("color", nlohmann::json{}), UnlitColor);
 
-        // Optional per-object environment cube map (6 faces, GL order +X,-X,+Y,-Y,+Z,-Z). Loading is
-        // synchronous + cached; assigning one forces the reflective material so it actually shows.
-        if (j.contains("cubemap") && j["cubemap"].is_array() && j["cubemap"].size() == 6) {
+        // Optional per-object environment cube map -> this object's IBL probe (it stays Lit). "cubemap"
+        // is a path to a cubemap.json ({ "faces": [6 paths] }) or an inline 6-element face array (GL
+        // order +X,-X,+Y,-Y,+Z,-Z). The env cube is shared via CubemapCache and its IBL bake is shared
+        // per env cube (baked lazily on first draw). Missing/invalid -> 0 -> scene-default IBL.
+        if (j.contains("cubemap")) {
             std::array<std::string, 6> faces{};
-            for (int i = 0; i < 6; ++i) faces[i] = j["cubemap"][i].get<std::string>();
-            EnvCubemap = CubemapCache::get(faces);
-            Material   = MaterialKind::Reflective;
+            if (resolveCubemapFaces(j["cubemap"], faces))
+                EnvCubemap = CubemapCache::get(faces);
         }
     }
 
@@ -114,6 +115,31 @@ public:
     }
 
 private:
+    // Resolve a "cubemap" JSON node to 6 face paths (GL order +X,-X,+Y,-Y,+Z,-Z). Accepts either an
+    // inline 6-element array, or a string path to a cubemap.json of the form { "faces": [ 6 paths ] }.
+    // Returns false on any malformed/missing input (caller then leaves EnvCubemap = 0).
+    static bool resolveCubemapFaces(const nlohmann::json& node, std::array<std::string, 6>& out) {
+        const nlohmann::json* arr = nullptr;
+        nlohmann::json fileJson;   // must outlive `arr` when loaded from a file
+        if (node.is_string()) {
+            std::ifstream f(node.get<std::string>());
+            if (!f) return false;
+            try { f >> fileJson; } catch (const std::exception&) { return false; }
+            if (!fileJson.contains("faces") || !fileJson["faces"].is_array()) return false;
+            arr = &fileJson["faces"];
+        } else if (node.is_array()) {
+            arr = &node;
+        } else {
+            return false;
+        }
+        if (arr->size() != 6) return false;
+        for (int i = 0; i < 6; ++i) {
+            if (!(*arr)[i].is_string()) return false;
+            out[i] = (*arr)[i].get<std::string>();
+        }
+        return true;
+    }
+
     // In-flight async load: set by deserialize when "async": true, cleared once update() promotes it
     // into ModelRef. Null for synchronously-loaded meshes.
     std::shared_ptr<ModelHandle> m_pending;

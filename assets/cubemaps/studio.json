@@ -1,0 +1,11 @@
+{
+  "_comment": "Environment cube map for per-object IBL probes. faces are GL order: +X,-X,+Y,-Y,+Z,-Z (right,left,top,bottom,front,back). Reference from a Mesh component with \"cubemap\": \"assets/cubemaps/studio.json\".",
+  "faces": [
+    "assets/textures/studio_light/px.png",
+    "assets/textures/studio_light/nx.png",
+    "assets/textures/studio_light/py.png",
+    "assets/textures/studio_light/ny.png",
+    "assets/textures/studio_light/pz.png",
+    "assets/textures/studio_light/nz.png"
+  ]
+}
