@@ -1,4 +1,6 @@
 #pragma once
+#include <array>
+#include <string>
 
 // Runtime-tunable rendering configuration. Changing the render resolution or the
 // anti-aliasing mode rebuilds the renderer's offscreen targets on the fly (see
@@ -20,6 +22,14 @@ enum class TonemapMode {
     ACES     = 2,   // Narkowicz ACES filmic approximation (default)
 };
 
+// Environment cubemap drawn behind the opaque scene (and, later, the source for IBL).
+// faces are in OpenGL cube-face order: +X, -X, +Y, -Y, +Z, -Z
+// (right, left, top, bottom, front, back). Loaded once at init; absent/empty -> disabled.
+struct SkyboxSettings {
+    bool                          enabled = false;
+    std::array<std::string, 6>    faces{};
+};
+
 struct RenderSettings {
     int          renderWidth  = 1920;             // internal/offscreen render resolution
     int          renderHeight = 1080;             // (independent of the window size)
@@ -30,4 +40,5 @@ struct RenderSettings {
     float        gamma        = 2.2f;             // present-pass output gamma exponent (sRGB ~2.2)
     TonemapMode  tonemap      = TonemapMode::ACES; // HDR->LDR operator before the gamma encode
     float        exposure     = 1.0f;             // linear exposure multiplier applied before tonemapping
+    SkyboxSettings skybox;                        // environment cubemap (background; IBL source later)
 };

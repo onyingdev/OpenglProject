@@ -35,6 +35,9 @@ private:
     void destroyTargets();
     void buildQuad();       // fullscreen present quad (created once)
     void buildDebugGeometry();  // wire-cube + wire-sphere + dynamic line buffers (created once)
+    void buildSkybox();     // cube VAO + skybox shader + load the cubemap (once, in init; honors settings)
+    void drawSkybox();      // draw the environment cube behind the opaque scene (in endScene)
+    static GLuint loadCubemap(const std::array<std::string, 6>& faces);  // 6 sRGB faces -> GL cube map (0 on failure)
 
     void uploadCamera(Shader& sh);   // push view/projection/viewPos to a program
     void uploadLights(Shader& sh);   // push the frame's light set to a program
@@ -69,6 +72,10 @@ private:
     std::unique_ptr<Shader> m_unlit;        // light_s
     std::unique_ptr<Shader> m_post;         // msaa_post (fullscreen present, no post-AA)
     std::unique_ptr<Shader> m_fxaa;         // fxaa_s (present pass with FXAA edge filter)
+    std::unique_ptr<Shader> m_skybox;       // skybox (environment cubemap background)
+
+    // Environment cubemap (drawn behind opaque geometry). 0 / disabled when no skybox is configured.
+    GLuint m_skyboxTex = 0, m_skyboxVao = 0, m_skyboxVbo = 0;
 
     CameraView m_camera;
     LightSet   m_lights;

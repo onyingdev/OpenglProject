@@ -18,7 +18,18 @@
     "debugColliders": false,
     "gamma": 2.2,
     "tonemap": "aces",
-    "exposure": 1.0
+    "exposure": 1.0,
+    "skybox": {
+      "enabled": true,
+      "faces": [
+        "assets/textures/skybox/right.jpg",
+        "assets/textures/skybox/left.jpg",
+        "assets/textures/skybox/top.jpg",
+        "assets/textures/skybox/bottom.jpg",
+        "assets/textures/skybox/front.jpg",
+        "assets/textures/skybox/back.jpg"
+      ]
+    }
   },
   "profiler": {
     "cpu": false,

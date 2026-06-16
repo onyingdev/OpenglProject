@@ -108,6 +108,15 @@ private:
             s.render.exposure       = r.value("exposure",        s.render.exposure);
             if (r.contains("antialiasing")) s.render.aa = parseAA(r["antialiasing"].get<std::string>(), s.render.aa);
             if (r.contains("tonemap")) s.render.tonemap = parseTonemap(r["tonemap"].get<std::string>(), s.render.tonemap);
+
+            if (r.contains("skybox") && r["skybox"].is_object()) {
+                const auto& sb = r["skybox"];
+                s.render.skybox.enabled = sb.value("enabled", s.render.skybox.enabled);
+                if (sb.contains("faces") && sb["faces"].is_array() && sb["faces"].size() == 6) {
+                    for (int i = 0; i < 6; ++i)
+                        s.render.skybox.faces[i] = sb["faces"][i].get<std::string>();
+                }
+            }
         }
 
         if (j.contains("profiler") && j["profiler"].is_object()) {

@@ -1,9 +1,11 @@
 #include "Render/GL/OpenGLRenderer.h"
 #include "Render/API/IModel.h"   // complete type needed to call IModel::Draw
 #include "Core/Engine/Profiling/Profiler.h"   // GPU timer-query subsections (gpu.frame/flush/resolve/present)
+#include "Core/Engine/Helpers/stb_image.h"    // cubemap face loading (impl lives in another TU)
 #include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 #include <vector>
+#include <array>
 #include <iostream>
 #include <string>
 
@@ -30,6 +32,9 @@ OpenGLRenderer::~OpenGLRenderer() {
     if (m_wireSphereVao) glDeleteVertexArrays(1, &m_wireSphereVao);
     if (m_lineVbo)       glDeleteBuffers(1, &m_lineVbo);
     if (m_lineVao)       glDeleteVertexArrays(1, &m_lineVao);
+    if (m_skyboxTex)     glDeleteTextures(1, &m_skyboxTex);
+    if (m_skyboxVbo)     glDeleteBuffers(1, &m_skyboxVbo);
+    if (m_skyboxVao)     glDeleteVertexArrays(1, &m_skyboxVao);
 }
 
 bool OpenGLRenderer::init(int fbW, int fbH) {
@@ -64,6 +69,7 @@ bool OpenGLRenderer::init(int fbW, int fbH) {
     buildQuad();
     buildDebugGeometry();
     buildTargets();
+    buildSkybox();   // honors m_settings.skybox (set by applySettings before init); disables itself on failure
     return true;
 }
 
@@ -148,6 +154,98 @@ void OpenGLRenderer::buildDebugGeometry() {
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
 
     glBindVertexArray(0);
+}
+
+// Load 6 face images into a GL cube map. Faces are color (sRGB) data, so we use an sRGB internal
+// format — sampling then returns LINEAR, matching the rest of the PBR pipeline. Returns 0 (and frees
+// any partial allocation) if any face is missing, so the caller can disable the skybox gracefully.
+GLuint OpenGLRenderer::loadCubemap(const std::array<std::string, 6>& faces) {
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex);
+
+    // Cube-map faces are authored top-down; unlike 2D model textures they must NOT be flipped.
+    const bool prevFlip = false;
+    stbi_set_flip_vertically_on_load(false);
+
+    int w, h, n;
+    for (unsigned i = 0; i < 6; ++i) {
+        unsigned char* data = stbi_load(faces[i].c_str(), &w, &h, &n, 0);
+        if (!data) {
+            std::cerr << "OpenGLRenderer: cubemap face failed to load: " << faces[i] << "\n";
+            stbi_image_free(data);
+            glDeleteTextures(1, &tex);
+            stbi_set_flip_vertically_on_load(prevFlip);
+            return 0;
+        }
+        const GLenum srcFormat = (n == 4) ? GL_RGBA : (n == 1 ? GL_RED : GL_RGB);
+        const GLint  intFormat = (n == 4) ? GL_SRGB8_ALPHA8 : (n == 1 ? GL_RED : GL_SRGB8);
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, intFormat, w, h, 0,
+                     srcFormat, GL_UNSIGNED_BYTE, data);
+        stbi_image_free(data);
+    }
+    stbi_set_flip_vertically_on_load(prevFlip);
+
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    return tex;
+}
+
+// Build the skybox cube VAO + shader and load the configured cubemap. No-op if disabled; if the
+// cubemap fails to load, the skybox is turned off so the rest of the frame still renders.
+void OpenGLRenderer::buildSkybox() {
+    if (!m_settings.skybox.enabled) return;
+
+    // Unit cube, position only (the position is also the cube-map sample direction). 36 verts.
+    static const float verts[] = {
+        -1,  1, -1,  -1, -1, -1,   1, -1, -1,   1, -1, -1,   1,  1, -1,  -1,  1, -1,
+        -1, -1,  1,  -1, -1, -1,  -1,  1, -1,  -1,  1, -1,  -1,  1,  1,  -1, -1,  1,
+         1, -1, -1,   1, -1,  1,   1,  1,  1,   1,  1,  1,   1,  1, -1,   1, -1, -1,
+        -1, -1,  1,  -1,  1,  1,   1,  1,  1,   1,  1,  1,   1, -1,  1,  -1, -1,  1,
+        -1,  1, -1,   1,  1, -1,   1,  1,  1,   1,  1,  1,  -1,  1,  1,  -1,  1, -1,
+        -1, -1, -1,  -1, -1,  1,   1, -1, -1,   1, -1, -1,  -1, -1,  1,   1, -1,  1
+    };
+    glGenVertexArrays(1, &m_skyboxVao);
+    glGenBuffers(1, &m_skyboxVbo);
+    glBindVertexArray(m_skyboxVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_skyboxVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(verts), verts, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glBindVertexArray(0);
+
+    m_skybox = std::make_unique<Shader>("assets/shaders/skybox.vs", "assets/shaders/skybox.fs");
+    m_skybox->use();
+    m_skybox->setInt("skybox", 0);
+
+    m_skyboxTex = loadCubemap(m_settings.skybox.faces);
+    if (!m_skyboxTex) {
+        std::cerr << "OpenGLRenderer: skybox disabled (cubemap failed to load)\n";
+        m_settings.skybox.enabled = false;
+    }
+}
+
+// Draw the environment behind everything: depth test LEQUAL (the skybox vertex stage forces depth=1),
+// camera view with translation stripped so it never moves relative to the camera. Called in endScene
+// while the scene FBO is still bound, after the opaque flush, so it only fills un-covered pixels.
+void OpenGLRenderer::drawSkybox() {
+    if (!m_settings.skybox.enabled || !m_skyboxTex) return;
+
+    glDepthFunc(GL_LEQUAL);
+    m_skybox->use();
+    const glm::mat4 viewNoTrans = glm::mat4(glm::mat3(m_camera.view));   // drop translation
+    m_skybox->setMat4("view", viewNoTrans);
+    m_skybox->setMat4("projection", m_camera.projection);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, m_skyboxTex);
+    glBindVertexArray(m_skyboxVao);
+    glDrawArrays(GL_TRIANGLES, 0, 36);
+    glBindVertexArray(0);
+    glDepthFunc(GL_LESS);   // restore default for the next frame's geometry
 }
 
 void OpenGLRenderer::destroyTargets() {
@@ -414,6 +512,7 @@ void OpenGLRenderer::drawLine(const glm::vec3& a, const glm::vec3& b, const glm:
 
 void OpenGLRenderer::endScene() {
     flushOpaqueBatches();   // draw any deferred meshes not already flushed by a debug-draw call
+    drawSkybox();           // fill un-covered pixels with the environment (scene FBO still bound)
 
     const int rw = m_settings.renderWidth;
     const int rh = m_settings.renderHeight;
