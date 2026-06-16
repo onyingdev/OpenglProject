@@ -17,7 +17,9 @@ in vec2 v_rgbM;
 
 uniform sampler2D screenTexture;
 uniform vec2 iResolution;
-uniform float gamma;   // present-pass output gamma (from render.json; ~2.2)
+uniform float gamma;     // present-pass output gamma (from render.json; ~2.2)
+uniform float exposure;  // linear exposure multiplier applied before tonemapping
+uniform int   tonemap;   // 0=None 1=Reinhard 2=ACES (RenderSettings::TonemapMode)
 
 #ifndef FXAA_REDUCE_MIN
     #define FXAA_REDUCE_MIN   (1.0 / 128.0)
@@ -77,12 +79,33 @@ vec4 fxaa(sampler2D tex, vec2 fragCoord, vec2 resolution,
     return color;
 }
 
+float hash12(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+// Narkowicz 2015 ACES filmic approximation; input/output linear.
+vec3 acesFilmic(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+// Map HDR linear radiance into [0,1]. Done BEFORE the gamma encode.
+vec3 applyTonemap(vec3 c) {
+    if (tonemap == 1)      return c / (c + vec3(1.0));   // Reinhard
+    else if (tonemap == 2) return acesFilmic(c);          // ACES
+    return clamp(c, 0.0, 1.0);                            // None
+}
+
 void main() {
     vec2 fragCoord = TexCoords * iResolution;
     FragColor = fxaa(screenTexture, fragCoord, iResolution,
                      v_rgbNW, v_rgbNE, v_rgbSW, v_rgbSE, v_rgbM);
 
-    // Final present pass: scene was lit in LINEAR space (PBR), so re-encode to display gamma.
-    // FXAA resolves on the linear buffer (edge luma is still monotonic), then we gamma-encode the result.
+    // Final present pass: scene was lit in LINEAR HDR (PBR). FXAA resolves on the linear buffer
+    // (edge luma stays monotonic), then expose -> tonemap -> gamma-encode the result.
+    FragColor.rgb *= exposure;
+    FragColor.rgb = applyTonemap(FragColor.rgb);
     FragColor.rgb = pow(FragColor.rgb, vec3(1.0 / gamma));
+
+    // Triangular-PDF dither (~1 LSB) to break up residual banding at the 8-bit output quantization.
+    float dt = (hash12(gl_FragCoord.xy) + hash12(gl_FragCoord.xy + 17.0) - 1.0) / 255.0;
+    FragColor.rgb += dt;
 }

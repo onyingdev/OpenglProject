@@ -6,7 +6,7 @@
     "title": "OpenGL",
     "mode": "windowed",
     "resize": "free",
-    "vsync": true,
+    "vsync": false,
     "glMajor": 3,
     "glMinor": 3
   },
@@ -16,7 +16,9 @@
     "antialiasing": "fxaa",
     "msaaSamples": 2,
     "debugColliders": false,
-    "gamma": 2.2
+    "gamma": 2.2,
+    "tonemap": "aces",
+    "exposure": 1.0
   },
   "profiler": {
     "cpu": false,

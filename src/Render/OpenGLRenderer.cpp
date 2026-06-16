@@ -173,7 +173,9 @@ void OpenGLRenderer::buildTargets() {
         // Multisample color texture + matching multisample depth renderbuffer.
         glGenTextures(1, &m_sceneColor);
         glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, m_sceneColor);
-        glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, samples, GL_RGB, rw, rh, GL_TRUE);
+        // RGBA16F (HDR): linear lighting stored at float precision so smooth gradients don't band when
+        // the present pass gamma-stretches the darks. RGBA (not RGB) — RGB16F isn't always renderable.
+        glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, samples, GL_RGBA16F, rw, rh, GL_TRUE);
         glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, 0);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D_MULTISAMPLE, m_sceneColor, 0);
 
@@ -190,7 +192,7 @@ void OpenGLRenderer::buildTargets() {
         glBindFramebuffer(GL_FRAMEBUFFER, m_resolveFbo);
         glGenTextures(1, &m_resolveColor);
         glBindTexture(GL_TEXTURE_2D, m_resolveColor);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rw, rh, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, rw, rh, 0, GL_RGBA, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_resolveColor, 0);
@@ -199,10 +201,11 @@ void OpenGLRenderer::buildTargets() {
 
         m_presentTex = m_resolveColor;
     } else {
-        // No MSAA: single-sample color texture sampled directly by the present pass.
+        // No MSAA: single-sample color texture sampled directly by the present pass. RGBA16F (HDR) so
+        // linear lighting keeps float precision until the present pass encodes gamma (avoids dark banding).
         glGenTextures(1, &m_sceneColor);
         glBindTexture(GL_TEXTURE_2D, m_sceneColor);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, rw, rh, 0, GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, rw, rh, 0, GL_RGBA, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_sceneColor, 0);
@@ -453,13 +456,19 @@ void OpenGLRenderer::endScene() {
     // present pass and resolves edges. Any other mode (None / already-resolved MSAA)
     // just blits the texture through unchanged.
     const float gamma = (m_settings.gamma > 0.01f) ? m_settings.gamma : 2.2f;   // floor avoids /0
+    const float exposure = m_settings.exposure;
+    const int   tonemap  = (int)m_settings.tonemap;   // matches the GLSL branch ids (see RenderSettings.h)
     if (m_settings.aa == AntiAliasing::FXAA) {
         m_fxaa->use();
         m_fxaa->setVec2("iResolution", (float)rw, (float)rh);
         m_fxaa->setFloat("gamma", gamma);
+        m_fxaa->setFloat("exposure", exposure);
+        m_fxaa->setInt("tonemap", tonemap);
     } else {
         m_post->use();
         m_post->setFloat("gamma", gamma);
+        m_post->setFloat("exposure", exposure);
+        m_post->setInt("tonemap", tonemap);
     }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_presentTex);

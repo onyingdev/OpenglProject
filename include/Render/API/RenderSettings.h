@@ -10,6 +10,16 @@ enum class AntiAliasing {
     // Future post-process modes: SMAA, TAA, ...
 };
 
+// HDR-to-LDR operator applied in the present pass (the scene is lit in linear HDR in the
+// RGBA16F buffer). Maps unbounded radiance into [0,1] before the gamma encode so bright
+// specular / additive lights / emissive no longer hard-clip. Integer values are uploaded
+// directly to the present shaders' `tonemap` uniform — keep in sync with the GLSL branches.
+enum class TonemapMode {
+    None     = 0,   // straight clamp (legacy behaviour)
+    Reinhard = 1,   // x / (1+x); simple, slightly desaturated highlights
+    ACES     = 2,   // Narkowicz ACES filmic approximation (default)
+};
+
 struct RenderSettings {
     int          renderWidth  = 1920;             // internal/offscreen render resolution
     int          renderHeight = 1080;             // (independent of the window size)
@@ -18,4 +28,6 @@ struct RenderSettings {
     bool         vsync        = false;            // applied by the Window/context, not the renderer
     bool         debugColliders = false;          // draw collider/hurtbox wireframes (initial state; toggled at runtime)
     float        gamma        = 2.2f;             // present-pass output gamma exponent (sRGB ~2.2)
+    TonemapMode  tonemap      = TonemapMode::ACES; // HDR->LDR operator before the gamma encode
+    float        exposure     = 1.0f;             // linear exposure multiplier applied before tonemapping
 };
