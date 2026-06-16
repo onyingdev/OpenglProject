@@ -1,8 +1,8 @@
 {
   "backend": "opengl",
   "window": {
-    "width": 1920,
-    "height": 1080,
+    "width": 2560,
+    "height": 1440,
     "title": "OpenGL",
     "mode": "windowed",
     "resize": "free",
@@ -11,11 +11,26 @@
     "glMinor": 3
   },
   "render": {
-    "internalWidth": 1920,
-    "internalHeight": 1080,
-    "antialiasing": "fxaa",
-    "msaaSamples": 2,
-    "debugColliders": false
+    "internalWidth": 2560,
+    "internalHeight": 1440,
+    "antialiasing": "none",
+    "msaaSamples": 16,
+    "debugColliders": false,
+    "gamma": 2.2,
+    "tonemap": "aces",
+    "exposure": 1.0,
+    "skybox": {
+      "enabled": false,
+      "drawBackground": true,
+      "faces": [
+        "assets/textures/studio_light/px.png",
+        "assets/textures/studio_light/nx.png",
+        "assets/textures/studio_light/py.png",
+        "assets/textures/studio_light/ny.png",
+        "assets/textures/studio_light/pz.png",
+        "assets/textures/studio_light/nz.png"
+      ]
+    }
   },
   "profiler": {
     "cpu": false,
